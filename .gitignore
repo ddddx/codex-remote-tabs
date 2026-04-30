@@ -1,0 +1,9 @@
+node_modules/
+.codex-home/
+.npm-cache/
+tmp-bindings/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env

@@ -1,0 +1,15 @@
+{
+  "name": "codex-remote-tabs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Remote tab controller for Codex on PC",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.3"
+  }
+}

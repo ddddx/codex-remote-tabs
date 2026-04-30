@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex Remote Tabs</title>
+    <link rel="stylesheet" href="/style.css?v=2" />
+  </head>
+  <body>
+    <div class="bg"></div>
+    <main class="app">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+          <h2>标签</h2>
+          <button id="sidebarClose" class="btn-icon">✕</button>
+        </div>
+        <div id="tabList" class="tab-list"></div>
+        <button id="newTabBtn" class="btn" style="width:100%;margin-top:8px">+ 新建标签</button>
+      </aside>
+
+      <div class="main-area">
+        <header class="topbar">
+          <button id="menuBtn" class="btn-icon">☰</button>
+          <h1 id="activeTitle">Codex Remote Control</h1>
+          <span id="activeStatus" class="status-badge"></span>
+        </header>
+
+        <section class="panel">
+          <div id="messages" class="messages"></div>
+          <form id="composer" class="composer">
+            <textarea id="promptInput" placeholder="给当前标签对应的 Codex 发送指令..." rows="3"></textarea>
+            <button type="submit" class="btn">发送</button>
+          </form>
+        </section>
+      </div>
+    </main>
+
+    <template id="tabTpl">
+      <button class="tab-item">
+        <span class="name"></span>
+        <span class="meta"></span>
+        <span class="close">×</span>
+      </button>
+    </template>
+
+    <script type="module" src="/app.js?v=4"></script>
+  </body>
+</html>
