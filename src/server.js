@@ -183,11 +183,17 @@ function clearClosedTabCleanup(threadId) {
 function scheduleClosedTabCleanup(threadId) {
   clearClosedTabCleanup(threadId);
   const timer = setTimeout(() => {
+    closedTabTimers.delete(threadId);
+    const tab = tabs.get(threadId);
+    if (!tab || tab.status !== 'closed') {
+      return;
+    }
     removeTab(threadId, { broadcastRemoval: true });
   }, CLOSED_TAB_TTL_MS);
   timer.unref?.();
   closedTabTimers.set(threadId, timer);
   pruneClosedTabs();
+  pruneClosedTabTimers();
 }
 
 function pruneClosedTabs() {
@@ -198,6 +204,17 @@ function pruneClosedTabs() {
 
   for (const tab of closedTabs.slice(MAX_CLOSED_TABS)) {
     removeTab(tab.threadId, { broadcastRemoval: true });
+  }
+}
+
+function pruneClosedTabTimers() {
+  for (const [threadId, timer] of closedTabTimers.entries()) {
+    const tab = tabs.get(threadId);
+    if (tab?.status === 'closed') {
+      continue;
+    }
+    clearTimeout(timer);
+    closedTabTimers.delete(threadId);
   }
 }
 
@@ -372,24 +389,51 @@ function startPolling(threadId) {
 }
 
 function buildThreadSignature(turns) {
-  const parts = [];
-  for (const turn of turns || []) {
+  let hash = 2166136261;
+  const safeTurns = turns || [];
+  hash = hashString(hash, safeTurns.length);
+
+  for (const turn of safeTurns) {
     const status = normalizeStatus(turn?.status, '');
     const items = turn?.items || [];
-    parts.push(`${turn?.id || ''}:${status}:${items.length}`);
+    hash = hashString(hash, turn?.id || '');
+    hash = hashString(hash, status);
+    hash = hashString(hash, items.length);
+
     for (const item of items) {
-      let payload = '';
+      let payloadLength = 0;
       if (item?.type === 'agentMessage') {
-        payload = item.text || '';
+        payloadLength = (item.text || '').length;
       } else if (item?.type === 'reasoning') {
-        payload = (item.summary || []).join('|');
+        const summary = item.summary || [];
+        for (let i = 0; i < summary.length; i += 1) {
+          payloadLength += String(summary[i] || '').length;
+          if (i > 0) {
+            payloadLength += 1;
+          }
+        }
       } else if (item?.type === 'commandExecution') {
-        payload = item.aggregatedOutput || '';
+        payloadLength = (item.aggregatedOutput || '').length;
       }
-      parts.push(`${item?.type || ''}:${item?.id || ''}:${payload.length}`);
+
+      hash = hashString(hash, item?.type || '');
+      hash = hashString(hash, item?.id || '');
+      hash = hashString(hash, payloadLength);
     }
   }
-  return parts.join('||');
+
+  return hash.toString(16);
+}
+
+function hashString(seed, value) {
+  let hash = seed >>> 0;
+  const text = typeof value === 'string' ? value : String(value ?? '');
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  hash ^= 31;
+  return Math.imul(hash, 16777619) >>> 0;
 }
 
 function stopPolling(threadId) {
@@ -779,26 +823,26 @@ async function bootstrap() {
   windows.load();
   const threadList = await codex.listThreads(BOOTSTRAP_THREAD_LIMIT);
 
-  for (const thread of threadList) {
+  await Promise.all(threadList.map(async (thread) => {
     let verifiedThread = thread;
     try {
       verifiedThread = await codex.readThread(thread.id);
     } catch (error) {
       if (isThreadNotFoundError(error)) {
         console.log(`[bootstrap] skip missing thread ${thread.id}`);
-        continue;
+        return;
       }
       throw error;
     }
 
     const status = normalizeStatus(verifiedThread.status, 'idle');
     if (['closed', 'archived'].includes(status)) {
-      continue;
+      return;
     }
 
     const windowPid = windows.getPid(verifiedThread.id);
     if (!windowPid) {
-      continue;
+      return;
     }
 
     let windowAlive = false;
@@ -810,14 +854,14 @@ async function bootstrap() {
     }
 
     if (!windowAlive) {
-      continue;
+      return;
     }
 
     // Lazy: only register tab metadata, load full data on click
     const tab = ensureTab(verifiedThread);
     tab.status = 'idle';
     tab.updatedAt = nowUnix();
-  }
+  }));
 
   server.listen(PORT, () => {
     console.log(`Web control ready: http://localhost:${PORT}`);
