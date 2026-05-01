@@ -3,6 +3,44 @@ let reconnectAttempt = 0;
 
 const WEBSOCKET_TOKEN_STORAGE_KEY = 'codex-remote-ws-token';
 const EMPTY_THREAD_KEY = '__empty__';
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 30000;
+const DEFAULT_PROMPT_PLACEHOLDER = '给当前标签对应的 Codex 发送指令...';
+
+function getReconnectDelayMs(attempt) {
+  const baseDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** attempt));
+  const jitter = 0.85 + (Math.random() * 0.3);
+  return Math.round(baseDelay * jitter);
+}
+
+function clearReconnectTimer() {
+  if (!reconnectTimer) {
+    return;
+  }
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+}
+
+function markAuthFailed(message) {
+  clearReconnectTimer();
+  reconnectAttempt = 0;
+  state.authFailed = true;
+  state.connectionError = message;
+  render();
+}
+
+function clearConnectionError() {
+  if (!state.authFailed && !state.connectionError) {
+    return;
+  }
+  state.authFailed = false;
+  state.connectionError = '';
+  render();
+}
+
+function isAuthFailureClose(event) {
+  return event.code === 4401 || event.reason === 'Unauthorized';
+}
 
 function getWebSocketToken() {
   const queryToken = new URLSearchParams(window.location.search).get('token');
@@ -18,11 +56,11 @@ function getWebSocketToken() {
 }
 
 function scheduleReconnect() {
-  if (reconnectTimer) {
+  if (reconnectTimer || state.authFailed) {
     return;
   }
 
-  const delay = Math.min(30000, 1000 * (2 ** reconnectAttempt));
+  const delay = getReconnectDelayMs(reconnectAttempt);
   reconnectAttempt += 1;
   console.log(`ws closed, reconnecting in ${Math.round(delay / 1000)}s...`);
   reconnectTimer = window.setTimeout(() => {
@@ -44,10 +82,8 @@ function connect() {
   socket.onopen = () => {
     console.log('ws connected');
     reconnectAttempt = 0;
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
+    clearReconnectTimer();
+    clearConnectionError();
     if (state.activeThreadId) {
       send({ type: 'thread_sync', threadId: state.activeThreadId });
     }
@@ -61,7 +97,11 @@ function connect() {
     }
   };
 
-  socket.onclose = () => {
+  socket.onclose = (event) => {
+    if (isAuthFailureClose(event)) {
+      markAuthFailed('WebSocket 鉴权失败，请检查 token 是否正确，然后刷新页面重试。');
+      return;
+    }
     scheduleReconnect();
   };
 
@@ -84,6 +124,7 @@ const newTabBtn = document.getElementById('newTabBtn');
 const messagesEl = document.getElementById('messages');
 const composer = document.getElementById('composer');
 const promptInput = document.getElementById('promptInput');
+const composerSubmitBtn = composer.querySelector('button[type="submit"]');
 const activeTitle = document.getElementById('activeTitle');
 const activeStatus = document.getElementById('activeStatus');
 const mainArea = document.querySelector('.main-area');
@@ -102,6 +143,9 @@ const state = {
   partialByThread: new Map(),
   turnActiveByThread: new Map(),
   unreadThreadIds: new Set(),
+  pendingUserMessages: new Map(),
+  authFailed: false,
+  connectionError: '',
 };
 
 const messageDomByThread = new Map();
@@ -178,6 +222,52 @@ function ensureMessageDomMap(threadKey) {
   return messageDomByThread.get(threadKey);
 }
 
+function registerPendingUserMessage(clientMessageId, threadId, itemId) {
+  if (!clientMessageId) {
+    return;
+  }
+  state.pendingUserMessages.set(clientMessageId, { threadId, itemId });
+}
+
+function removeItemById(threadId, itemId) {
+  const items = state.itemsByThread.get(threadId);
+  if (!items?.length) {
+    return false;
+  }
+  const nextItems = items.filter((item) => item.id !== itemId);
+  if (nextItems.length === items.length) {
+    return false;
+  }
+  state.itemsByThread.set(threadId, nextItems);
+  return true;
+}
+
+function rollbackPendingUserMessage(clientMessageId) {
+  const pending = state.pendingUserMessages.get(clientMessageId);
+  if (!pending) {
+    return false;
+  }
+  state.pendingUserMessages.delete(clientMessageId);
+  return removeItemById(pending.threadId, pending.itemId);
+}
+
+function prunePendingUserMessages(threadId) {
+  const existingIds = new Set((state.itemsByThread.get(threadId) || []).map((item) => item.id));
+  for (const [clientMessageId, pending] of state.pendingUserMessages.entries()) {
+    if (pending.threadId === threadId && !existingIds.has(pending.itemId)) {
+      state.pendingUserMessages.delete(clientMessageId);
+    }
+  }
+}
+
+function removePendingUserMessagesForThread(threadId) {
+  for (const [clientMessageId, pending] of state.pendingUserMessages.entries()) {
+    if (pending.threadId === threadId) {
+      state.pendingUserMessages.delete(clientMessageId);
+    }
+  }
+}
+
 function pruneUnreadThreads() {
   const validThreadIds = new Set(state.tabs.map((tab) => tab.threadId));
   for (const threadId of state.unreadThreadIds) {
@@ -218,6 +308,7 @@ function removeTab(threadId) {
   state.itemsByThread.delete(threadId);
   state.partialByThread.delete(threadId);
   state.turnActiveByThread.delete(threadId);
+  removePendingUserMessagesForThread(threadId);
   state.unreadThreadIds.delete(threadId);
   messageDomByThread.delete(threadId);
 
@@ -289,22 +380,34 @@ function syncTurns(threadId, turns) {
   const merged = [...syncedItems];
 
   for (const item of existing) {
-    const isTransient = item.type !== '_error' && item.type !== '_warning';
+    const isLocalNotice = item.type === '_error' || item.type === '_warning';
     const isPartial = item._partial || partials.has(item.id);
-    if (!isTransient && !syncedIds.has(item.id)) {
+    if (isLocalNotice && !syncedIds.has(item.id)) {
       merged.push(item);
       continue;
     }
     if (isPartial && !syncedIds.has(item.id)) {
-      merged.push(item);
+      partials.delete(item.id);
+    }
+  }
+
+  for (const itemId of Array.from(partials.keys())) {
+    if (!syncedIds.has(itemId)) {
+      partials.delete(itemId);
     }
   }
 
   state.itemsByThread.set(threadId, dedupeItems(merged));
+  if (partials.size) {
+    state.partialByThread.set(threadId, partials);
+  } else {
+    state.partialByThread.delete(threadId);
+  }
+  prunePendingUserMessages(threadId);
 
   const lastTurn = turns?.[turns.length - 1];
   const lastTurnStatus = normalizeTurnStatus(lastTurn?.status);
-  if (lastTurnStatus === 'completed' || lastTurnStatus === 'failed') {
+  if (['completed', 'failed', 'cancelled', 'aborted', 'idle'].includes(lastTurnStatus)) {
     state.partialByThread.delete(threadId);
     state.turnActiveByThread.set(threadId, false);
   } else if (lastTurnStatus === 'inProgress') {
@@ -451,6 +554,12 @@ function renderHeader() {
   const tab = state.tabs.find((entry) => entry.threadId === state.activeThreadId);
   activeTitle.textContent = tab ? (tab.name || 'New Tab') : 'Codex Remote Control';
 
+  if (state.authFailed) {
+    activeStatus.textContent = '鉴权失败';
+    activeStatus.className = 'status-badge failed';
+    return;
+  }
+
   const status = tab ? normalizeTabStatus(tab.status) : '';
   activeStatus.textContent = status === 'closed' ? '已关闭' : status;
   activeStatus.className = 'status-badge';
@@ -463,6 +572,15 @@ function renderHeader() {
   if (status === 'closed') {
     activeStatus.classList.add('closed');
   }
+}
+
+function renderComposer() {
+  const disabled = state.authFailed;
+  promptInput.disabled = disabled;
+  composerSubmitBtn.disabled = disabled;
+  promptInput.placeholder = disabled
+    ? 'WebSocket 鉴权失败，请检查 token 后刷新页面。'
+    : DEFAULT_PROMPT_PLACEHOLDER;
 }
 
 function renderMessages() {
@@ -511,7 +629,19 @@ function renderMessages() {
 }
 
 function buildMessageEntries(threadId) {
+  const connectionEntries = state.connectionError
+    ? [{
+      key: '__connection_error__',
+      kind: '_error',
+      text: state.connectionError,
+      signature: JSON.stringify(['connection_error', state.connectionError]),
+    }]
+    : [];
+
   if (!threadId) {
+    if (connectionEntries.length) {
+      return connectionEntries;
+    }
     return [{
       key: 'empty',
       kind: 'empty',
@@ -533,7 +663,7 @@ function buildMessageEntries(threadId) {
     });
   }
 
-  return entries;
+  return connectionEntries.concat(entries);
 }
 
 function buildEntryFromItem(item, partials, index) {
@@ -756,6 +886,7 @@ function commandStatusIcon(status) {
 function render() {
   renderTabs();
   renderHeader();
+  renderComposer();
   renderMessages();
 }
 
@@ -864,17 +995,22 @@ composer.addEventListener('submit', (event) => {
     return;
   }
 
-  const items = ensureItems(state.activeThreadId);
+  const threadId = state.activeThreadId;
+  const clientMessageId = createLocalId('turn');
+  const localMessageId = createLocalId('local');
+  const items = ensureItems(threadId);
   items.push({
     type: 'userMessage',
-    id: createLocalId('local'),
+    id: localMessageId,
     content: [{ type: 'text', text }],
   });
+  registerPendingUserMessage(clientMessageId, threadId, localMessageId);
 
-  state.turnActiveByThread.set(state.activeThreadId, true);
-  if (!send({ type: 'turn_send', threadId: state.activeThreadId, text })) {
-    state.turnActiveByThread.set(state.activeThreadId, false);
-    items.push({
+  state.turnActiveByThread.set(threadId, true);
+  if (!send({ type: 'turn_send', threadId, text, clientMessageId })) {
+    rollbackPendingUserMessage(clientMessageId);
+    state.turnActiveByThread.set(threadId, false);
+    ensureItems(threadId).push({
       type: '_error',
       id: createLocalId('send'),
       text: '消息发送失败：WebSocket 未连接，请稍后重试。',
@@ -1011,9 +1147,19 @@ function handleMessage(msg) {
   }
 
   if (msg.type === 'error') {
+    if (msg.code === 'AUTH_FAILED') {
+      markAuthFailed(msg.message || 'WebSocket 鉴权失败，请检查 token 是否正确。');
+      return;
+    }
+
     const threadId = msg.threadId || state.activeThreadId;
     if (!threadId) {
       return;
+    }
+
+    if (msg.op === 'turn_start' && msg.clientMessageId) {
+      rollbackPendingUserMessage(msg.clientMessageId);
+      state.turnActiveByThread.set(threadId, false);
     }
 
     if (msg.code === 'THREAD_NOT_FOUND' && msg.op === 'turn_start') {

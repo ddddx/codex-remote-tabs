@@ -10,7 +10,6 @@ const { CodexWindowManager } = require('./windowManager');
 
 const PORT = Number.parseInt(process.env.PORT || '8787', 10);
 const WS_TOKEN = process.env.WS_TOKEN || '';
-const POLL_INTERVAL_MS = parsePositiveInteger(process.env.POLL_INTERVAL_MS) || 3000;
 const MAX_CLIENT_MESSAGE_BYTES = parsePositiveInteger(process.env.MAX_CLIENT_MESSAGE_BYTES) || 65536;
 const MAX_TURN_INPUT_LENGTH = parsePositiveInteger(process.env.MAX_TURN_INPUT_LENGTH) || 20000;
 const MAX_TAB_NAME_LENGTH = parsePositiveInteger(process.env.MAX_TAB_NAME_LENGTH) || 120;
@@ -24,7 +23,6 @@ app.get('/health', (_req, res) => {
   res.json({
     status: shuttingDown ? 'shutting_down' : 'ok',
     tabs: tabs.size,
-    pollers: activePollers.size,
     websocketClients: wss.clients.size,
     uptimeSec: Math.floor(process.uptime()),
   });
@@ -41,19 +39,12 @@ const codex = new CodexAppServerClient({
 const windows = new CodexWindowManager({});
 
 const tabs = new Map();
-const activePollers = new Map();
 const closedTabTimers = new Map();
 let shuttingDown = false;
 
 server.on('upgrade', (request, socket, head) => {
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
   if (requestUrl.pathname !== '/ws') {
-    socket.destroy();
-    return;
-  }
-
-  if (WS_TOKEN && requestUrl.searchParams.get('token') !== WS_TOKEN) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     socket.destroy();
     return;
   }
@@ -75,6 +66,21 @@ function parsePositiveInteger(value) {
 function normalizeStatus(status, fallback = 'idle') {
   const raw = typeof status === 'object' && status ? status.type : status;
   return canonicalizeStatus(raw, fallback);
+}
+
+function normalizeTabStatusFromTurn(status, fallback = 'idle') {
+  const normalized = normalizeStatus(status, fallback);
+  const compact = normalized.replace(/[\s_-]/g, '').toLowerCase();
+
+  if (compact === 'completed' || compact === 'succeeded' || compact === 'cancelled' || compact === 'aborted') {
+    return 'idle';
+  }
+
+  if (compact === 'failed' || compact === 'systemerror') {
+    return 'failed';
+  }
+
+  return normalized;
 }
 
 function canonicalizeStatus(value, fallback = 'idle') {
@@ -99,10 +105,6 @@ function canonicalizeStatus(value, fallback = 'idle') {
   }
 
   return trimmed;
-}
-
-function isTerminalTurnStatus(status) {
-  return ['completed', 'failed', 'cancelled', 'systemError', 'aborted', 'idle'].includes(status);
 }
 
 function getErrorMessage(error) {
@@ -226,7 +228,6 @@ function markTabClosed(threadId) {
 
   tab.status = 'closed';
   tab.updatedAt = nowUnix();
-  stopPolling(threadId);
   scheduleClosedTabCleanup(threadId);
   broadcast({ type: 'tab_updated', tab });
 }
@@ -234,7 +235,6 @@ function markTabClosed(threadId) {
 function removeTab(threadId, options = {}) {
   const { broadcastRemoval = false } = options;
   tabs.delete(threadId);
-  stopPolling(threadId);
   clearClosedTabCleanup(threadId);
   if (broadcastRemoval) {
     broadcast({ type: 'tab_removed', threadId });
@@ -324,127 +324,13 @@ async function ensureWindowForThread(threadId) {
   broadcast({ type: 'tab_updated', tab });
 }
 
-async function syncThreadToClients(threadId) {
+async function syncThreadToClients(ws, threadId) {
   assertThreadId(threadId);
   const thread = await codex.readThread(threadId);
   const tab = ensureTab(thread);
-  broadcast({ type: 'tab_updated', tab });
-  broadcast({ type: 'thread_sync', threadId, turns: thread.turns || [] });
-
-  const lastTurn = thread.turns?.[thread.turns.length - 1];
-  if (lastTurn && isTerminalTurnStatus(normalizeStatus(lastTurn.status, 'unknown'))) {
-    stopPolling(threadId);
-  }
-
+  send(ws, { type: 'tab_updated', tab });
+  send(ws, { type: 'thread_sync', threadId, turns: thread.turns || [] });
   return thread;
-}
-
-async function pollThread(threadId, state) {
-  if (state.inFlight || shuttingDown) {
-    return;
-  }
-
-  state.inFlight = true;
-  try {
-    const thread = await codex.readThread(threadId);
-    const turns = thread.turns || [];
-    const lastTurn = turns[turns.length - 1];
-    const lastTurnStatus = normalizeStatus(lastTurn?.status, 'unknown');
-    const signature = buildThreadSignature(turns);
-
-    if (signature !== state.lastSignature) {
-      state.lastSignature = signature;
-      broadcast({ type: 'thread_sync', threadId, turns });
-    }
-
-    if (lastTurn && isTerminalTurnStatus(lastTurnStatus)) {
-      stopPolling(threadId);
-    }
-  } catch (error) {
-    console.log(`[poll] failed for ${threadId}: ${error.message}`);
-  } finally {
-    state.inFlight = false;
-  }
-}
-
-function startPolling(threadId) {
-  assertThreadId(threadId);
-  if (activePollers.has(threadId)) {
-    return;
-  }
-
-  const state = {
-    inFlight: false,
-    lastSignature: '',
-    timer: null,
-  };
-
-  activePollers.set(threadId, state);
-  state.timer = setInterval(() => {
-    void pollThread(threadId, state);
-  }, POLL_INTERVAL_MS);
-
-  void pollThread(threadId, state);
-  console.log(`[poll] started for ${threadId}`);
-}
-
-function buildThreadSignature(turns) {
-  let hash = 2166136261;
-  const safeTurns = turns || [];
-  hash = hashString(hash, safeTurns.length);
-
-  for (const turn of safeTurns) {
-    const status = normalizeStatus(turn?.status, '');
-    const items = turn?.items || [];
-    hash = hashString(hash, turn?.id || '');
-    hash = hashString(hash, status);
-    hash = hashString(hash, items.length);
-
-    for (const item of items) {
-      let payloadLength = 0;
-      if (item?.type === 'agentMessage') {
-        payloadLength = (item.text || '').length;
-      } else if (item?.type === 'reasoning') {
-        const summary = item.summary || [];
-        for (let i = 0; i < summary.length; i += 1) {
-          payloadLength += String(summary[i] || '').length;
-          if (i > 0) {
-            payloadLength += 1;
-          }
-        }
-      } else if (item?.type === 'commandExecution') {
-        payloadLength = (item.aggregatedOutput || '').length;
-      }
-
-      hash = hashString(hash, item?.type || '');
-      hash = hashString(hash, item?.id || '');
-      hash = hashString(hash, payloadLength);
-    }
-  }
-
-  return hash.toString(16);
-}
-
-function hashString(seed, value) {
-  let hash = seed >>> 0;
-  const text = typeof value === 'string' ? value : String(value ?? '');
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  hash ^= 31;
-  return Math.imul(hash, 16777619) >>> 0;
-}
-
-function stopPolling(threadId) {
-  const state = activePollers.get(threadId);
-  if (!state) {
-    return;
-  }
-
-  clearInterval(state.timer);
-  activePollers.delete(threadId);
-  console.log(`[poll] stopped for ${threadId}`);
 }
 
 async function refreshAllTabWindowStatus() {
@@ -528,6 +414,7 @@ function normalizeClientMessage(raw) {
         type: 'turn_send',
         threadId: normalizeThreadId(message.threadId),
         text: normalizeRequiredString(message.text, MAX_TURN_INPUT_LENGTH, 'text'),
+        clientMessageId: normalizeOptionalClientMessageId(message.clientMessageId),
       };
     case 'thread_sync':
       return {
@@ -562,6 +449,16 @@ function normalizeOptionalString(value, maxLength) {
   return normalized;
 }
 
+function normalizeOptionalClientMessageId(value) {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error('invalid clientMessageId');
+  }
+  return value.trim().slice(0, 128);
+}
+
 function normalizeRequiredString(value, maxLength, fieldName) {
   if (typeof value !== 'string') {
     throw new Error(`${fieldName} required`);
@@ -591,28 +488,10 @@ codex.on('notification', (msg) => {
     const tab = tabs.get(params.threadId);
     const status = normalizeStatus(params.status, tab?.status || 'idle');
 
-    if (!tab) {
-      void syncThreadToClients(params.threadId).catch((error) => {
-        console.log(`[status-sync] failed for ${params.threadId}: ${error.message}`);
-      });
-    }
-
     if (tab) {
       tab.status = status;
       tab.updatedAt = nowUnix();
       broadcast({ type: 'tab_updated', tab });
-    }
-
-    if (status === 'active') {
-      startPolling(params.threadId);
-      return;
-    }
-
-    if (['idle', 'completed', 'failed', 'systemError', 'closed'].includes(status)) {
-      stopPolling(params.threadId);
-      void syncThreadToClients(params.threadId).catch((error) => {
-        console.log(`[final-sync] failed for ${params.threadId}: ${error.message}`);
-      });
     }
 
     if (status === 'closed') {
@@ -624,9 +503,6 @@ codex.on('notification', (msg) => {
   if (method === 'thread/name/updated') {
     const tab = tabs.get(params.threadId);
     if (!tab) {
-      void syncThreadToClients(params.threadId).catch((error) => {
-        console.log(`[name-sync] failed for ${params.threadId}: ${error.message}`);
-      });
       return;
     }
 
@@ -650,18 +526,11 @@ codex.on('notification', (msg) => {
 
   if (method === 'turn/started') {
     const tab = tabs.get(params.threadId);
-    if (!tab) {
-      void syncThreadToClients(params.threadId).catch((error) => {
-        console.log(`[turn-start-sync] failed for ${params.threadId}: ${error.message}`);
-      });
-    }
-
     if (tab) {
       tab.status = 'running';
       tab.updatedAt = nowUnix();
       broadcast({ type: 'tab_updated', tab });
     }
-    startPolling(params.threadId);
     broadcast({ type: 'turn_started', threadId: params.threadId, turnId: params.turn?.id || null });
     return;
   }
@@ -669,15 +538,10 @@ codex.on('notification', (msg) => {
   if (method === 'turn/completed') {
     const tab = tabs.get(params.threadId);
     if (tab) {
-      tab.status = normalizeStatus(params.turn?.status, 'idle');
+      tab.status = normalizeTabStatusFromTurn(params.turn?.status, 'idle');
       tab.updatedAt = nowUnix();
       broadcast({ type: 'tab_updated', tab });
     }
-
-    stopPolling(params.threadId);
-    void syncThreadToClients(params.threadId).catch((error) => {
-      console.log(`[turn-sync] failed for ${params.threadId}: ${error.message}`);
-    });
 
     broadcast({
       type: 'turn_completed',
@@ -736,7 +600,18 @@ codex.on('exit', ({ code, signal }) => {
   }
 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, request) => {
+  const requestUrl = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
+  if (WS_TOKEN && requestUrl.searchParams.get('token') !== WS_TOKEN) {
+    send(ws, {
+      type: 'error',
+      code: 'AUTH_FAILED',
+      message: 'WebSocket 鉴权失败，请检查 token 是否正确。',
+    });
+    ws.close(4401, 'Unauthorized');
+    return;
+  }
+
   ws.activeThreadId = null;
   send(ws, { type: 'state', tabs: tabsList() });
 
@@ -780,7 +655,6 @@ wss.on('connection', (ws) => {
         try {
           await ensureWindowForThread(message.threadId);
           await codex.startTurn(message.threadId, message.text);
-          startPolling(message.threadId);
         } catch (error) {
           if (isThreadNotFoundError(error)) {
             markTabClosed(message.threadId);
@@ -789,11 +663,19 @@ wss.on('connection', (ws) => {
               code: 'THREAD_NOT_FOUND',
               op: 'turn_start',
               threadId: message.threadId,
+              clientMessageId: message.clientMessageId,
               message: '该标签对应的会话在 Codex 中不存在，可能已被删除。请新建标签或关闭此标签后重试。',
             });
             return;
           }
-          throw error;
+          send(ws, {
+            type: 'error',
+            op: 'turn_start',
+            threadId: message.threadId,
+            clientMessageId: message.clientMessageId,
+            message: getErrorMessage(error) || '服务端请求失败',
+          });
+          return;
         }
         return;
       }
@@ -809,8 +691,7 @@ wss.on('connection', (ws) => {
             threadId: message.threadId,
           });
         }
-        const thread = await codex.readThread(message.threadId);
-        send(ws, { type: 'thread_sync', threadId: message.threadId, turns: thread.turns || [] });
+        await syncThreadToClients(ws, message.threadId);
       }
     } catch (error) {
       send(ws, { type: 'error', message: getErrorMessage(error) || '服务端请求失败' });
@@ -878,10 +759,6 @@ async function shutdown(signal) {
 
   shuttingDown = true;
   console.log(`[shutdown] received ${signal}`);
-
-  for (const threadId of activePollers.keys()) {
-    stopPolling(threadId);
-  }
 
   for (const timer of closedTabTimers.values()) {
     clearTimeout(timer);
