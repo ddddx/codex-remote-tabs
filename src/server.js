@@ -1,5 +1,7 @@
 const path = require('node:path');
+const os = require('node:os');
 const http = require('node:http');
+const { URL } = require('node:url');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 
@@ -7,41 +9,219 @@ const { CodexAppServerClient } = require('./codexAppServerClient');
 const { CodexWindowManager } = require('./windowManager');
 
 const PORT = Number.parseInt(process.env.PORT || '8787', 10);
-const app = express();
+const WS_TOKEN = process.env.WS_TOKEN || '';
+const POLL_INTERVAL_MS = parsePositiveInteger(process.env.POLL_INTERVAL_MS) || 3000;
+const MAX_CLIENT_MESSAGE_BYTES = parsePositiveInteger(process.env.MAX_CLIENT_MESSAGE_BYTES) || 65536;
+const MAX_TURN_INPUT_LENGTH = parsePositiveInteger(process.env.MAX_TURN_INPUT_LENGTH) || 20000;
+const MAX_TAB_NAME_LENGTH = parsePositiveInteger(process.env.MAX_TAB_NAME_LENGTH) || 120;
+const CLOSED_TAB_TTL_MS = parsePositiveInteger(process.env.CLOSED_TAB_TTL_MS) || 30000;
+const MAX_CLOSED_TABS = parsePositiveInteger(process.env.MAX_CLOSED_TABS) || 20;
+const BOOTSTRAP_THREAD_LIMIT = parsePositiveInteger(process.env.BOOTSTRAP_THREAD_LIMIT) || 100;
+const THREAD_ID_REGEX = /^[0-9a-f]{8,12}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const app = express();
+app.get('/health', (_req, res) => {
+  res.json({
+    status: shuttingDown ? 'shutting_down' : 'ok',
+    tabs: tabs.size,
+    pollers: activePollers.size,
+    websocketClients: wss.clients.size,
+    uptimeSec: Math.floor(process.uptime()),
+  });
+});
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
 
 const codex = new CodexAppServerClient({
   cwd: process.cwd(),
-  codexHome: process.env.CODEX_HOME || path.join(process.cwd(), '.codex-home'),
+  codexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
 });
 const windows = new CodexWindowManager({});
 
 const tabs = new Map();
+const activePollers = new Map();
+const closedTabTimers = new Map();
+let shuttingDown = false;
+
+server.on('upgrade', (request, socket, head) => {
+  const requestUrl = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
+  if (requestUrl.pathname !== '/ws') {
+    socket.destroy();
+    return;
+  }
+
+  if (WS_TOKEN && requestUrl.searchParams.get('token') !== WS_TOKEN) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
 
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
 }
 
+function parsePositiveInteger(value) {
+  const parsed = Number.parseInt(value || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeStatus(status, fallback = 'idle') {
+  const raw = typeof status === 'object' && status ? status.type : status;
+  return canonicalizeStatus(raw, fallback);
+}
+
+function canonicalizeStatus(value, fallback = 'idle') {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+
+  const compact = trimmed.replace(/[\s_-]/g, '').toLowerCase();
+  if (compact === 'notloaded' || compact === 'unloaded') {
+    return 'idle';
+  }
+  if (compact === 'inprogress') {
+    return 'active';
+  }
+  if (compact === 'systemerror') {
+    return 'systemError';
+  }
+
+  return trimmed;
+}
+
+function isTerminalTurnStatus(status) {
+  return ['completed', 'failed', 'cancelled', 'systemError', 'aborted', 'idle'].includes(status);
+}
+
+function getErrorMessage(error) {
+  if (!error) {
+    return '';
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (typeof error.message === 'string') {
+    return error.message;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return '';
+  }
+}
+
+function isThreadNotFoundError(error) {
+  const message = getErrorMessage(error).toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    (message.includes('thread') && message.includes('not found'))
+    || message.includes('thread_not_found')
+  );
+}
+
+function assertThreadId(threadId) {
+  if (!THREAD_ID_REGEX.test(threadId || '')) {
+    throw new Error('invalid threadId');
+  }
+}
+
 function ensureTab(thread) {
+  assertThreadId(thread.id);
   const existing = tabs.get(thread.id);
+  const detectedWindowPid = windows.getPid(thread.id);
+  const threadWindowPid = Number.parseInt(thread.windowPid, 10);
+  const existingWindowPid = Number.parseInt(existing?.windowPid, 10);
+  const status = normalizeStatus(thread.status, existing?.status || 'idle');
   const tab = {
     threadId: thread.id,
-    name: thread.name || existing?.name || (thread.preview ? thread.preview.substring(0, 20) + (thread.preview.length > 20 ? '...' : '') : 'New Tab'),
-    status: (typeof thread.status === 'object' ? thread.status?.type : thread.status) || existing?.status || 'idle',
+    name: thread.name || existing?.name || makePreviewName(thread.preview),
+    status,
     createdAt: thread.createdAt || existing?.createdAt || nowUnix(),
     updatedAt: thread.updatedAt || existing?.updatedAt || nowUnix(),
-    windowPid: windows.getPid(thread.id),
+    windowPid: detectedWindowPid
+      || (Number.isFinite(existingWindowPid) && existingWindowPid > 0 ? existingWindowPid : null)
+      || (Number.isFinite(threadWindowPid) && threadWindowPid > 0 ? threadWindowPid : null),
   };
+
   tabs.set(thread.id, tab);
+  if (status !== 'closed') {
+    clearClosedTabCleanup(thread.id);
+  }
   return tab;
 }
 
-function removeTab(threadId) {
+function makePreviewName(preview) {
+  if (!preview) {
+    return 'New Tab';
+  }
+  return preview.substring(0, 20) + (preview.length > 20 ? '...' : '');
+}
+
+function clearClosedTabCleanup(threadId) {
+  const timer = closedTabTimers.get(threadId);
+  if (timer) {
+    clearTimeout(timer);
+    closedTabTimers.delete(threadId);
+  }
+}
+
+function scheduleClosedTabCleanup(threadId) {
+  clearClosedTabCleanup(threadId);
+  const timer = setTimeout(() => {
+    removeTab(threadId, { broadcastRemoval: true });
+  }, CLOSED_TAB_TTL_MS);
+  timer.unref?.();
+  closedTabTimers.set(threadId, timer);
+  pruneClosedTabs();
+}
+
+function pruneClosedTabs() {
+  const closedTabs = tabsList().filter((tab) => tab.status === 'closed');
+  if (closedTabs.length <= MAX_CLOSED_TABS) {
+    return;
+  }
+
+  for (const tab of closedTabs.slice(MAX_CLOSED_TABS)) {
+    removeTab(tab.threadId, { broadcastRemoval: true });
+  }
+}
+
+function markTabClosed(threadId) {
+  const tab = tabs.get(threadId);
+  if (!tab) {
+    return;
+  }
+
+  tab.status = 'closed';
+  tab.updatedAt = nowUnix();
+  stopPolling(threadId);
+  scheduleClosedTabCleanup(threadId);
+  broadcast({ type: 'tab_updated', tab });
+}
+
+function removeTab(threadId, options = {}) {
+  const { broadcastRemoval = false } = options;
   tabs.delete(threadId);
+  stopPolling(threadId);
+  clearClosedTabCleanup(threadId);
+  if (broadcastRemoval) {
+    broadcast({ type: 'tab_removed', threadId });
+  }
 }
 
 function tabsList() {
@@ -60,6 +240,298 @@ function broadcast(payload) {
   }
 }
 
+function shouldBroadcastUnread(threadId) {
+  if (!THREAD_ID_REGEX.test(threadId || '')) {
+    return false;
+  }
+
+  for (const client of wss.clients) {
+    if (client.readyState !== client.OPEN) {
+      continue;
+    }
+    if (client.activeThreadId !== threadId) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function broadcastUnreadIfNeeded(threadId) {
+  if (!shouldBroadcastUnread(threadId)) {
+    return;
+  }
+  broadcast({ type: 'unread', threadId });
+}
+
+async function ensureWindowForThread(threadId) {
+  assertThreadId(threadId);
+  const tab = tabs.get(threadId);
+  const pid = windows.getPid(threadId) || tab?.windowPid;
+  let alive = false;
+  if (pid) {
+    try {
+      alive = await windows.isPidAlive(pid);
+    } catch (error) {
+      console.log(`[window] failed checking pid ${pid} for ${threadId}: ${error.message}`);
+      alive = false;
+    }
+  }
+
+  if (alive) {
+    if (tab) {
+      tab.windowPid = pid;
+    }
+    if (tab && tab.status === 'closed') {
+      tab.status = 'idle';
+      tab.updatedAt = nowUnix();
+      clearClosedTabCleanup(threadId);
+      broadcast({ type: 'tab_updated', tab });
+    }
+    return;
+  }
+
+  if (pid) {
+    windows.clearPid(threadId);
+  }
+
+  const newPid = await windows.openWindow(threadId);
+  if (!tab) {
+    return;
+  }
+
+  tab.windowPid = newPid;
+  tab.status = 'idle';
+  tab.updatedAt = nowUnix();
+  clearClosedTabCleanup(threadId);
+  broadcast({ type: 'tab_updated', tab });
+}
+
+async function syncThreadToClients(threadId) {
+  assertThreadId(threadId);
+  const thread = await codex.readThread(threadId);
+  const tab = ensureTab(thread);
+  broadcast({ type: 'tab_updated', tab });
+  broadcast({ type: 'thread_sync', threadId, turns: thread.turns || [] });
+
+  const lastTurn = thread.turns?.[thread.turns.length - 1];
+  if (lastTurn && isTerminalTurnStatus(normalizeStatus(lastTurn.status, 'unknown'))) {
+    stopPolling(threadId);
+  }
+
+  return thread;
+}
+
+async function pollThread(threadId, state) {
+  if (state.inFlight || shuttingDown) {
+    return;
+  }
+
+  state.inFlight = true;
+  try {
+    const thread = await codex.readThread(threadId);
+    const turns = thread.turns || [];
+    const lastTurn = turns[turns.length - 1];
+    const lastTurnStatus = normalizeStatus(lastTurn?.status, 'unknown');
+    const signature = buildThreadSignature(turns);
+
+    if (signature !== state.lastSignature) {
+      state.lastSignature = signature;
+      broadcast({ type: 'thread_sync', threadId, turns });
+    }
+
+    if (lastTurn && isTerminalTurnStatus(lastTurnStatus)) {
+      stopPolling(threadId);
+    }
+  } catch (error) {
+    console.log(`[poll] failed for ${threadId}: ${error.message}`);
+  } finally {
+    state.inFlight = false;
+  }
+}
+
+function startPolling(threadId) {
+  assertThreadId(threadId);
+  if (activePollers.has(threadId)) {
+    return;
+  }
+
+  const state = {
+    inFlight: false,
+    lastSignature: '',
+    timer: null,
+  };
+
+  activePollers.set(threadId, state);
+  state.timer = setInterval(() => {
+    void pollThread(threadId, state);
+  }, POLL_INTERVAL_MS);
+
+  void pollThread(threadId, state);
+  console.log(`[poll] started for ${threadId}`);
+}
+
+function buildThreadSignature(turns) {
+  const parts = [];
+  for (const turn of turns || []) {
+    const status = normalizeStatus(turn?.status, '');
+    const items = turn?.items || [];
+    parts.push(`${turn?.id || ''}:${status}:${items.length}`);
+    for (const item of items) {
+      let payload = '';
+      if (item?.type === 'agentMessage') {
+        payload = item.text || '';
+      } else if (item?.type === 'reasoning') {
+        payload = (item.summary || []).join('|');
+      } else if (item?.type === 'commandExecution') {
+        payload = item.aggregatedOutput || '';
+      }
+      parts.push(`${item?.type || ''}:${item?.id || ''}:${payload.length}`);
+    }
+  }
+  return parts.join('||');
+}
+
+function stopPolling(threadId) {
+  const state = activePollers.get(threadId);
+  if (!state) {
+    return;
+  }
+
+  clearInterval(state.timer);
+  activePollers.delete(threadId);
+  console.log(`[poll] stopped for ${threadId}`);
+}
+
+async function refreshAllTabWindowStatus() {
+  const changedTabs = [];
+  const checks = [];
+
+  for (const tab of tabs.values()) {
+    checks.push((async () => {
+      const currentTab = tabs.get(tab.threadId);
+      if (!currentTab || currentTab.status === 'closed') {
+        return;
+      }
+
+      const pid = windows.getPid(currentTab.threadId) || currentTab.windowPid;
+      if (!pid) {
+        // No window PID known — cannot determine liveness.
+        return;
+      }
+
+      let alive = false;
+      try {
+        alive = await windows.isPidAlive(pid);
+      } catch (error) {
+        console.log(`[bootstrap-window-check] failed checking pid ${pid} for ${currentTab.threadId}: ${error.message}`);
+      }
+
+      if (alive) {
+        currentTab.windowPid = pid;
+        return;
+      }
+
+      windows.clearPid(currentTab.threadId);
+      currentTab.windowPid = null;
+      currentTab.status = 'closed';
+      currentTab.updatedAt = nowUnix();
+      scheduleClosedTabCleanup(currentTab.threadId);
+      changedTabs.push(currentTab);
+    })());
+  }
+
+  await Promise.allSettled(checks);
+
+  for (const tab of changedTabs) {
+    broadcast({ type: 'tab_updated', tab });
+  }
+}
+
+function normalizeClientMessage(raw) {
+  if (Buffer.byteLength(raw) > MAX_CLIENT_MESSAGE_BYTES) {
+    throw new Error('message too large');
+  }
+
+  let message;
+  try {
+    message = JSON.parse(String(raw));
+  } catch {
+    throw new Error('invalid json');
+  }
+
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    throw new Error('invalid message payload');
+  }
+
+  if (typeof message.type !== 'string') {
+    throw new Error('message type required');
+  }
+
+  switch (message.type) {
+    case 'tab_create':
+      return {
+        type: 'tab_create',
+        name: normalizeOptionalString(message.name, MAX_TAB_NAME_LENGTH),
+      };
+    case 'tab_close':
+      return {
+        type: 'tab_close',
+        threadId: normalizeThreadId(message.threadId),
+      };
+    case 'turn_send':
+      return {
+        type: 'turn_send',
+        threadId: normalizeThreadId(message.threadId),
+        text: normalizeRequiredString(message.text, MAX_TURN_INPUT_LENGTH, 'text'),
+      };
+    case 'thread_sync':
+      return {
+        type: 'thread_sync',
+        threadId: normalizeThreadId(message.threadId),
+      };
+    default:
+      throw new Error(`unknown message type: ${message.type}`);
+  }
+}
+
+function normalizeThreadId(value) {
+  if (typeof value !== 'string') {
+    throw new Error('threadId required');
+  }
+  const threadId = value.trim();
+  assertThreadId(threadId);
+  return threadId;
+}
+
+function normalizeOptionalString(value, maxLength) {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error('invalid string field');
+  }
+  const normalized = value.trim();
+  if (normalized.length > maxLength) {
+    throw new Error(`field too long (max ${maxLength})`);
+  }
+  return normalized;
+}
+
+function normalizeRequiredString(value, maxLength, fieldName) {
+  if (typeof value !== 'string') {
+    throw new Error(`${fieldName} required`);
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`${fieldName} required`);
+  }
+  if (normalized.length > maxLength) {
+    throw new Error(`${fieldName} too long (max ${maxLength})`);
+  }
+  return normalized;
+}
+
 codex.on('notification', (msg) => {
   const method = msg.method;
   const params = msg.params || {};
@@ -73,16 +545,47 @@ codex.on('notification', (msg) => {
 
   if (method === 'thread/status/changed') {
     const tab = tabs.get(params.threadId);
+    const status = normalizeStatus(params.status, tab?.status || 'idle');
+
+    if (!tab) {
+      void syncThreadToClients(params.threadId).catch((error) => {
+        console.log(`[status-sync] failed for ${params.threadId}: ${error.message}`);
+      });
+    }
+
     if (tab) {
-      tab.status = (typeof params.status === 'object' ? params.status?.type : params.status) || tab.status;
+      tab.status = status;
       tab.updatedAt = nowUnix();
       broadcast({ type: 'tab_updated', tab });
+    }
+
+    if (status === 'active') {
+      startPolling(params.threadId);
+      return;
+    }
+
+    if (['idle', 'completed', 'failed', 'systemError', 'closed'].includes(status)) {
+      stopPolling(params.threadId);
+      void syncThreadToClients(params.threadId).catch((error) => {
+        console.log(`[final-sync] failed for ${params.threadId}: ${error.message}`);
+      });
+    }
+
+    if (status === 'closed') {
+      markTabClosed(params.threadId);
     }
     return;
   }
 
   if (method === 'thread/name/updated') {
     const tab = tabs.get(params.threadId);
+    if (!tab) {
+      void syncThreadToClients(params.threadId).catch((error) => {
+        console.log(`[name-sync] failed for ${params.threadId}: ${error.message}`);
+      });
+      return;
+    }
+
     if (tab) {
       tab.name = params.threadName || tab.name;
       tab.updatedAt = nowUnix();
@@ -92,23 +595,67 @@ codex.on('notification', (msg) => {
   }
 
   if (method === 'thread/closed') {
-    const tab = tabs.get(params.threadId);
-    if (tab) {
-      tab.status = 'closed';
-      tab.updatedAt = nowUnix();
-      broadcast({ type: 'tab_updated', tab });
-    }
+    markTabClosed(params.threadId);
+    return;
+  }
+
+  if (method === 'thread/tokenUsage/updated') {
+    broadcast({ type: 'token_usage', threadId: params.threadId, turnId: params.turnId, usage: params.tokenUsage });
     return;
   }
 
   if (method === 'turn/started') {
     const tab = tabs.get(params.threadId);
+    if (!tab) {
+      void syncThreadToClients(params.threadId).catch((error) => {
+        console.log(`[turn-start-sync] failed for ${params.threadId}: ${error.message}`);
+      });
+    }
+
     if (tab) {
       tab.status = 'running';
       tab.updatedAt = nowUnix();
       broadcast({ type: 'tab_updated', tab });
     }
+    startPolling(params.threadId);
     broadcast({ type: 'turn_started', threadId: params.threadId, turnId: params.turn?.id || null });
+    return;
+  }
+
+  if (method === 'turn/completed') {
+    const tab = tabs.get(params.threadId);
+    if (tab) {
+      tab.status = normalizeStatus(params.turn?.status, 'idle');
+      tab.updatedAt = nowUnix();
+      broadcast({ type: 'tab_updated', tab });
+    }
+
+    stopPolling(params.threadId);
+    void syncThreadToClients(params.threadId).catch((error) => {
+      console.log(`[turn-sync] failed for ${params.threadId}: ${error.message}`);
+    });
+
+    broadcast({
+      type: 'turn_completed',
+      threadId: params.threadId,
+      turnId: params.turn?.id || null,
+      status: params.turn?.status || 'unknown',
+      error: params.turn?.error || null,
+    });
+    broadcastUnreadIfNeeded(params.threadId);
+    return;
+  }
+
+  if (method === 'item/started') {
+    broadcast({ type: 'item_started', threadId: params.threadId, turnId: params.turnId, item: params.item });
+    return;
+  }
+
+  if (method === 'item/completed') {
+    broadcast({ type: 'item_completed', threadId: params.threadId, turnId: params.turnId, item: params.item });
+    if (params.item?.type === 'agentMessage') {
+      broadcastUnreadIfNeeded(params.threadId);
+    }
     return;
   }
 
@@ -120,37 +667,16 @@ codex.on('notification', (msg) => {
       itemId: params.itemId,
       delta: params.delta,
     });
+    broadcastUnreadIfNeeded(params.threadId);
     return;
   }
 
-  if (method === 'item/completed' && params.item?.type === 'agentMessage') {
-    broadcast({
-      type: 'agent_message',
-      threadId: params.threadId,
-      turnId: params.turnId,
-      itemId: params.item.id,
-      text: params.item.text,
-      phase: params.item.phase,
-    });
+  if (method === 'error') {
+    broadcast({ type: 'codex_error', threadId: params.threadId, error: params.error });
     return;
   }
 
-  if (method === 'turn/completed') {
-    const tab = tabs.get(params.threadId);
-    if (tab) {
-      tab.status = (typeof params.turn?.status === 'object' ? params.turn?.status?.type : params.turn?.status) || 'idle';
-      tab.updatedAt = nowUnix();
-      broadcast({ type: 'tab_updated', tab });
-    }
-
-    broadcast({
-      type: 'turn_completed',
-      threadId: params.threadId,
-      turnId: params.turn?.id || null,
-      status: params.turn?.status || 'unknown',
-      error: params.turn?.error || null,
-    });
-  }
+  broadcast({ type: 'notification', method, params });
 });
 
 codex.on('log', (line) => {
@@ -161,24 +687,27 @@ codex.on('log', (line) => {
 });
 
 codex.on('exit', ({ code, signal }) => {
-  broadcast({ type: 'backend_error', message: `codex app-server exited (code=${code}, signal=${signal})` });
+  if (!shuttingDown) {
+    broadcast({ type: 'backend_error', message: `codex app-server exited (code=${code}, signal=${signal})` });
+  }
 });
 
 wss.on('connection', (ws) => {
+  ws.activeThreadId = null;
   send(ws, { type: 'state', tabs: tabsList() });
 
   ws.on('message', async (raw) => {
-    let msg;
+    let message;
     try {
-      msg = JSON.parse(String(raw));
-    } catch {
-      send(ws, { type: 'error', message: 'invalid json' });
+      message = normalizeClientMessage(raw);
+    } catch (error) {
+      send(ws, { type: 'error', message: error.message });
       return;
     }
 
     try {
-      if (msg.type === 'tab_create') {
-        const thread = await codex.startThread({ name: msg.name || null });
+      if (message.type === 'tab_create') {
+        const thread = await codex.startThread({ name: message.name || null });
         const tab = ensureTab(thread);
 
         try {
@@ -193,68 +722,175 @@ wss.on('connection', (ws) => {
         }
 
         broadcast({ type: 'tab_updated', tab });
+        send(ws, { type: 'tab_created', threadId: thread.id, tab });
         return;
       }
 
-      if (msg.type === 'tab_close') {
-        if (!msg.threadId) {
-          throw new Error('threadId required');
-        }
-
-        await windows.closeWindow(msg.threadId);
-        await codex.archiveThread(msg.threadId);
-        removeTab(msg.threadId);
-        broadcast({ type: 'tab_removed', threadId: msg.threadId });
+      if (message.type === 'tab_close') {
+        await windows.closeWindow(message.threadId);
+        markTabClosed(message.threadId);
         return;
       }
 
-      if (msg.type === 'turn_send') {
-        if (!msg.threadId || !msg.text) {
-          throw new Error('threadId and text required');
-        }
-
+      if (message.type === 'turn_send') {
         try {
-          await codex.startTurn(msg.threadId, msg.text);
-        } catch (err) {
-          send(ws, { type: 'error', message: `发送失败: ${err.message}` });
+          await ensureWindowForThread(message.threadId);
+          await codex.startTurn(message.threadId, message.text);
+          startPolling(message.threadId);
+        } catch (error) {
+          if (isThreadNotFoundError(error)) {
+            markTabClosed(message.threadId);
+            send(ws, {
+              type: 'error',
+              code: 'THREAD_NOT_FOUND',
+              op: 'turn_start',
+              threadId: message.threadId,
+              message: '该标签对应的会话在 Codex 中不存在，可能已被删除。请新建标签或关闭此标签后重试。',
+            });
+            return;
+          }
+          throw error;
         }
         return;
       }
 
-      if (msg.type === 'thread_sync') {
-        const thread = await codex.readThread(msg.threadId);
-        send(ws, { type: 'thread_sync', threadId: msg.threadId, turns: thread.turns || [] });
-        return;
+      if (message.type === 'thread_sync') {
+        ws.activeThreadId = message.threadId;
+        try {
+          await ensureWindowForThread(message.threadId);
+        } catch (error) {
+          send(ws, {
+            type: 'warning',
+            message: `local codex window restore failed: ${error.message}`,
+            threadId: message.threadId,
+          });
+        }
+        const thread = await codex.readThread(message.threadId);
+        send(ws, { type: 'thread_sync', threadId: message.threadId, turns: thread.turns || [] });
       }
-
-      send(ws, { type: 'error', message: `unknown message type: ${msg.type}` });
     } catch (error) {
-      send(ws, { type: 'error', message: error.message });
+      send(ws, { type: 'error', message: getErrorMessage(error) || '服务端请求失败' });
     }
   });
 });
 
 async function bootstrap() {
   await codex.start();
-  const threadList = await codex.listThreads(10);
+  windows.load();
+  const threadList = await codex.listThreads(BOOTSTRAP_THREAD_LIMIT);
+
   for (const thread of threadList) {
-    // Skip closed/archived threads
-    const st = typeof thread.status === 'object' ? thread.status?.type : thread.status;
-    if (st === 'closed' || st === 'archived' || st === 'failed') continue;
-    // Validate thread exists by trying to read it
+    let verifiedThread = thread;
     try {
-      await codex.readThread(thread.id);
-      ensureTab(thread);
-    } catch (err) {
-      // Thread not accessible, skip it
-      console.log(`Skipping inaccessible thread: ${thread.id}`);
+      verifiedThread = await codex.readThread(thread.id);
+    } catch (error) {
+      if (isThreadNotFoundError(error)) {
+        console.log(`[bootstrap] skip missing thread ${thread.id}`);
+        continue;
+      }
+      throw error;
     }
+
+    const status = normalizeStatus(verifiedThread.status, 'idle');
+    if (['closed', 'archived'].includes(status)) {
+      continue;
+    }
+
+    const windowPid = windows.getPid(verifiedThread.id);
+    if (!windowPid) {
+      continue;
+    }
+
+    let windowAlive = false;
+    try {
+      windowAlive = await windows.isPidAlive(windowPid);
+    } catch (error) {
+      console.log(`[bootstrap] failed checking pid ${windowPid} for ${verifiedThread.id}: ${error.message}`);
+      windowAlive = false;
+    }
+
+    if (!windowAlive) {
+      continue;
+    }
+
+    // Lazy: only register tab metadata, load full data on click
+    const tab = ensureTab(verifiedThread);
+    tab.status = 'idle';
+    tab.updatedAt = nowUnix();
   }
 
   server.listen(PORT, () => {
     console.log(`Web control ready: http://localhost:${PORT}`);
+    void refreshAllTabWindowStatus().catch((error) => {
+      console.log(`[bootstrap-window-check] failed: ${error.message}`);
+    });
   });
 }
+
+async function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+  console.log(`[shutdown] received ${signal}`);
+
+  for (const threadId of activePollers.keys()) {
+    stopPolling(threadId);
+  }
+
+  for (const timer of closedTabTimers.values()) {
+    clearTimeout(timer);
+  }
+  closedTabTimers.clear();
+
+  for (const client of wss.clients) {
+    try {
+      client.close(1001, 'server shutdown');
+    } catch (_error) {
+      // Ignore close failures during shutdown.
+    }
+  }
+
+  await Promise.allSettled([
+    closeWithTimeout(server, 'http server'),
+    closeWithTimeout(wss, 'websocket server'),
+    codex.stop(),
+  ]);
+
+  process.exit(0);
+}
+
+function closeWithTimeout(target, label) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        console.error(`[shutdown] timeout while closing ${label}`);
+        settled = true;
+        resolve();
+      }
+    }, 5000);
+    timer.unref?.();
+
+    target.close(() => {
+      if (settled) {
+        return;
+      }
+      clearTimeout(timer);
+      settled = true;
+      resolve();
+    });
+  });
+}
+
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
+});
+
+process.on('SIGTERM', () => {
+  void shutdown('SIGTERM');
+});
 
 bootstrap().catch((error) => {
   console.error(error);

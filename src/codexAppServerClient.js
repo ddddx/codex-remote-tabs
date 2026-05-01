@@ -10,6 +10,12 @@ class CodexAppServerClient extends EventEmitter {
     this.codexHome = options.codexHome || process.env.CODEX_HOME || null;
     this.defaultCwd = options.cwd || process.cwd();
     this.wsUrl = options.wsUrl || process.env.CODEX_APP_SERVER_WS || null;
+    this.requestTimeoutMs = parsePositiveInteger(options.requestTimeoutMs)
+      || parsePositiveInteger(process.env.CODEX_REQUEST_TIMEOUT)
+      || 120000;
+    this.connectTimeoutMs = parsePositiveInteger(options.connectTimeoutMs)
+      || parsePositiveInteger(process.env.CODEX_CONNECT_TIMEOUT)
+      || 10000;
 
     this.proc = null;
     this.ws = null;
@@ -64,7 +70,7 @@ class CodexAppServerClient extends EventEmitter {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`request timeout for ${method}`));
-      }, 120000);
+      }, this.requestTimeoutMs);
 
       this.pending.set(id, { resolve, reject, timeout, method });
     });
@@ -167,7 +173,7 @@ class CodexAppServerClient extends EventEmitter {
       const timer = setTimeout(() => {
         ws.terminate();
         reject(new Error(`connect timeout: ${this.wsUrl}`));
-      }, 10000);
+      }, this.connectTimeoutMs);
 
       ws.on('open', () => {
         clearTimeout(timer);
@@ -291,6 +297,11 @@ class CodexAppServerClient extends EventEmitter {
       }
     }
   }
+}
+
+function parsePositiveInteger(value) {
+  const parsed = Number.parseInt(value || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 module.exports = { CodexAppServerClient };

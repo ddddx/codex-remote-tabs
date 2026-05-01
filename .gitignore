@@ -7,3 +7,6 @@ tmp-bindings/
 *.sqlite-shm
 *.sqlite-wal
 .env
+.window-map.json
+.closed-tabs.json
+run-review.ps1
