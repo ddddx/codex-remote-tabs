@@ -105,10 +105,12 @@ class CodexAppServerClient extends EventEmitter {
     return result.data || [];
   }
 
-  async startThread({ name, cwd, model } = {}) {
+  async startThread({ name, cwd, model, approvalPolicy, sandbox } = {}) {
     const workingCwd = cwd || this.defaultCwd;
     const result = await this.request('thread/start', {
       model: model || null,
+      approvalPolicy: approvalPolicy || null,
+      sandbox: sandbox || null,
       cwd: workingCwd,
       experimentalRawEvents: false,
       persistExtendedHistory: true,
@@ -145,6 +147,8 @@ class CodexAppServerClient extends EventEmitter {
       threadId,
       model: options.model || null,
       effort: options.effort || null,
+      approvalPolicy: options.approvalPolicy || null,
+      sandboxPolicy: options.sandboxPolicy || null,
       input: [
         {
           type: 'text',

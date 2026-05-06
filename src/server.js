@@ -22,6 +22,8 @@ const BOOTSTRAP_THREAD_LIMIT = parsePositiveInteger(process.env.BOOTSTRAP_THREAD
 const WINDOW_STATUS_REFRESH_MS = parsePositiveInteger(process.env.WINDOW_STATUS_REFRESH_MS) || 5000;
 const THREAD_ID_REGEX = /^[0-9a-f]{8,12}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const APPROVAL_POLICIES = new Set(['untrusted', 'on-failure', 'on-request', 'never']);
+const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 const STREAM_ITEM_DELTA_METHODS = new Set([
   'item/commandExecution/outputDelta',
   'item/fileChange/outputDelta',
@@ -119,6 +121,8 @@ app.get('/api/codex/options', async (req, res) => {
     const defaultReasoningEffort = typeof config.model_reasoning_effort === 'string'
       ? config.model_reasoning_effort
       : '';
+    const defaultApprovalPolicy = normalizeOptionalApprovalPolicy(config.approval_policy);
+    const defaultSandboxMode = normalizeOptionalSandboxMode(config.sandbox_mode);
 
     res.json({
       models: models.map((model) => ({
@@ -137,6 +141,8 @@ app.get('/api/codex/options', async (req, res) => {
       defaults: {
         model: defaultModel,
         reasoningEffort: defaultReasoningEffort,
+        approvalPolicy: defaultApprovalPolicy,
+        sandboxMode: defaultSandboxMode,
       },
     });
   } catch (error) {
@@ -268,6 +274,8 @@ function ensureTab(thread) {
     name: thread.name || existing?.name || makePreviewName(thread.preview),
     cwd: thread.cwd || existing?.cwd || process.cwd(),
     status,
+    approvalPolicy: extractThreadApprovalPolicy(thread, existing?.approvalPolicy || ''),
+    sandboxMode: extractThreadSandboxMode(thread, existing?.sandboxMode || ''),
     createdAt: thread.createdAt || existing?.createdAt || nowUnix(),
     updatedAt: thread.updatedAt || existing?.updatedAt || nowUnix(),
     windowPid: detectedWindowPid
@@ -550,6 +558,8 @@ function normalizeClientMessage(raw) {
         name: normalizeOptionalString(message.name, MAX_TAB_NAME_LENGTH),
         cwd: normalizeWorkspaceInput(message.cwd),
         model: normalizeOptionalModel(message.model),
+        approvalPolicy: normalizeOptionalApprovalPolicy(message.approvalPolicy),
+        sandboxMode: normalizeOptionalSandboxMode(message.sandboxMode),
       };
     case 'tab_close':
       return {
@@ -564,6 +574,8 @@ function normalizeClientMessage(raw) {
         clientMessageId: normalizeOptionalClientMessageId(message.clientMessageId),
         model: normalizeOptionalModel(message.model),
         effort: normalizeOptionalReasoningEffort(message.effort),
+        approvalPolicy: normalizeOptionalApprovalPolicy(message.approvalPolicy),
+        sandboxMode: normalizeOptionalSandboxMode(message.sandboxMode),
       };
     case 'thread_sync':
       return {
@@ -636,6 +648,64 @@ function normalizeOptionalReasoningEffort(value) {
     throw new Error('invalid reasoning effort');
   }
   return normalized;
+}
+
+function normalizeOptionalApprovalPolicy(value) {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error('invalid approval policy');
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!APPROVAL_POLICIES.has(normalized)) {
+    throw new Error('invalid approval policy');
+  }
+  return normalized;
+}
+
+function normalizeOptionalSandboxMode(value) {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error('invalid sandbox mode');
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!SANDBOX_MODES.has(normalized)) {
+    throw new Error('invalid sandbox mode');
+  }
+  return normalized;
+}
+
+function toTurnSandboxPolicy(sandboxMode) {
+  if (!sandboxMode) {
+    return null;
+  }
+  if (sandboxMode === 'read-only') {
+    return { type: 'readOnly' };
+  }
+  if (sandboxMode === 'workspace-write') {
+    return { type: 'workspaceWrite' };
+  }
+  if (sandboxMode === 'danger-full-access') {
+    return { type: 'dangerFullAccess' };
+  }
+  return null;
+}
+
+function extractThreadApprovalPolicy(thread, fallback = '') {
+  const raw = typeof thread?.approvalPolicy === 'string'
+    ? thread.approvalPolicy
+    : (typeof thread?.approval_policy === 'string' ? thread.approval_policy : '');
+  return normalizeOptionalApprovalPolicy(raw) || fallback;
+}
+
+function extractThreadSandboxMode(thread, fallback = '') {
+  const raw = typeof thread?.sandbox === 'string'
+    ? thread.sandbox
+    : (typeof thread?.sandboxMode === 'string' ? thread.sandboxMode : '');
+  return normalizeOptionalSandboxMode(raw) || fallback;
 }
 
 function normalizeWorkspaceInput(value) {
@@ -1015,6 +1085,8 @@ wss.on('connection', (ws, request) => {
           name: message.name || null,
           cwd: workspacePath,
           model: message.model || null,
+          approvalPolicy: message.approvalPolicy || null,
+          sandbox: message.sandboxMode || null,
         });
         workspaces.rememberPath(workspacePath);
         const tab = ensureTab(thread);
@@ -1046,7 +1118,16 @@ wss.on('connection', (ws, request) => {
           await codex.startTurn(message.threadId, message.text, {
             model: message.model || null,
             effort: message.effort || null,
+            approvalPolicy: message.approvalPolicy || null,
+            sandboxPolicy: toTurnSandboxPolicy(message.sandboxMode),
           });
+          const tab = tabs.get(message.threadId);
+          if (tab) {
+            tab.approvalPolicy = message.approvalPolicy || '';
+            tab.sandboxMode = message.sandboxMode || '';
+            tab.updatedAt = nowUnix();
+            broadcast({ type: 'tab_updated', tab });
+          }
         } catch (error) {
           if (isThreadNotFoundError(error)) {
             markTabClosed(message.threadId);

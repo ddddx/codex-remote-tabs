@@ -10,6 +10,8 @@ const DEFAULT_PROMPT_PLACEHOLDER = '给当前会话发送指令...';
 const COMPOSER_PREFS_STORAGE_KEY = 'codex-remote-composer-prefs';
 const THEME_STORAGE_KEY = 'codex-remote-theme';
 const REASONING_EFFORT_OPTIONS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const APPROVAL_POLICY_OPTIONS = ['untrusted', 'on-request', 'never', 'on-failure'];
+const SANDBOX_MODE_OPTIONS = ['read-only', 'workspace-write', 'danger-full-access'];
 const THEME_OPTIONS = [
   { value: 'paper', label: '纸墨' },
   { value: 'bay', label: '海湾' },
@@ -224,6 +226,8 @@ const sessionCreatingOverlay = document.getElementById('sessionCreatingOverlay')
 const composer = document.getElementById('composer');
 const modelSelect = document.getElementById('modelSelect');
 const reasoningEffortSelect = document.getElementById('reasoningEffortSelect');
+const approvalPolicySelect = document.getElementById('approvalPolicySelect');
+const sandboxModeSelect = document.getElementById('sandboxModeSelect');
 const promptInput = document.getElementById('promptInput');
 const slashMenu = document.getElementById('slashMenu');
 const composerSubmitBtn = composer.querySelector('button[type="submit"]');
@@ -264,7 +268,8 @@ const SLASH_COMMANDS = [
   { name: '/close', aliases: ['/close-session'], title: '关闭会话', description: '关闭当前会话', action: 'close_session' },
   { name: '/refresh', aliases: ['/sync'], title: '刷新会话', description: '重新同步当前会话消息', action: 'refresh_session' },
   { name: '/reconnect', aliases: ['/retry-connection'], title: '重新连接', description: '重连 WebSocket 并刷新会话状态', action: 'reconnect_socket' },
-  { name: '/permissions', aliases: ['/approvals', '/approval', '/mode'], title: '权限模式', description: '查看或切换批准策略（当前网页端暂未实现）', action: 'show_permission_settings' },
+  { name: '/permissions', aliases: ['/approvals', '/approval', '/mode'], title: '批准策略', description: '打开批准策略选择', action: 'show_permission_settings' },
+  { name: '/sandbox', aliases: ['/isolation'], title: '沙箱模式', description: '打开沙箱模式选择', action: 'open_sandbox' },
   { name: '/pending', aliases: ['/requests'], title: '待处理请求', description: '定位当前会话的待批准请求', action: 'show_approvals' },
   { name: '/approve', aliases: ['/allow'], title: '批准', description: '批准当前会话最新待处理请求', action: 'approve_latest' },
   { name: '/approve-session', aliases: ['/allow-session'], title: '本会话允许', description: '本会话内持续允许当前待处理请求', action: 'approve_latest_for_session' },
@@ -288,6 +293,8 @@ let slashFocusTimer = null;
 ensureCustomSelect(themeSelect);
 ensureCustomSelect(modelSelect);
 ensureCustomSelect(reasoningEffortSelect);
+ensureCustomSelect(approvalPolicySelect);
+ensureCustomSelect(sandboxModeSelect);
 
 document.addEventListener('click', (event) => {
   const target = event.target;
@@ -332,8 +339,10 @@ const state = {
   composerOptionsLoaded: false,
   composerModelDefault: '',
   composerEffortDefault: '',
+  composerApprovalPolicyDefault: '',
+  composerSandboxModeDefault: '',
   composerPrefsByThread: new Map(),
-  composerGlobalPrefs: { model: '', effort: '' },
+  composerGlobalPrefs: { model: '', effort: '', approvalPolicy: '', sandboxMode: '' },
   currentTheme: 'paper',
   creatingTab: false,
   authFailed: false,
@@ -434,6 +443,16 @@ function normalizeComposerEffort(value) {
   return REASONING_EFFORT_OPTIONS.includes(normalized) ? normalized : '';
 }
 
+function normalizeComposerApprovalPolicy(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return APPROVAL_POLICY_OPTIONS.includes(normalized) ? normalized : '';
+}
+
+function normalizeComposerSandboxMode(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return SANDBOX_MODE_OPTIONS.includes(normalized) ? normalized : '';
+}
+
 function normalizeTheme(value) {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return THEME_OPTIONS.some((theme) => theme.value === normalized) ? normalized : 'paper';
@@ -483,9 +502,11 @@ function loadComposerGlobalPrefs() {
     state.composerGlobalPrefs = {
       model: normalizeComposerModel(parsed?.model),
       effort: normalizeComposerEffort(parsed?.effort),
+      approvalPolicy: normalizeComposerApprovalPolicy(parsed?.approvalPolicy),
+      sandboxMode: normalizeComposerSandboxMode(parsed?.sandboxMode),
     };
   } catch (_error) {
-    state.composerGlobalPrefs = { model: '', effort: '' };
+    state.composerGlobalPrefs = { model: '', effort: '', approvalPolicy: '', sandboxMode: '' };
   }
 }
 
@@ -512,6 +533,8 @@ function setComposerPrefsForThread(threadId, prefs) {
   const normalized = {
     model: normalizeComposerModel(prefs?.model),
     effort: normalizeComposerEffort(prefs?.effort),
+    approvalPolicy: normalizeComposerApprovalPolicy(prefs?.approvalPolicy),
+    sandboxMode: normalizeComposerSandboxMode(prefs?.sandboxMode),
   };
 
   if (threadId) {
@@ -565,6 +588,67 @@ function buildEffortSelectOptions() {
   }].concat(finalEfforts.map((effort) => ({
     value: effort,
     label: formatReasoningEffortLabel(effort),
+  })));
+}
+
+function formatApprovalPolicyLabel(value) {
+  if (!value) {
+    return '跟随当前配置';
+  }
+  if (value === 'untrusted') {
+    return '仅不受信命令需批准';
+  }
+  if (value === 'on-request') {
+    return '按需批准';
+  }
+  if (value === 'never') {
+    return '从不询问';
+  }
+  if (value === 'on-failure') {
+    return '失败后询问';
+  }
+  return value;
+}
+
+function buildApprovalPolicySelectOptions() {
+  const defaultLabel = state.composerApprovalPolicyDefault
+    ? `跟随当前配置（${formatApprovalPolicyLabel(state.composerApprovalPolicyDefault)}）`
+    : '跟随当前配置';
+  return [{
+    value: '',
+    label: defaultLabel,
+  }].concat(APPROVAL_POLICY_OPTIONS.map((value) => ({
+    value,
+    label: formatApprovalPolicyLabel(value),
+  })));
+}
+
+function formatSandboxModeLabel(value) {
+  if (!value) {
+    return '跟随当前配置';
+  }
+  if (value === 'read-only') {
+    return '只读';
+  }
+  if (value === 'workspace-write') {
+    return '工作区可写';
+  }
+  if (value === 'danger-full-access') {
+    return '完全访问';
+  }
+  return value;
+}
+
+function buildSandboxModeSelectOptions() {
+  const defaultLabel = state.composerSandboxModeDefault
+    ? `跟随当前配置（${formatSandboxModeLabel(state.composerSandboxModeDefault)}）`
+    : '跟随当前配置';
+  return [{
+    value: '',
+    label: defaultLabel,
+  }].concat(SANDBOX_MODE_OPTIONS.map((value) => ({
+    value,
+    label: formatSandboxModeLabel(value),
   })));
 }
 
@@ -1076,14 +1160,12 @@ function executeSlashCommand(command) {
   }
   if (command.action === 'show_permission_settings') {
     closeSlashMenu();
-    if (!state.activeThreadId) {
-      return false;
-    }
-    addThreadNotice(
-      state.activeThreadId,
-      '当前网页端还没接入批准策略/沙箱模式切换；现在只支持处理单条批准请求。可用 /pending 定位待处理请求。',
-    );
-    render();
+    openCustomSelectFor(approvalPolicySelect);
+    return true;
+  }
+  if (command.action === 'open_sandbox') {
+    closeSlashMenu();
+    openCustomSelectFor(sandboxModeSelect);
     return true;
   }
   if (command.action === 'show_approvals') {
@@ -1103,6 +1185,8 @@ function executeSlashCommand(command) {
       `工作区: ${getWorkspacePath(tab) || '未提供'}`,
       `模型: ${composerSelection.model || '默认'}`,
       `思考等级: ${formatReasoningEffortLabel(composerSelection.effort || '')}`,
+      `批准策略: ${formatApprovalPolicyLabel(composerSelection.approvalPolicy || '')}`,
+      `沙箱: ${formatSandboxModeLabel(composerSelection.sandboxMode || '')}`,
     ].join(' · ');
     addThreadNotice(state.activeThreadId, status);
     render();
@@ -1201,7 +1285,9 @@ function getEffectiveComposerSelection(threadId = state.activeThreadId) {
   const prefs = threadId ? (state.composerPrefsByThread.get(threadId) || state.composerGlobalPrefs) : state.composerGlobalPrefs;
   const model = normalizeComposerModel(prefs?.model) || state.composerModelDefault || '';
   const effort = normalizeComposerEffort(prefs?.effort) || state.composerEffortDefault || '';
-  return { model, effort };
+  const approvalPolicy = normalizeComposerApprovalPolicy(prefs?.approvalPolicy);
+  const sandboxMode = normalizeComposerSandboxMode(prefs?.sandboxMode);
+  return { model, effort, approvalPolicy, sandboxMode };
 }
 
 async function loadComposerOptions(options = {}) {
@@ -1228,6 +1314,8 @@ async function loadComposerOptions(options = {}) {
       || normalizeComposerEffort(
         state.availableModels.find((model) => normalizeComposerModel(model.model) === state.composerModelDefault)?.defaultReasoningEffort
       );
+    state.composerApprovalPolicyDefault = normalizeComposerApprovalPolicy(result.defaults?.approvalPolicy);
+    state.composerSandboxModeDefault = normalizeComposerSandboxMode(result.defaults?.sandboxMode);
     state.composerOptionsLoaded = true;
   } catch (error) {
     console.error('failed loading codex options', error);
@@ -1812,7 +1900,27 @@ function findPendingRequestForItem(threadId, itemId) {
   return state.serverRequests.find((entry) => entry.threadId === threadId && entry.itemId === itemId) || null;
 }
 
+function syncComposerPrefsFromTab(tab) {
+  if (!tab?.threadId) {
+    return;
+  }
+  const current = state.composerPrefsByThread.get(tab.threadId) || state.composerGlobalPrefs;
+  const hasApprovalPolicy = Object.prototype.hasOwnProperty.call(tab, 'approvalPolicy');
+  const hasSandboxMode = Object.prototype.hasOwnProperty.call(tab, 'sandboxMode');
+  state.composerPrefsByThread.set(tab.threadId, {
+    model: normalizeComposerModel(current?.model),
+    effort: normalizeComposerEffort(current?.effort),
+    approvalPolicy: hasApprovalPolicy
+      ? normalizeComposerApprovalPolicy(tab.approvalPolicy)
+      : normalizeComposerApprovalPolicy(current?.approvalPolicy),
+    sandboxMode: hasSandboxMode
+      ? normalizeComposerSandboxMode(tab.sandboxMode)
+      : normalizeComposerSandboxMode(current?.sandboxMode),
+  });
+}
+
 function upsertTab(tab) {
+  syncComposerPrefsFromTab(tab);
   const index = state.tabs.findIndex((entry) => entry.threadId === tab.threadId);
   if (index >= 0) {
     state.tabs[index] = tab;
@@ -2205,12 +2313,20 @@ function renderComposer() {
 
   fillSelectOptions(modelSelect, buildModelSelectOptions(), normalizeComposerModel(prefs?.model));
   fillSelectOptions(reasoningEffortSelect, buildEffortSelectOptions(), normalizeComposerEffort(prefs?.effort));
+  fillSelectOptions(approvalPolicySelect, buildApprovalPolicySelectOptions(), normalizeComposerApprovalPolicy(prefs?.approvalPolicy));
+  fillSelectOptions(sandboxModeSelect, buildSandboxModeSelectOptions(), normalizeComposerSandboxMode(prefs?.sandboxMode));
   modelSelect.disabled = state.authFailed || state.composerOptionsLoading;
   reasoningEffortSelect.disabled = state.authFailed;
+  approvalPolicySelect.disabled = state.authFailed;
+  sandboxModeSelect.disabled = state.authFailed;
   modelSelect.title = state.composerOptionsLoading ? '正在加载模型列表...' : '';
   reasoningEffortSelect.title = '思考等级会应用到当前及后续轮次';
+  approvalPolicySelect.title = '批准策略会应用到当前及后续轮次';
+  sandboxModeSelect.title = '沙箱模式会应用到当前及后续轮次';
   syncCustomSelect(modelSelect);
   syncCustomSelect(reasoningEffortSelect);
+  syncCustomSelect(approvalPolicySelect);
+  syncCustomSelect(sandboxModeSelect);
 }
 
 function renderCreatingOverlay() {
@@ -2393,6 +2509,8 @@ async function startNewSessionFlow(options = {}) {
     name: draft.name,
     cwd: draft.cwd,
     model: normalizeComposerModel(createPrefs?.model) || state.composerModelDefault || '',
+    approvalPolicy: normalizeComposerApprovalPolicy(createPrefs?.approvalPolicy),
+    sandboxMode: normalizeComposerSandboxMode(createPrefs?.sandboxMode),
   })) {
     state.creatingTab = false;
     render();
@@ -3865,6 +3983,8 @@ modelSelect.addEventListener('change', () => {
   setComposerPrefsForThread(state.activeThreadId, {
     model: modelSelect.value,
     effort: reasoningEffortSelect.value,
+    approvalPolicy: approvalPolicySelect.value,
+    sandboxMode: sandboxModeSelect.value,
   });
   renderComposer();
 });
@@ -3873,6 +3993,28 @@ reasoningEffortSelect.addEventListener('change', () => {
   setComposerPrefsForThread(state.activeThreadId, {
     model: modelSelect.value,
     effort: reasoningEffortSelect.value,
+    approvalPolicy: approvalPolicySelect.value,
+    sandboxMode: sandboxModeSelect.value,
+  });
+  renderComposer();
+});
+
+approvalPolicySelect.addEventListener('change', () => {
+  setComposerPrefsForThread(state.activeThreadId, {
+    model: modelSelect.value,
+    effort: reasoningEffortSelect.value,
+    approvalPolicy: approvalPolicySelect.value,
+    sandboxMode: sandboxModeSelect.value,
+  });
+  renderComposer();
+});
+
+sandboxModeSelect.addEventListener('change', () => {
+  setComposerPrefsForThread(state.activeThreadId, {
+    model: modelSelect.value,
+    effort: reasoningEffortSelect.value,
+    approvalPolicy: approvalPolicySelect.value,
+    sandboxMode: sandboxModeSelect.value,
   });
   renderComposer();
 });
@@ -3919,6 +4061,8 @@ composer.addEventListener('submit', (event) => {
     clientMessageId,
     model: composerSelection.model || '',
     effort: composerSelection.effort || '',
+    approvalPolicy: composerSelection.approvalPolicy || '',
+    sandboxMode: composerSelection.sandboxMode || '',
   })) {
     rollbackPendingUserMessage(clientMessageId);
     state.turnActiveByThread.set(threadId, false);
