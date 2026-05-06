@@ -289,6 +289,9 @@ const slashMenuState = {
   activeIndex: 0,
 };
 let slashFocusTimer = null;
+let scheduledRenderFrame = 0;
+let scheduledRenderHeader = false;
+let scheduledRenderMessages = false;
 
 ensureCustomSelect(themeSelect);
 ensureCustomSelect(modelSelect);
@@ -1544,6 +1547,49 @@ function getTurnWorkingLabel(threadId) {
   return `Working ${formatShortElapsed(Date.now() - startedAt)}`;
 }
 
+function ensureItemRenderVersion(item) {
+  if (!item || typeof item !== 'object') {
+    return 0;
+  }
+  if (!Number.isFinite(item._renderVersion) || item._renderVersion <= 0) {
+    item._renderVersion = 1;
+  }
+  return item._renderVersion;
+}
+
+function bumpItemRenderVersion(item) {
+  if (!item || typeof item !== 'object') {
+    return 0;
+  }
+  item._renderVersion = ensureItemRenderVersion(item) + 1;
+  return item._renderVersion;
+}
+
+function scheduleRender(options = {}) {
+  if (options.header) {
+    scheduledRenderHeader = true;
+  }
+  if (options.messages) {
+    scheduledRenderMessages = true;
+  }
+  if (scheduledRenderFrame) {
+    return;
+  }
+  scheduledRenderFrame = window.requestAnimationFrame(() => {
+    scheduledRenderFrame = 0;
+    const shouldRenderHeader = scheduledRenderHeader;
+    const shouldRenderMessages = scheduledRenderMessages;
+    scheduledRenderHeader = false;
+    scheduledRenderMessages = false;
+    if (shouldRenderHeader) {
+      renderHeader();
+    }
+    if (shouldRenderMessages) {
+      renderMessages();
+    }
+  });
+}
+
 function findItemIndexById(threadId, itemId) {
   if (!itemId) {
     return -1;
@@ -1565,6 +1611,7 @@ function upsertLiveItem(threadId, turnId, itemId, type, mutate) {
       status: 'running',
       _turnId: turnId || state.currentTurnIdByThread.get(threadId) || null,
       _partial: true,
+      _renderVersion: 1,
     });
     index = items.length - 1;
   }
@@ -1579,6 +1626,7 @@ function upsertLiveItem(threadId, turnId, itemId, type, mutate) {
   }
   item._partial = true;
   mutate(item);
+  bumpItemRenderVersion(item);
   return item;
 }
 
@@ -2160,6 +2208,7 @@ function upsertStreamingItem(threadId, turnId, itemId, delta) {
     if (turnId) {
       existing._turnId = turnId;
     }
+    bumpItemRenderVersion(existing);
     return;
   }
 
@@ -2169,6 +2218,7 @@ function upsertStreamingItem(threadId, turnId, itemId, delta) {
     text: partials.get(itemId),
     _partial: true,
     _turnId: turnId || null,
+    _renderVersion: 1,
   };
   items.push(existing);
 }
@@ -2185,11 +2235,12 @@ function finalizeItem(threadId, turnId, item) {
 
   const index = items.findIndex((entry) => entry.id === item.id);
   if (index >= 0) {
-    items[index] = { ...nextItem, _partial: false };
+    const previousVersion = ensureItemRenderVersion(items[index]);
+    items[index] = { ...nextItem, _partial: false, _renderVersion: previousVersion + 1 };
     return;
   }
 
-  items.push({ ...nextItem, _partial: false });
+  items.push({ ...nextItem, _partial: false, _renderVersion: 1 });
 }
 
 function renderTabs() {
@@ -2851,6 +2902,7 @@ function buildEntryFromItem(threadId, item, partials, index) {
   }
 
   if (item.type === 'agentMessage') {
+    const renderVersion = ensureItemRenderVersion(item);
     const partial = item._partial || partials.has(item.id);
     const text = partial ? (partials.get(item.id) || item.text || '') : (item.text || '');
     return {
@@ -2859,11 +2911,12 @@ function buildEntryFromItem(threadId, item, partials, index) {
       text,
       partial,
       phase: item.phase || '',
-      signature: JSON.stringify(['agent', key, text, partial, item.phase || '']),
+      signature: JSON.stringify(['agent', key, renderVersion, partial, item.phase || '']),
     };
   }
 
   if (item.type === 'reasoning') {
+    const renderVersion = ensureItemRenderVersion(item);
     const summary = getReasoningText(item);
     if (!summary) {
       return null;
@@ -2872,7 +2925,7 @@ function buildEntryFromItem(threadId, item, partials, index) {
       key,
       kind: 'reasoning',
       text: summary,
-      signature: JSON.stringify(['reasoning', key, summary]),
+      signature: JSON.stringify(['reasoning', key, renderVersion]),
     };
   }
 
@@ -2887,6 +2940,7 @@ function buildEntryFromItem(threadId, item, partials, index) {
   }
 
   if (item.type === 'commandExecution') {
+    const renderVersion = ensureItemRenderVersion(item);
     const command = item.command || item.input || '';
     const pendingRequest = findPendingRequestForItem(threadId, item.id);
     const status = pendingRequest ? 'pendingApproval' : (item.status || '');
@@ -2901,11 +2955,12 @@ function buildEntryFromItem(threadId, item, partials, index) {
       status,
       output,
       threadId: activeThreadId,
-      signature: JSON.stringify(['command', key, command, status, output, activeThreadId]),
+      signature: JSON.stringify(['command', key, renderVersion, status, activeThreadId]),
     };
   }
 
   if (item.type === 'fileChange') {
+    const renderVersion = ensureItemRenderVersion(item);
     const pendingRequest = findPendingRequestForItem(threadId, item.id);
     const status = pendingRequest ? 'pendingApproval' : (item.status || '');
     const output = getFileChangeOutput(item);
@@ -2922,7 +2977,7 @@ function buildEntryFromItem(threadId, item, partials, index) {
       output,
       patch,
       threadId: activeThreadId,
-      signature: JSON.stringify(['fileChange', key, status, JSON.stringify(changes), output, patch, activeThreadId]),
+      signature: JSON.stringify(['fileChange', key, renderVersion, status, activeThreadId]),
     };
   }
 
@@ -4172,8 +4227,7 @@ function handleMessage(msg) {
       assignPendingUserMessageToTurn(msg.threadId, msg.turnId);
     }
     if (msg.threadId === state.activeThreadId) {
-      renderHeader();
-      renderMessages();
+      scheduleRender({ header: true, messages: true });
     }
     return;
   }
@@ -4185,8 +4239,7 @@ function handleMessage(msg) {
       state.currentTurnIdByThread.delete(msg.threadId);
     }
     if (msg.threadId === state.activeThreadId) {
-      renderHeader();
-      renderMessages();
+      scheduleRender({ header: true, messages: true });
     }
     return;
   }
@@ -4199,8 +4252,7 @@ function handleMessage(msg) {
     }
     upsertStreamingItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg.itemId, msg.delta || '');
     if (msg.threadId === state.activeThreadId) {
-      renderHeader();
-      renderMessages();
+      scheduleRender({ header: true, messages: true });
     }
     return;
   }
@@ -4215,11 +4267,10 @@ function handleMessage(msg) {
     const item = cloneItemForTurn(msg.item, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null);
     reconcilePendingUserMessage(msg.threadId, item);
     if (item && item.id && !items.find((entry) => entry.id === item.id)) {
-      items.push({ ...item, _partial: true });
+      items.push({ ...item, _partial: true, _renderVersion: 1 });
     }
     if (msg.threadId === state.activeThreadId) {
-      renderHeader();
-      renderMessages();
+      scheduleRender({ header: true, messages: true });
     }
     return;
   }
@@ -4232,7 +4283,7 @@ function handleMessage(msg) {
     reconcilePendingUserMessage(msg.threadId, item);
     finalizeItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, item);
     if (msg.threadId === state.activeThreadId) {
-      renderMessages();
+      scheduleRender({ messages: true });
     }
     return;
   }
@@ -4278,8 +4329,7 @@ function handleMessage(msg) {
     }
 
     if (msg.threadId === state.activeThreadId) {
-      renderHeader();
-      renderMessages();
+      scheduleRender({ header: true, messages: true });
     }
     return;
   }
@@ -4295,7 +4345,7 @@ function handleMessage(msg) {
       _turnId: state.currentTurnIdByThread.get(threadId) || null,
     });
     if (threadId === state.activeThreadId) {
-      renderMessages();
+      scheduleRender({ messages: true });
     }
     return;
   }
