@@ -24,6 +24,7 @@ function runPowerShell(script) {
 class CodexWindowManager {
   constructor(options = {}) {
     this.codexCmd = options.codexCmd || process.env.CODEX_CMD || 'codex.cmd';
+    this.appServerWs = options.appServerWs || process.env.CODEX_APP_SERVER_WS || 'ws://127.0.0.1:4792';
     this.map = new Map();
     this.mapFile = options.mapFile
       || process.env.WINDOW_MAP_FILE
@@ -34,11 +35,13 @@ class CodexWindowManager {
   async openWindow(threadId) {
     assertThreadId(threadId);
     const escapedCmd = this.codexCmd.replace(/'/g, "''");
+    const escapedWs = this.appServerWs.replace(/'/g, "''");
     const escapedThread = threadId.replace(/'/g, "''");
+    const commandLine = `""${escapedCmd}" --remote ${escapedWs} resume ${escapedThread}"`;
 
     const script = [
       "$ErrorActionPreference = 'Stop'",
-      `$proc = Start-Process -FilePath '${escapedCmd}' -ArgumentList @('resume', '${escapedThread}') -PassThru`,
+      `$proc = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/s', '/c', '${commandLine}') -PassThru`,
       'Write-Output $proc.Id',
     ].join('; ');
 

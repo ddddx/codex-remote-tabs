@@ -19,6 +19,7 @@ const MAX_TAB_NAME_LENGTH = parsePositiveInteger(process.env.MAX_TAB_NAME_LENGTH
 const CLOSED_TAB_TTL_MS = parsePositiveInteger(process.env.CLOSED_TAB_TTL_MS) || 30000;
 const MAX_CLOSED_TABS = parsePositiveInteger(process.env.MAX_CLOSED_TABS) || 20;
 const BOOTSTRAP_THREAD_LIMIT = parsePositiveInteger(process.env.BOOTSTRAP_THREAD_LIMIT) || 100;
+const WINDOW_STATUS_REFRESH_MS = parsePositiveInteger(process.env.WINDOW_STATUS_REFRESH_MS) || 5000;
 const THREAD_ID_REGEX = /^[0-9a-f]{8,12}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const app = express();
@@ -39,13 +40,16 @@ const codex = new CodexAppServerClient({
   cwd: process.cwd(),
   codexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
 });
-const windows = new CodexWindowManager({});
+const windows = new CodexWindowManager({
+  appServerWs: process.env.CODEX_APP_SERVER_WS,
+});
 
 const tabs = new Map();
 const closedTabTimers = new Map();
 const pendingWindowOpens = new Map();
 const pendingServerRequests = new Map();
 let shuttingDown = false;
+let windowStatusTimer = null;
 
 server.on('upgrade', (request, socket, head) => {
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
@@ -871,6 +875,13 @@ wss.on('connection', (ws, request) => {
 
       if (message.type === 'tab_close') {
         await windows.closeWindow(message.threadId);
+        try {
+          await codex.archiveThread(message.threadId);
+        } catch (error) {
+          if (!isThreadNotFoundError(error)) {
+            throw error;
+          }
+        }
         markTabClosed(message.threadId);
         return;
       }
@@ -1013,6 +1024,7 @@ async function bootstrap() {
     void refreshAllTabWindowStatus().catch((error) => {
       console.log(`[bootstrap-window-check] failed: ${error.message}`);
     });
+    startWindowStatusTimer();
   });
 }
 
@@ -1023,6 +1035,11 @@ async function shutdown(signal) {
 
   shuttingDown = true;
   console.log(`[shutdown] received ${signal}`);
+
+  if (windowStatusTimer) {
+    clearInterval(windowStatusTimer);
+    windowStatusTimer = null;
+  }
 
   for (const timer of closedTabTimers.values()) {
     clearTimeout(timer);
@@ -1067,6 +1084,19 @@ function closeWithTimeout(target, label) {
       resolve();
     });
   });
+}
+
+function startWindowStatusTimer() {
+  if (windowStatusTimer) {
+    return;
+  }
+
+  windowStatusTimer = setInterval(() => {
+    void refreshAllTabWindowStatus().catch((error) => {
+      console.log(`[window-status] failed: ${error.message}`);
+    });
+  }, WINDOW_STATUS_REFRESH_MS);
+  windowStatusTimer.unref?.();
 }
 
 process.on('SIGINT', () => {
