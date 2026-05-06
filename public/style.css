@@ -436,7 +436,6 @@ body {
 
 .tab-item.closed .name {
   color: var(--closed-ink);
-  text-decoration: line-through;
 }
 
 .tab-item.closed .meta {
@@ -1320,6 +1319,12 @@ body {
   align-items: flex-end;
 }
 
+.prompt-stack {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
 .session-creating-overlay {
   position: absolute;
   inset: 0;
@@ -1387,7 +1392,7 @@ body {
 }
 
 #promptInput {
-  flex: 1;
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 11px 12px;
@@ -1397,6 +1402,75 @@ body {
   min-height: 54px;
   background: var(--input-bg);
   color: var(--ink);
+}
+
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--select-menu-border);
+  border-radius: 18px;
+  background: var(--select-menu-bg);
+  box-shadow: var(--select-menu-shadow);
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+}
+
+.slash-menu[hidden] {
+  display: none;
+}
+
+.slash-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.slash-item:hover,
+.slash-item:focus-visible,
+.slash-item.active {
+  background: var(--select-option-hover);
+  outline: none;
+}
+
+.slash-item-main {
+  min-width: 0;
+}
+
+.slash-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.slash-item-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.slash-item-hint {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  padding-top: 2px;
 }
 
 /* Reasoning / thinking */

@@ -225,6 +225,7 @@ const composer = document.getElementById('composer');
 const modelSelect = document.getElementById('modelSelect');
 const reasoningEffortSelect = document.getElementById('reasoningEffortSelect');
 const promptInput = document.getElementById('promptInput');
+const slashMenu = document.getElementById('slashMenu');
 const composerSubmitBtn = composer.querySelector('button[type="submit"]');
 const activeTitle = document.getElementById('activeTitle');
 const themeSelect = document.getElementById('themeSelect');
@@ -256,6 +257,20 @@ const sessionModalCancelBtn = document.getElementById('sessionModalCancelBtn');
 const sessionModalConfirmBtn = document.getElementById('sessionModalConfirmBtn');
 const customSelectControllers = new WeakMap();
 let activeCustomSelect = null;
+const SLASH_COMMANDS = [
+  { name: '/new', title: '新建会话', description: '打开新建会话窗口', action: 'new_session' },
+  { name: '/model', title: '切换模型', description: '打开模型选择', action: 'open_model' },
+  { name: '/effort', title: '切换思考等级', description: '打开思考等级选择', action: 'open_effort' },
+  { name: '/theme', title: '切换主题', description: '打开主题选择', action: 'open_theme' },
+  { name: '/clear', title: '清空输入框', description: '清除当前输入内容', action: 'clear_input' },
+  { name: '/help', title: '查看命令', description: '显示可用的本地命令', action: 'show_help' },
+];
+const slashMenuState = {
+  visible: false,
+  query: '',
+  items: [],
+  activeIndex: 0,
+};
 
 ensureCustomSelect(themeSelect);
 ensureCustomSelect(modelSelect);
@@ -265,10 +280,14 @@ document.addEventListener('click', (event) => {
   const target = event.target;
   if (!(target instanceof Node)) {
     closeActiveCustomSelect();
+    closeSlashMenu();
     return;
   }
   if (activeCustomSelect && !activeCustomSelect.wrapper.contains(target)) {
     closeActiveCustomSelect();
+  }
+  if (!slashMenu.hidden && !slashMenu.contains(target) && target !== promptInput) {
+    closeSlashMenu();
   }
 });
 
@@ -697,6 +716,162 @@ function syncCustomSelect(selectEl) {
     });
     menu.appendChild(optionButton);
   });
+}
+
+function getSlashCommandQuery(text) {
+  const normalized = typeof text === 'string' ? text : '';
+  if (!normalized.startsWith('/')) {
+    return null;
+  }
+  if (/\s/.test(normalized.trim())) {
+    return null;
+  }
+  return normalized.trim().toLowerCase();
+}
+
+function getFilteredSlashCommands(query) {
+  const normalized = (query || '').replace(/^\//, '');
+  return SLASH_COMMANDS.filter((command) => command.name.slice(1).startsWith(normalized));
+}
+
+function closeSlashMenu() {
+  slashMenuState.visible = false;
+  slashMenuState.query = '';
+  slashMenuState.items = [];
+  slashMenuState.activeIndex = 0;
+  slashMenu.hidden = true;
+  slashMenu.replaceChildren();
+}
+
+function renderSlashMenu() {
+  if (!slashMenuState.visible || !slashMenuState.items.length) {
+    closeSlashMenu();
+    return;
+  }
+
+  slashMenu.hidden = false;
+  slashMenu.replaceChildren();
+  slashMenuState.items.forEach((item, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `slash-item${index === slashMenuState.activeIndex ? ' active' : ''}`;
+
+    const main = document.createElement('div');
+    main.className = 'slash-item-main';
+
+    const title = document.createElement('div');
+    title.className = 'slash-item-title';
+    title.textContent = item.name;
+    main.appendChild(title);
+
+    const desc = document.createElement('div');
+    desc.className = 'slash-item-desc';
+    desc.textContent = item.description;
+    main.appendChild(desc);
+
+    const hint = document.createElement('div');
+    hint.className = 'slash-item-hint';
+    hint.textContent = item.title;
+
+    button.append(main, hint);
+    button.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      applySlashCommand(item);
+    });
+    slashMenu.appendChild(button);
+  });
+}
+
+function updateSlashMenu() {
+  const query = getSlashCommandQuery(promptInput.value);
+  if (query === null) {
+    closeSlashMenu();
+    return;
+  }
+
+  const items = getFilteredSlashCommands(query);
+  if (!items.length) {
+    closeSlashMenu();
+    return;
+  }
+
+  slashMenuState.visible = true;
+  slashMenuState.query = query;
+  slashMenuState.items = items;
+  if (slashMenuState.activeIndex >= items.length) {
+    slashMenuState.activeIndex = 0;
+  }
+  renderSlashMenu();
+}
+
+function openCustomSelectFor(selectEl) {
+  const controller = ensureCustomSelect(selectEl);
+  if (!controller || selectEl.disabled) {
+    return;
+  }
+  openCustomSelect(controller);
+}
+
+function showSlashHelp() {
+  slashMenuState.visible = true;
+  slashMenuState.query = '/';
+  slashMenuState.items = SLASH_COMMANDS.slice();
+  slashMenuState.activeIndex = 0;
+  renderSlashMenu();
+}
+
+function executeSlashCommand(command) {
+  if (!command) {
+    return false;
+  }
+
+  if (command.action === 'new_session') {
+    closeSlashMenu();
+    newTabBtn.click();
+    return true;
+  }
+  if (command.action === 'open_model') {
+    closeSlashMenu();
+    openCustomSelectFor(modelSelect);
+    return true;
+  }
+  if (command.action === 'open_effort') {
+    closeSlashMenu();
+    openCustomSelectFor(reasoningEffortSelect);
+    return true;
+  }
+  if (command.action === 'open_theme') {
+    closeSlashMenu();
+    openCustomSelectFor(themeSelect);
+    return true;
+  }
+  if (command.action === 'clear_input') {
+    promptInput.value = '';
+    closeSlashMenu();
+    promptInput.focus();
+    return true;
+  }
+  if (command.action === 'show_help') {
+    showSlashHelp();
+    promptInput.focus();
+    return true;
+  }
+  return false;
+}
+
+function getExactSlashCommand(text) {
+  const normalized = (text || '').trim().toLowerCase();
+  return SLASH_COMMANDS.find((command) => command.name === normalized) || null;
+}
+
+function applySlashCommand(command) {
+  if (!command) {
+    return;
+  }
+  promptInput.value = command.name;
+  closeSlashMenu();
+  promptInput.focus();
+  executeSlashCommand(command);
 }
 
 function formatReasoningEffortLabel(effort) {
@@ -3338,12 +3513,44 @@ sessionWorkspaceInput.addEventListener('keydown', (event) => {
 });
 
 promptInput.addEventListener('keydown', (event) => {
+  if (slashMenuState.visible && slashMenuState.items.length) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      slashMenuState.activeIndex = (slashMenuState.activeIndex + 1) % slashMenuState.items.length;
+      renderSlashMenu();
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      slashMenuState.activeIndex = (slashMenuState.activeIndex - 1 + slashMenuState.items.length) % slashMenuState.items.length;
+      renderSlashMenu();
+      return;
+    }
+    if ((event.key === 'Enter' && !event.shiftKey && !event.isComposing) || event.key === 'Tab') {
+      event.preventDefault();
+      applySlashCommand(slashMenuState.items[slashMenuState.activeIndex]);
+      return;
+    }
+    if (event.key === 'Escape') {
+      closeSlashMenu();
+      return;
+    }
+  }
+
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) {
     return;
   }
 
   event.preventDefault();
   composer.requestSubmit();
+});
+
+promptInput.addEventListener('input', () => {
+  updateSlashMenu();
+});
+
+promptInput.addEventListener('focus', () => {
+  updateSlashMenu();
 });
 
 modelSelect.addEventListener('change', () => {
@@ -3370,7 +3577,17 @@ themeSelect.addEventListener('change', () => {
 composer.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = promptInput.value.trim();
-  if (!text || !state.activeThreadId) {
+  if (!text) {
+    return;
+  }
+
+  const slashCommand = getExactSlashCommand(text);
+  if (slashCommand) {
+    executeSlashCommand(slashCommand);
+    return;
+  }
+
+  if (!state.activeThreadId) {
     return;
   }
 
@@ -3404,6 +3621,7 @@ composer.addEventListener('submit', (event) => {
     });
   }
   promptInput.value = '';
+  closeSlashMenu();
   renderMessages();
 });
 
