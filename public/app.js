@@ -238,6 +238,7 @@ const composerControlsToggle = document.getElementById('composerControlsToggle')
 const composerControlsSummary = document.getElementById('composerControlsSummary');
 const modelSelect = document.getElementById('modelSelect');
 const reasoningEffortSelect = document.getElementById('reasoningEffortSelect');
+const permissionPresetSelect = document.getElementById('permissionPresetSelect');
 const approvalPolicySelect = document.getElementById('approvalPolicySelect');
 const sandboxModeSelect = document.getElementById('sandboxModeSelect');
 const promptInput = document.getElementById('promptInput');
@@ -284,8 +285,8 @@ const SLASH_COMMANDS = [
   { name: '/close', aliases: ['/close-session'], title: '关闭会话', description: '关闭当前会话', action: 'close_session' },
   { name: '/refresh', aliases: ['/sync'], title: '刷新会话', description: '重新同步当前会话消息', action: 'refresh_session' },
   { name: '/reconnect', aliases: ['/retry-connection'], title: '重新连接', description: '重连 WebSocket 并刷新会话状态', action: 'reconnect_socket' },
-  { name: '/permissions', aliases: ['/approvals', '/approval', '/mode'], title: '批准策略', description: '打开批准策略选择', action: 'show_permission_settings' },
-  { name: '/sandbox', aliases: ['/isolation'], title: '沙箱模式', description: '打开沙箱模式选择', action: 'open_sandbox' },
+  { name: '/permissions', aliases: ['/approvals', '/approvels', '/approval', '/mode'], title: '权限设置', description: '打开 /approvals 权限设置', action: 'show_permission_settings' },
+  { name: '/sandbox', aliases: ['/isolation'], title: '权限范围', description: '打开权限范围选择', action: 'open_sandbox' },
   { name: '/pending', aliases: ['/requests'], title: '待处理请求', description: '定位当前会话的待批准请求', action: 'show_approvals' },
   { name: '/approve', aliases: ['/allow'], title: '批准', description: '批准当前会话最新待处理请求', action: 'approve_latest' },
   { name: '/approve-session', aliases: ['/allow-session'], title: '本会话允许', description: '本会话内持续允许当前待处理请求', action: 'approve_latest_for_session' },
@@ -309,9 +310,12 @@ let scheduledRenderFrame = 0;
 let scheduledRenderHeader = false;
 let scheduledRenderMessages = false;
 
+const PERMISSION_PRESET_VALUES = new Set(['', 'read-only', 'auto', 'full-access', 'custom']);
+
 ensureCustomSelect(themeSelect);
 ensureCustomSelect(modelSelect);
 ensureCustomSelect(reasoningEffortSelect);
+ensureCustomSelect(permissionPresetSelect);
 ensureCustomSelect(approvalPolicySelect);
 ensureCustomSelect(sandboxModeSelect);
 
@@ -729,6 +733,24 @@ function getActiveComposerPrefs() {
   return state.composerGlobalPrefs;
 }
 
+function buildComposerPrefs(threadId, overrides = {}) {
+  const current = threadId ? (state.composerPrefsByThread.get(threadId) || state.composerGlobalPrefs) : state.composerGlobalPrefs;
+  return {
+    model: Object.prototype.hasOwnProperty.call(overrides, 'model')
+      ? normalizeComposerModel(overrides.model)
+      : normalizeComposerModel(current?.model),
+    effort: Object.prototype.hasOwnProperty.call(overrides, 'effort')
+      ? normalizeComposerEffort(overrides.effort)
+      : normalizeComposerEffort(current?.effort),
+    approvalPolicy: Object.prototype.hasOwnProperty.call(overrides, 'approvalPolicy')
+      ? normalizeComposerApprovalPolicy(overrides.approvalPolicy)
+      : normalizeComposerApprovalPolicy(current?.approvalPolicy),
+    sandboxMode: Object.prototype.hasOwnProperty.call(overrides, 'sandboxMode')
+      ? normalizeComposerSandboxMode(overrides.sandboxMode)
+      : normalizeComposerSandboxMode(current?.sandboxMode),
+  };
+}
+
 function setComposerPrefsForThread(threadId, prefs) {
   const normalized = {
     model: normalizeComposerModel(prefs?.model),
@@ -742,6 +764,17 @@ function setComposerPrefsForThread(threadId, prefs) {
   }
   state.composerGlobalPrefs = normalized;
   saveComposerGlobalPrefs();
+}
+
+function setComposerPrefsFromInputs(threadId = state.activeThreadId, overrides = {}) {
+  const normalized = buildComposerPrefs(threadId, {
+    model: Object.prototype.hasOwnProperty.call(overrides, 'model') ? overrides.model : modelSelect.value,
+    effort: Object.prototype.hasOwnProperty.call(overrides, 'effort') ? overrides.effort : reasoningEffortSelect.value,
+    approvalPolicy: Object.prototype.hasOwnProperty.call(overrides, 'approvalPolicy') ? overrides.approvalPolicy : approvalPolicySelect.value,
+    sandboxMode: Object.prototype.hasOwnProperty.call(overrides, 'sandboxMode') ? overrides.sandboxMode : sandboxModeSelect.value,
+  });
+  setComposerPrefsForThread(threadId, normalized);
+  return normalized;
 }
 
 function buildModelSelectOptions() {
@@ -805,9 +838,138 @@ function formatApprovalPolicyLabel(value) {
     return '从不询问';
   }
   if (value === 'on-failure') {
-    return '失败后询问';
+    return '失败后询问（已弃用）';
   }
   return value;
+}
+
+function getPermissionPresetDefinition(value) {
+  if (value === 'read-only') {
+    return {
+      value,
+      label: 'Read Only',
+      description: '只读 + 按需批准',
+      approvalPolicy: 'on-request',
+      sandboxMode: 'read-only',
+    };
+  }
+  if (value === 'auto') {
+    return {
+      value,
+      label: 'Auto',
+      description: '工作区可写 + 按需批准',
+      approvalPolicy: 'on-request',
+      sandboxMode: 'workspace-write',
+    };
+  }
+  if (value === 'full-access') {
+    return {
+      value,
+      label: 'Full Access',
+      description: '完全权限 + 从不询问',
+      approvalPolicy: 'never',
+      sandboxMode: 'danger-full-access',
+    };
+  }
+  return null;
+}
+
+function inferPermissionPresetValue(approvalPolicy, sandboxMode) {
+  const normalizedApprovalPolicy = normalizeComposerApprovalPolicy(approvalPolicy);
+  const normalizedSandboxMode = normalizeComposerSandboxMode(sandboxMode);
+  if (!normalizedApprovalPolicy && !normalizedSandboxMode) {
+    return '';
+  }
+
+  for (const value of ['read-only', 'auto', 'full-access']) {
+    const preset = getPermissionPresetDefinition(value);
+    if (!preset) {
+      continue;
+    }
+    if (preset.approvalPolicy === normalizedApprovalPolicy && preset.sandboxMode === normalizedSandboxMode) {
+      return value;
+    }
+  }
+
+  return 'custom';
+}
+
+function formatPermissionPresetLabel(value, options = {}) {
+  const { includeDescription = false } = options;
+  if (!value) {
+    const defaultPreset = inferPermissionPresetValue(
+      state.composerApprovalPolicyDefault,
+      state.composerSandboxModeDefault
+    );
+    if (defaultPreset) {
+      const preset = getPermissionPresetDefinition(defaultPreset);
+      if (preset) {
+        return includeDescription
+          ? `跟随当前配置（${preset.label} · ${preset.description}）`
+          : `跟随当前配置（${preset.label}）`;
+      }
+    }
+    return '跟随当前配置';
+  }
+
+  if (value === 'custom') {
+    return '自定义组合';
+  }
+
+  const preset = getPermissionPresetDefinition(value);
+  if (!preset) {
+    return value;
+  }
+  return includeDescription ? `${preset.label} · ${preset.description}` : preset.label;
+}
+
+function buildPermissionPresetSelectOptions() {
+  return [{
+    value: '',
+    label: formatPermissionPresetLabel('', { includeDescription: true }),
+  }, {
+    value: 'read-only',
+    label: formatPermissionPresetLabel('read-only', { includeDescription: true }),
+  }, {
+    value: 'auto',
+    label: formatPermissionPresetLabel('auto', { includeDescription: true }),
+  }, {
+    value: 'full-access',
+    label: formatPermissionPresetLabel('full-access', { includeDescription: true }),
+  }, {
+    value: 'custom',
+    label: formatPermissionPresetLabel('custom'),
+  }];
+}
+
+function applyPermissionPreset(threadId, presetValue) {
+  if (!PERMISSION_PRESET_VALUES.has(presetValue)) {
+    return null;
+  }
+  if (presetValue === 'custom') {
+    return buildComposerPrefs(threadId);
+  }
+
+  if (!presetValue) {
+    const prefs = buildComposerPrefs(threadId, {
+      approvalPolicy: '',
+      sandboxMode: '',
+    });
+    setComposerPrefsForThread(threadId, prefs);
+    return prefs;
+  }
+
+  const preset = getPermissionPresetDefinition(presetValue);
+  if (!preset) {
+    return null;
+  }
+
+  const prefs = buildComposerPrefs(threadId, {
+    approvalPolicy: preset.approvalPolicy,
+    sandboxMode: preset.sandboxMode,
+  });
+  setComposerPrefsForThread(threadId, prefs);
+  return prefs;
 }
 
 function buildApprovalPolicySelectOptions() {
@@ -834,7 +996,7 @@ function formatSandboxModeLabel(value) {
     return '工作区可写';
   }
   if (value === 'danger-full-access') {
-    return '完全访问';
+    return '完全权限';
   }
   return value;
 }
@@ -850,8 +1012,10 @@ function formatMobileComposerSummary(prefs) {
   }
 
   parts.push(formatReasoningEffortLabel(prefs?.effort || state.composerEffortDefault || ''));
-  parts.push(formatApprovalPolicyLabel(prefs?.approvalPolicy || state.composerApprovalPolicyDefault || '').replace('跟随当前配置', '批准默认'));
-  parts.push(formatSandboxModeLabel(prefs?.sandboxMode || state.composerSandboxModeDefault || '').replace('跟随当前配置', '沙箱默认'));
+  parts.push(formatPermissionPresetLabel(
+    inferPermissionPresetValue(prefs?.approvalPolicy, prefs?.sandboxMode),
+    { includeDescription: false }
+  ));
   return parts.join(' · ');
 }
 
@@ -1108,6 +1272,62 @@ function addThreadNotice(threadId, text, type = '_warning') {
     id: createLocalId(type === '_error' ? 'slash-error' : 'slash-warning'),
     text,
   });
+}
+
+function clearPermissionPresetPrompts(threadId) {
+  if (!threadId) {
+    return;
+  }
+  const items = ensureItems(threadId);
+  state.itemsByThread.set(threadId, items.filter((item) => item?.type !== '_permission_prompt'));
+}
+
+function ensureComposerControlsVisible() {
+  if (window.innerWidth <= 680) {
+    composer.classList.add('mobile-controls-open');
+    composerControlsToggle.setAttribute('aria-expanded', 'true');
+  }
+}
+
+function showPermissionPresetPrompt(threadId = state.activeThreadId) {
+  if (!threadId) {
+    return false;
+  }
+  clearPermissionPresetPrompts(threadId);
+  ensureItems(threadId).push({
+    type: '_permission_prompt',
+    id: createLocalId('permission-prompt'),
+    text: '请选择要应用到当前会话的 /approvals 模式。',
+  });
+  if (threadId === state.activeThreadId) {
+    renderMessages();
+  }
+  return true;
+}
+
+function openAdvancedPermissionSettings(threadId = state.activeThreadId) {
+  clearPermissionPresetPrompts(threadId);
+  if (!threadId || threadId !== state.activeThreadId) {
+    return;
+  }
+  ensureComposerControlsVisible();
+  renderComposer();
+  openCustomSelectFor(approvalPolicySelect);
+  addThreadNotice(threadId, '已打开高级权限设置，可继续微调执行批准和权限范围。');
+  renderMessages();
+}
+
+function applyPermissionPresetChoice(threadId, presetValue) {
+  const applied = applyPermissionPreset(threadId, presetValue);
+  if (!applied) {
+    return;
+  }
+  clearPermissionPresetPrompts(threadId);
+  addThreadNotice(threadId, `权限预设已切换为 ${formatPermissionPresetLabel(presetValue, { includeDescription: true })}`);
+  if (threadId === state.activeThreadId) {
+    renderComposer();
+    renderMessages();
+  }
 }
 
 function closeSlashMenu() {
@@ -1376,8 +1596,7 @@ function executeSlashCommand(command) {
   }
   if (command.action === 'show_permission_settings') {
     closeSlashMenu();
-    openCustomSelectFor(approvalPolicySelect);
-    return true;
+    return showPermissionPresetPrompt();
   }
   if (command.action === 'open_sandbox') {
     closeSlashMenu();
@@ -1401,8 +1620,9 @@ function executeSlashCommand(command) {
       `工作区: ${getWorkspacePath(tab) || '未提供'}`,
       `模型: ${composerSelection.model || '默认'}`,
       `思考等级: ${formatReasoningEffortLabel(composerSelection.effort || '')}`,
-      `批准策略: ${formatApprovalPolicyLabel(composerSelection.approvalPolicy || '')}`,
-      `沙箱: ${formatSandboxModeLabel(composerSelection.sandboxMode || '')}`,
+      `权限预设: ${formatPermissionPresetLabel(inferPermissionPresetValue(composerSelection.approvalPolicy, composerSelection.sandboxMode))}`,
+      `执行批准: ${formatApprovalPolicyLabel(composerSelection.approvalPolicy || '')}`,
+      `权限范围: ${formatSandboxModeLabel(composerSelection.sandboxMode || '')}`,
     ].join(' · ');
     addThreadNotice(state.activeThreadId, status);
     render();
@@ -2207,7 +2427,18 @@ function compareTabs(a, b) {
   if (aClosed !== bClosed) {
     return aClosed ? 1 : -1;
   }
-  return (b?.updatedAt || 0) - (a?.updatedAt || 0);
+
+  const updatedDiff = (b?.updatedAt || 0) - (a?.updatedAt || 0);
+  if (updatedDiff !== 0) {
+    return updatedDiff;
+  }
+
+  const createdDiff = (b?.createdAt || 0) - (a?.createdAt || 0);
+  if (createdDiff !== 0) {
+    return createdDiff;
+  }
+
+  return String(a?.threadId || '').localeCompare(String(b?.threadId || ''));
 }
 
 function removeTab(threadId) {
@@ -2599,18 +2830,26 @@ function renderComposer() {
 
   fillSelectOptions(modelSelect, buildModelSelectOptions(), normalizeComposerModel(prefs?.model));
   fillSelectOptions(reasoningEffortSelect, buildEffortSelectOptions(), normalizeComposerEffort(prefs?.effort));
+  fillSelectOptions(
+    permissionPresetSelect,
+    buildPermissionPresetSelectOptions(),
+    inferPermissionPresetValue(prefs?.approvalPolicy, prefs?.sandboxMode)
+  );
   fillSelectOptions(approvalPolicySelect, buildApprovalPolicySelectOptions(), normalizeComposerApprovalPolicy(prefs?.approvalPolicy));
   fillSelectOptions(sandboxModeSelect, buildSandboxModeSelectOptions(), normalizeComposerSandboxMode(prefs?.sandboxMode));
   modelSelect.disabled = state.authFailed || state.composerOptionsLoading;
   reasoningEffortSelect.disabled = state.authFailed;
+  permissionPresetSelect.disabled = state.authFailed;
   approvalPolicySelect.disabled = state.authFailed;
   sandboxModeSelect.disabled = state.authFailed;
   modelSelect.title = state.composerOptionsLoading ? '正在加载模型列表...' : '';
   reasoningEffortSelect.title = '思考等级会应用到当前及后续轮次';
-  approvalPolicySelect.title = '批准策略会应用到当前及后续轮次';
-  sandboxModeSelect.title = '沙箱模式会应用到当前及后续轮次';
+  permissionPresetSelect.title = '/approvals 权限预设，会同时设置执行批准和权限范围';
+  approvalPolicySelect.title = '/approvals 的执行批准部分，会应用到当前及后续轮次';
+  sandboxModeSelect.title = '/approvals 的权限范围部分，会应用到当前及后续轮次';
   syncCustomSelect(modelSelect);
   syncCustomSelect(reasoningEffortSelect);
+  syncCustomSelect(permissionPresetSelect);
   syncCustomSelect(approvalPolicySelect);
   syncCustomSelect(sandboxModeSelect);
   autoResizePromptInput();
@@ -3323,6 +3562,19 @@ function buildEntryFromItem(threadId, item, partials, index) {
     };
   }
 
+  if (item.type === '_permission_prompt') {
+    const composerSelection = getEffectiveComposerSelection(threadId);
+    const presetValue = inferPermissionPresetValue(composerSelection.approvalPolicy, composerSelection.sandboxMode);
+    return {
+      key,
+      kind: 'permissionPrompt',
+      text: item.text || '',
+      threadId,
+      presetValue,
+      signature: JSON.stringify(['permissionPrompt', key, presetValue, item.text || '']),
+    };
+  }
+
   return {
     key,
     kind: 'generic',
@@ -3551,6 +3803,41 @@ function populateNoticeEntry(node, entry) {
   node.textContent = entry.text;
 }
 
+function populatePermissionPromptEntry(node, entry) {
+  node.className = 'approval-banner approval-card permission-prompt-card';
+
+  const title = document.createElement('div');
+  title.className = 'item-label';
+  title.textContent = '权限设置';
+  node.appendChild(title);
+
+  const reason = document.createElement('div');
+  reason.className = 'approval-reason';
+  reason.textContent = entry.text || '选择 /approvals 模式';
+  node.appendChild(reason);
+
+  const current = document.createElement('div');
+  current.className = 'approval-meta';
+  current.textContent = `当前预设: ${formatPermissionPresetLabel(entry.presetValue, { includeDescription: true })}`;
+  node.appendChild(current);
+
+  const actions = document.createElement('div');
+  actions.className = 'approval-actions permission-prompt-actions';
+  actions.appendChild(createActionButton('Read Only', false, () => {
+    applyPermissionPresetChoice(entry.threadId, 'read-only');
+  }, entry.presetValue === 'read-only' ? '' : 'btn-secondary'));
+  actions.appendChild(createActionButton('Auto', false, () => {
+    applyPermissionPresetChoice(entry.threadId, 'auto');
+  }, entry.presetValue === 'auto' ? '' : 'btn-secondary'));
+  actions.appendChild(createActionButton('Full Access', false, () => {
+    applyPermissionPresetChoice(entry.threadId, 'full-access');
+  }, entry.presetValue === 'full-access' ? '' : 'btn-secondary'));
+  actions.appendChild(createActionButton('高级设置', false, () => {
+    openAdvancedPermissionSettings(entry.threadId);
+  }, 'btn-secondary'));
+  node.appendChild(actions);
+}
+
 function appendUserMessageContent(node, content) {
   const entries = Array.isArray(content) ? content : [];
   const textEntries = entries.filter((entry) => entry.type === 'text');
@@ -3712,6 +3999,11 @@ function populateMessageNode(node, entry) {
     node.className = 'approval-banner approval-card';
     node.dataset.serverRequestId = entry.request?.requestId || '';
     populateServerRequestNode(node, entry.request);
+    return;
+  }
+
+  if (entry.kind === 'permissionPrompt') {
+    populatePermissionPromptEntry(node, entry);
     return;
   }
 
@@ -4450,42 +4742,27 @@ promptInput.addEventListener('paste', (event) => {
 });
 
 modelSelect.addEventListener('change', () => {
-  setComposerPrefsForThread(state.activeThreadId, {
-    model: modelSelect.value,
-    effort: reasoningEffortSelect.value,
-    approvalPolicy: approvalPolicySelect.value,
-    sandboxMode: sandboxModeSelect.value,
-  });
+  setComposerPrefsFromInputs();
   renderComposer();
 });
 
 reasoningEffortSelect.addEventListener('change', () => {
-  setComposerPrefsForThread(state.activeThreadId, {
-    model: modelSelect.value,
-    effort: reasoningEffortSelect.value,
-    approvalPolicy: approvalPolicySelect.value,
-    sandboxMode: sandboxModeSelect.value,
-  });
+  setComposerPrefsFromInputs();
+  renderComposer();
+});
+
+permissionPresetSelect.addEventListener('change', () => {
+  applyPermissionPreset(state.activeThreadId, permissionPresetSelect.value);
   renderComposer();
 });
 
 approvalPolicySelect.addEventListener('change', () => {
-  setComposerPrefsForThread(state.activeThreadId, {
-    model: modelSelect.value,
-    effort: reasoningEffortSelect.value,
-    approvalPolicy: approvalPolicySelect.value,
-    sandboxMode: sandboxModeSelect.value,
-  });
+  setComposerPrefsFromInputs();
   renderComposer();
 });
 
 sandboxModeSelect.addEventListener('change', () => {
-  setComposerPrefsForThread(state.activeThreadId, {
-    model: modelSelect.value,
-    effort: reasoningEffortSelect.value,
-    approvalPolicy: approvalPolicySelect.value,
-    sandboxMode: sandboxModeSelect.value,
-  });
+  setComposerPrefsFromInputs();
   renderComposer();
 });
 
@@ -4573,7 +4850,10 @@ composer.addEventListener('submit', (event) => {
 
 function handleMessage(msg) {
   if (msg.type === 'state') {
-    state.tabs = msg.tabs || [];
+    state.tabs = [];
+    for (const tab of msg.tabs || []) {
+      upsertTab(tab);
+    }
     state.serverRequests = [];
     for (const request of msg.serverRequests || []) {
       upsertServerRequest(request);

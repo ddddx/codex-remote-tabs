@@ -80,6 +80,21 @@ const pendingServerRequests = new Map();
 let shuttingDown = false;
 let windowStatusTimer = null;
 
+process.on('uncaughtException', (error) => {
+  console.error('[fatal] uncaught exception in web server:', error?.stack || error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandled rejection in web server:', reason);
+  process.exit(1);
+});
+
+server.on('error', (error) => {
+  console.error('[http] server error:', error?.stack || error);
+  process.exit(1);
+});
+
 app.get('/api/workspace/shortcuts', (req, res) => {
   if (!isAuthorizedHttpRequest(req)) {
     res.status(401).json({ message: 'Unauthorized' });
@@ -387,23 +402,51 @@ function assertThreadId(threadId) {
 function ensureTab(thread) {
   assertThreadId(thread.id);
   const existing = tabs.get(thread.id);
+  const persistedPrefs = workspaces.getThreadPrefs(thread.id);
   const detectedWindowPid = windows.getPid(thread.id);
   const threadWindowPid = Number.parseInt(thread.windowPid, 10);
   const existingWindowPid = Number.parseInt(existing?.windowPid, 10);
   const status = normalizeStatus(thread.status, existing?.status || 'idle');
+  const hasExistingApprovalPolicy = !!existing && Object.prototype.hasOwnProperty.call(existing, 'approvalPolicy');
+  const hasExistingSandboxMode = !!existing && Object.prototype.hasOwnProperty.call(existing, 'sandboxMode');
+  const hasPersistedApprovalPolicy = Object.prototype.hasOwnProperty.call(persistedPrefs, 'approvalPolicy');
+  const hasPersistedSandboxMode = Object.prototype.hasOwnProperty.call(persistedPrefs, 'sandboxMode');
+  const threadApprovalPolicy = extractThreadApprovalPolicy(thread);
+  const threadSandboxMode = extractThreadSandboxMode(thread);
   const tab = {
     threadId: thread.id,
     name: thread.name || existing?.name || makePreviewName(thread.preview),
     cwd: thread.cwd || existing?.cwd || process.cwd(),
     status,
-    approvalPolicy: extractThreadApprovalPolicy(thread, existing?.approvalPolicy || ''),
-    sandboxMode: extractThreadSandboxMode(thread, existing?.sandboxMode || ''),
     createdAt: thread.createdAt || existing?.createdAt || nowUnix(),
     updatedAt: thread.updatedAt || existing?.updatedAt || nowUnix(),
     windowPid: detectedWindowPid
       || (Number.isFinite(existingWindowPid) && existingWindowPid > 0 ? existingWindowPid : null)
       || (Number.isFinite(threadWindowPid) && threadWindowPid > 0 ? threadWindowPid : null),
   };
+
+  if (threadApprovalPolicy) {
+    tab.approvalPolicy = threadApprovalPolicy;
+  } else if (hasExistingApprovalPolicy) {
+    tab.approvalPolicy = existing.approvalPolicy || '';
+  } else if (hasPersistedApprovalPolicy) {
+    tab.approvalPolicy = persistedPrefs.approvalPolicy || '';
+  }
+
+  if (threadSandboxMode) {
+    tab.sandboxMode = threadSandboxMode;
+  } else if (hasExistingSandboxMode) {
+    tab.sandboxMode = existing.sandboxMode || '';
+  } else if (hasPersistedSandboxMode) {
+    tab.sandboxMode = persistedPrefs.sandboxMode || '';
+  }
+
+  if (threadApprovalPolicy || threadSandboxMode) {
+    workspaces.setThreadPrefs(thread.id, {
+      ...(threadApprovalPolicy ? { approvalPolicy: threadApprovalPolicy } : {}),
+      ...(threadSandboxMode ? { sandboxMode: threadSandboxMode } : {}),
+    });
+  }
 
   tabs.set(thread.id, tab);
   if (status !== 'closed') {
@@ -471,7 +514,18 @@ function compareTabs(a, b) {
   if (aClosed !== bClosed) {
     return aClosed ? 1 : -1;
   }
-  return (b?.updatedAt || 0) - (a?.updatedAt || 0);
+
+  const updatedDiff = (b?.updatedAt || 0) - (a?.updatedAt || 0);
+  if (updatedDiff !== 0) {
+    return updatedDiff;
+  }
+
+  const createdDiff = (b?.createdAt || 0) - (a?.createdAt || 0);
+  if (createdDiff !== 0) {
+    return createdDiff;
+  }
+
+  return String(a?.threadId || '').localeCompare(String(b?.threadId || ''));
 }
 
 function send(ws, payload) {
@@ -865,18 +919,18 @@ function toTurnSandboxPolicy(sandboxMode) {
   return null;
 }
 
-function extractThreadApprovalPolicy(thread, fallback = '') {
+function extractThreadApprovalPolicy(thread) {
   const raw = typeof thread?.approvalPolicy === 'string'
     ? thread.approvalPolicy
     : (typeof thread?.approval_policy === 'string' ? thread.approval_policy : '');
-  return normalizeOptionalApprovalPolicy(raw) || fallback;
+  return normalizeOptionalApprovalPolicy(raw);
 }
 
-function extractThreadSandboxMode(thread, fallback = '') {
+function extractThreadSandboxMode(thread) {
   const raw = typeof thread?.sandbox === 'string'
     ? thread.sandbox
     : (typeof thread?.sandboxMode === 'string' ? thread.sandboxMode : '');
-  return normalizeOptionalSandboxMode(raw) || fallback;
+  return normalizeOptionalSandboxMode(raw);
 }
 
 function normalizeWorkspaceInput(value) {
@@ -1261,6 +1315,12 @@ wss.on('connection', (ws, request) => {
         });
         workspaces.rememberPath(workspacePath);
         const tab = ensureTab(thread);
+        tab.approvalPolicy = message.approvalPolicy || '';
+        tab.sandboxMode = message.sandboxMode || '';
+        workspaces.setThreadPrefs(thread.id, {
+          approvalPolicy: tab.approvalPolicy,
+          sandboxMode: tab.sandboxMode,
+        });
 
         try {
           await ensureWindowForThread(thread.id);
@@ -1308,6 +1368,10 @@ wss.on('connection', (ws, request) => {
             tab.approvalPolicy = message.approvalPolicy || '';
             tab.sandboxMode = message.sandboxMode || '';
             tab.updatedAt = nowUnix();
+            workspaces.setThreadPrefs(message.threadId, {
+              approvalPolicy: tab.approvalPolicy,
+              sandboxMode: tab.sandboxMode,
+            });
             broadcast({ type: 'tab_updated', tab });
           }
         } catch (error) {
@@ -1421,7 +1485,6 @@ async function bootstrap() {
     if (!windowPid) {
       tab.status = 'closed';
       tab.windowPid = null;
-      tab.updatedAt = nowUnix();
       return;
     }
 
@@ -1437,14 +1500,12 @@ async function bootstrap() {
       windows.clearPid(verifiedThread.id);
       tab.status = 'closed';
       tab.windowPid = null;
-      tab.updatedAt = nowUnix();
       return;
     }
 
     // Lazy: only register tab metadata, load full data on click
     tab.status = 'idle';
     tab.windowPid = windowPid;
-    tab.updatedAt = nowUnix();
   }));
 
   server.listen(PORT, () => {

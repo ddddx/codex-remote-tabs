@@ -53,6 +53,62 @@ class WorkspaceManager {
     return normalized;
   }
 
+  getThreadPrefs(threadId) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    if (!normalizedThreadId) {
+      return {};
+    }
+
+    const entry = this.state?.threadPrefs?.[normalizedThreadId];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return {};
+    }
+
+    const prefs = {};
+    if (Object.prototype.hasOwnProperty.call(entry, 'approvalPolicy') && typeof entry.approvalPolicy === 'string') {
+      prefs.approvalPolicy = entry.approvalPolicy;
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'sandboxMode') && typeof entry.sandboxMode === 'string') {
+      prefs.sandboxMode = entry.sandboxMode;
+    }
+    return prefs;
+  }
+
+  setThreadPrefs(threadId, prefs = {}) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    if (!normalizedThreadId) {
+      return;
+    }
+
+    if (!this.state.threadPrefs || typeof this.state.threadPrefs !== 'object' || Array.isArray(this.state.threadPrefs)) {
+      this.state.threadPrefs = {};
+    }
+
+    const current = this.getThreadPrefs(normalizedThreadId);
+    const next = {};
+
+    if (Object.prototype.hasOwnProperty.call(prefs, 'approvalPolicy')) {
+      next.approvalPolicy = typeof prefs.approvalPolicy === 'string' ? prefs.approvalPolicy : '';
+    } else if (Object.prototype.hasOwnProperty.call(current, 'approvalPolicy')) {
+      next.approvalPolicy = current.approvalPolicy;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(prefs, 'sandboxMode')) {
+      next.sandboxMode = typeof prefs.sandboxMode === 'string' ? prefs.sandboxMode : '';
+    } else if (Object.prototype.hasOwnProperty.call(current, 'sandboxMode')) {
+      next.sandboxMode = current.sandboxMode;
+    }
+
+    const currentJson = JSON.stringify(current);
+    const nextJson = JSON.stringify(next);
+    if (currentJson === nextJson) {
+      return;
+    }
+
+    this.state.threadPrefs[normalizedThreadId] = next;
+    this.saveState();
+  }
+
   createDirectory(parentPath, folderName) {
     const parent = this.resolveWorkspacePath(parentPath || this.getPreferredPath());
     const sanitizedFolderName = sanitizeFolderName(folderName);
@@ -173,6 +229,11 @@ function sanitizeFolderName(folderName) {
     throw new Error('文件夹名称非法');
   }
   return normalized;
+}
+
+function normalizeThreadId(threadId) {
+  const value = typeof threadId === 'string' ? threadId.trim() : '';
+  return value || '';
 }
 
 module.exports = { WorkspaceManager };

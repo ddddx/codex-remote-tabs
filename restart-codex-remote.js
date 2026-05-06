@@ -1,4 +1,5 @@
 const { spawn, spawnSync, fork } = require('node:child_process');
+const fs = require('node:fs');
 const { URL } = require('node:url');
 const path = require('node:path');
 const net = require('node:net');
@@ -14,6 +15,77 @@ const APP_SERVER_PORT = Number.parseInt(new URL(APP_SERVER_WS).port || '4792', 1
 const ports = Array.from(new Set([APP_SERVER_PORT, PORT].filter(Number.isFinite)));
 const CODEX_CMD = process.env.CODEX_CMD || 'codex.cmd';
 const SHUTDOWN_TIMEOUT_MS = 10000;
+const LOG_DIR = path.join(process.cwd(), '.codex-remote-logs');
+const SESSION_TAG = new Date().toISOString().replace(/[:.]/g, '-');
+const LOG_FILE = path.join(LOG_DIR, `${SESSION_TAG}-${MODE}.log`);
+
+fs.mkdirSync(LOG_DIR, { recursive: true });
+const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+
+function timestamp() {
+  return new Date().toISOString();
+}
+
+function stringifyLogPart(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Error) {
+    return value.stack || value.message;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function writeLog(scope, ...parts) {
+  const text = parts.map((part) => stringifyLogPart(part)).join(' ');
+  logStream.write(`[${timestamp()}] [${scope}] ${text}\n`);
+}
+
+function relayChunk(targetStream, scope, chunk) {
+  const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+  targetStream.write(`[${scope}] ${text}`);
+  const normalized = text.endsWith('\n') ? text : `${text}\n`;
+  for (const line of normalized.split(/\r?\n/)) {
+    if (!line) {
+      continue;
+    }
+    writeLog(scope, line);
+  }
+}
+
+function attachChildLogging(child, scope) {
+  child.stdout?.on('data', (chunk) => relayChunk(process.stdout, scope, chunk));
+  child.stderr?.on('data', (chunk) => relayChunk(process.stderr, scope, chunk));
+  child.on('error', (error) => {
+    console.error(`[${scope}] process error: ${error.stack || error.message}`);
+    writeLog(scope, `process error: ${error.stack || error.message}`);
+  });
+  child.on('close', (code, signal) => {
+    writeLog(scope, `close code=${code} signal=${signal || 'none'}`);
+  });
+}
+
+writeLog('startup', `mode=${MODE}`);
+writeLog('startup', `log file=${LOG_FILE}`);
+writeLog('startup', `ports=${ports.join(', ')}`);
+writeLog('startup', `codex_cmd=${CODEX_CMD}`);
+writeLog('startup', `app_server_ws=${APP_SERVER_WS}`);
+
+process.on('uncaughtException', (error) => {
+  console.error('[fatal] uncaught exception:', error);
+  writeLog('fatal', `uncaught exception: ${error.stack || error.message}`);
+  logStream.end();
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandled rejection:', reason);
+  writeLog('fatal', `unhandled rejection: ${stringifyLogPart(reason)}`);
+});
 
 function killProcessesOnPorts(targetPorts) {
   if (!targetPorts.length) {
@@ -102,10 +174,10 @@ function runAppServerOnly() {
     }
   );
 
-  appServer.stdout.on('data', (chunk) => process.stdout.write(chunk));
-  appServer.stderr.on('data', (chunk) => process.stderr.write(chunk));
+  attachChildLogging(appServer, 'appserver');
   appServer.on('exit', (code) => {
     console.log(`app-server exited with code ${code}`);
+    writeLog('appserver', `exit code=${code}`);
     process.exit(shuttingDown ? 0 : (code || 1));
   });
 
@@ -141,10 +213,10 @@ function runCombined() {
     }
   );
 
-  appServer.stdout.on('data', (chunk) => process.stdout.write(`[appserver] ${chunk}`));
-  appServer.stderr.on('data', (chunk) => process.stderr.write(`[appserver] ${chunk}`));
+  attachChildLogging(appServer, 'appserver');
   appServer.on('exit', (code, signal) => {
     console.log(`[appserver] exited with code ${code}, signal ${signal || 'none'}`);
+    writeLog('appserver', `exit code=${code} signal=${signal || 'none'}`);
     handleChildExit('appserver', code);
   });
 
@@ -154,6 +226,7 @@ function runCombined() {
     }
 
     console.log(`[appserver] ready on ${APP_SERVER_PORT}`);
+    writeLog('appserver', `ready on ${APP_SERVER_PORT}`);
     webServer = fork(
       path.join(__dirname, 'src', 'server.js'),
       [],
@@ -163,18 +236,25 @@ function runCombined() {
           CODEX_APP_SERVER_WS: APP_SERVER_WS,
           PORT: String(PORT),
         },
+        silent: true,
       }
     );
 
+    attachChildLogging(webServer, 'web');
     webServer.on('exit', (code, signal) => {
       console.log(`[web] exited with code ${code}, signal ${signal || 'none'}`);
+      writeLog('web', `exit code=${code} signal=${signal || 'none'}`);
       handleChildExit('web', code);
+    });
+    webServer.on('disconnect', () => {
+      writeLog('web', 'ipc disconnected');
     });
   }).catch((error) => {
     if (shuttingDown && error.message === 'shutdown') {
       return;
     }
     console.error('[appserver] failed to start:', error.message);
+    writeLog('appserver', `failed to start: ${error.stack || error.message}`);
     exitCode = 1;
     void shutdown('startup_failure');
   });
@@ -223,6 +303,7 @@ function runCombined() {
     }
 
     shuttingDown = true;
+    writeLog('shutdown', `reason=${reason}`);
     if (reason === 'SIGINT' || reason === 'SIGTERM') {
       exitCode = 0;
     }
@@ -236,6 +317,7 @@ function runCombined() {
       const webExited = !webServer || webServer.exitCode !== null || webServer.signalCode !== null;
       if (!appExited || !webExited) {
         console.error('[shutdown] forcing exit after timeout');
+        writeLog('shutdown', 'forcing exit after timeout');
         process.exit(exitCode || 1);
       }
     }, SHUTDOWN_TIMEOUT_MS).unref();
@@ -259,6 +341,7 @@ function printUsageAndExit() {
 
 if (MODE === 'stop') {
   console.log(`[stop] cleaning existing listeners on ports: ${ports.join(', ')}`);
+  writeLog('stop', `cleaning existing listeners on ports: ${ports.join(', ')}`);
   killProcessesOnPorts(ports);
   process.exit(0);
 }
