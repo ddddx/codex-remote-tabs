@@ -159,6 +159,7 @@ function ensureTab(thread) {
   const tab = {
     threadId: thread.id,
     name: thread.name || existing?.name || makePreviewName(thread.preview),
+    cwd: thread.cwd || existing?.cwd || process.cwd(),
     status,
     createdAt: thread.createdAt || existing?.createdAt || nowUnix(),
     updatedAt: thread.updatedAt || existing?.updatedAt || nowUnix(),
@@ -176,7 +177,7 @@ function ensureTab(thread) {
 
 function makePreviewName(preview) {
   if (!preview) {
-    return 'New Tab';
+    return '未命名会话';
   }
   return preview.substring(0, 20) + (preview.length > 20 ? '...' : '');
 }
@@ -874,7 +875,7 @@ wss.on('connection', (ws, request) => {
               op: 'turn_start',
               threadId: message.threadId,
               clientMessageId: message.clientMessageId,
-              message: '该标签对应的会话在 Codex 中不存在，可能已被删除。请新建标签或关闭此标签后重试。',
+              message: '该会话在 Codex 中不存在，可能已被删除。请新建会话或关闭此会话后重试。',
             });
             return;
           }

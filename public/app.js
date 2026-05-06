@@ -5,7 +5,8 @@ const WEBSOCKET_TOKEN_STORAGE_KEY = 'codex-remote-ws-token';
 const EMPTY_THREAD_KEY = '__empty__';
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
-const DEFAULT_PROMPT_PLACEHOLDER = '给当前标签对应的 Codex 发送指令...';
+const DEFAULT_SESSION_NAME = '未命名会话';
+const DEFAULT_PROMPT_PLACEHOLDER = '给当前会话发送指令...';
 
 function getReconnectDelayMs(attempt) {
   const baseDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** attempt));
@@ -205,6 +206,7 @@ const menuBtn = document.getElementById('menuBtn');
 const tabList = document.getElementById('tabList');
 const newTabBtn = document.getElementById('newTabBtn');
 const messagesEl = document.getElementById('messages');
+const sessionCreatingOverlay = document.getElementById('sessionCreatingOverlay');
 const composer = document.getElementById('composer');
 const promptInput = document.getElementById('promptInput');
 const composerSubmitBtn = composer.querySelector('button[type="submit"]');
@@ -519,7 +521,8 @@ function setActiveTab(threadId, options = {}) {
   if (!state.tabs.some((entry) => entry.threadId === threadId)) {
     upsertTab({
       threadId,
-      name: 'New Tab',
+      name: DEFAULT_SESSION_NAME,
+      cwd: '',
       status: 'idle',
       createdAt: Math.floor(Date.now() / 1000),
       updatedAt: Math.floor(Date.now() / 1000),
@@ -538,6 +541,28 @@ function setActiveTab(threadId, options = {}) {
     });
   }
   render();
+}
+
+function getSessionName(tab) {
+  const name = typeof tab?.name === 'string' ? tab.name.trim() : '';
+  if (!name || name === 'New Tab') {
+    return DEFAULT_SESSION_NAME;
+  }
+  return name;
+}
+
+function getWorkspacePath(tab) {
+  return typeof tab?.cwd === 'string' ? tab.cwd.trim() : '';
+}
+
+function getWorkspaceFolder(cwd) {
+  const normalized = String(cwd || '').replace(/[\\/]+$/, '');
+  if (!normalized) {
+    return '';
+  }
+
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] || normalized;
 }
 
 function syncTurns(threadId, turns) {
@@ -683,7 +708,12 @@ function renderTabs() {
     node.classList.toggle('active', tab.threadId === state.activeThreadId);
     node.classList.toggle('closed', isClosed);
     node.classList.toggle('has-unread', hasUnread);
-    node.querySelector('.name').textContent = tab.name || 'New Tab';
+    node.querySelector('.name').textContent = getSessionName(tab);
+    const cwd = getWorkspacePath(tab);
+    const workspace = node.querySelector('.workspace');
+    workspace.textContent = cwd ? `工作区 · ${getWorkspaceFolder(cwd)}` : '工作区未提供';
+    workspace.title = cwd || '工作区未提供';
+    node.title = cwd ? `${getSessionName(tab)}\n${cwd}` : getSessionName(tab);
     const meta = node.querySelector('.meta');
     meta.replaceChildren();
     const statusDot = document.createElement('span');
@@ -729,7 +759,7 @@ function normalizeTabStatus(status) {
 
 function renderHeader() {
   const tab = state.tabs.find((entry) => entry.threadId === state.activeThreadId);
-  activeTitle.textContent = tab ? (tab.name || 'New Tab') : 'Codex Remote Control';
+  activeTitle.textContent = tab ? getSessionName(tab) : 'Codex Remote Control';
   tokenBtn.textContent = state.authFailed ? '设置 Token' : 'Token';
   tokenBtn.classList.toggle('btn-alert', state.authFailed);
 
@@ -771,7 +801,12 @@ function renderComposer() {
   composerSubmitBtn.disabled = disabled;
   promptInput.placeholder = state.authFailed
     ? 'WebSocket 鉴权失败，请点击右上角“设置 Token”。'
-    : (!state.activeThreadId ? '请先在左侧选择一个标签。' : DEFAULT_PROMPT_PLACEHOLDER);
+    : (!state.activeThreadId ? '请先在左侧选择一个会话。' : DEFAULT_PROMPT_PLACEHOLDER);
+}
+
+function renderCreatingOverlay() {
+  sessionCreatingOverlay.classList.toggle('visible', state.creatingTab);
+  sessionCreatingOverlay.setAttribute('aria-hidden', state.creatingTab ? 'false' : 'true');
 }
 
 function renderMessages() {
@@ -845,14 +880,14 @@ function buildMessageEntries(threadId) {
       return [{
         key: 'unselected',
         kind: 'empty',
-        text: '请选择左侧一个标签开始查看和对话。',
+        text: '请选择左侧一个会话开始查看和对话。',
         signature: 'unselected',
       }];
     }
     return [{
       key: 'empty',
       kind: 'empty',
-      text: '还没有标签，点左侧 "+ 新建标签" 开始。',
+      text: '还没有会话，点左侧 "+ 新建会话" 开始。',
       signature: 'empty',
     }];
   }
@@ -1449,12 +1484,13 @@ function render() {
   renderNewTabButton();
   renderComposer();
   renderMessages();
+  renderCreatingOverlay();
 }
 
 function renderNewTabButton() {
   newTabBtn.disabled = state.creatingTab || state.authFailed;
   newTabBtn.classList.toggle('is-loading', state.creatingTab);
-  newTabBtn.textContent = state.creatingTab ? '创建中...' : '+ 新建标签';
+  newTabBtn.textContent = state.creatingTab ? '正在创建会话...' : '+ 新建会话';
 }
 
 function openTextModal(options = {}) {
@@ -1524,8 +1560,8 @@ newTabBtn.addEventListener('click', async () => {
   }
 
   const name = await openTextModal({
-    title: '新建标签',
-    label: '标签名称',
+    title: '新建会话',
+    label: '会话名称',
     placeholder: '可留空',
     confirmText: '创建',
     inputType: 'text',
@@ -1808,7 +1844,7 @@ function handleMessage(msg) {
       items.push({
         type: '_error',
         id: createLocalId('thread-missing'),
-        text: msg.message || '该标签对应的会话不存在，已标记为关闭。',
+        text: msg.message || '该会话在 Codex 中不存在，已标记为关闭。',
       });
       if (threadId === state.activeThreadId) {
         render();

@@ -130,6 +130,20 @@ body {
   position: relative;
 }
 
+.tab-item .workspace {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-item.closed .workspace {
+  color: #9a9188;
+}
+
 .tab-item.has-unread .name::after {
   content: "";
   width: 8px;
@@ -318,6 +332,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 .messages {
@@ -363,6 +378,72 @@ body {
   display: flex;
   gap: 10px;
   background: var(--card);
+}
+
+.session-creating-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(243, 239, 232, 0.82);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 2;
+}
+
+.session-creating-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-creating-card {
+  width: min(520px, calc(100vw - 48px));
+  padding: 36px 28px;
+  border: 1px solid rgba(20, 92, 79, 0.18);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(255, 253, 248, 0.98), rgba(249, 242, 232, 0.98));
+  box-shadow: 0 28px 80px rgba(31, 26, 23, 0.18);
+  text-align: center;
+}
+
+.session-creating-dots {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.session-creating-dots span {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: blink 1.2s infinite both;
+}
+
+.session-creating-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.session-creating-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.session-creating-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.session-creating-text {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
 }
 
 #promptInput {
@@ -727,5 +808,17 @@ body {
 
   .topbar h1 {
     font-size: 15px;
+  }
+
+  .session-creating-card {
+    padding: 28px 22px;
+  }
+
+  .session-creating-title {
+    font-size: 22px;
+  }
+
+  .session-creating-text {
+    font-size: 14px;
   }
 }

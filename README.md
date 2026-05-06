@@ -1,15 +1,15 @@
-# Codex Remote Tabs
+# Codex Remote Sessions
 
-通过手机或 PC 远程控制本机 Codex，会话以多标签显示，并映射到本机多个 Codex 窗口。
+通过手机或 PC 远程控制本机 Codex，会话以列表显示，并映射到本机多个 Codex 窗口。
 
 ## 功能
 
-- 控制端新建标签 -> PC 创建新的 Codex thread，并尝试打开一个本地 Codex 窗口
-- 控制端关闭标签 -> 关闭对应窗口并归档对应 thread
-- 支持在控制端发送 prompt 到指定标签
+- 控制端新建会话 -> PC 创建新的 Codex thread，并尝试打开一个本地 Codex 窗口
+- 控制端关闭会话 -> 关闭对应窗口并归档对应 thread
+- 支持在控制端发送 prompt 到指定会话
 - 支持流式查看 agent 输出（delta）
 - 手机/PC 都可访问（响应式 Web UI）
-- 左侧边栏标签管理，支持打开/隐藏
+- 左侧边栏会话管理，支持打开/隐藏
 - Markdown 渲染（代码块、加粗、列表、标题）
 - 发送后显示思考动画，流式回复实时显示
 - WebSocket 断开自动重连
