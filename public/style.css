@@ -566,23 +566,19 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
-  height: 36px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--card);
+  padding: 0;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
 }
 
-.theme-select-group select {
-  border: none;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  outline: none;
-  min-width: 84px;
+.theme-select-group span,
+.composer-select-group span {
+  white-space: nowrap;
 }
 
 .status-badge {
@@ -1199,24 +1195,56 @@ body {
   color: var(--muted);
 }
 
-.composer-select-group span {
-  white-space: nowrap;
-}
-
+.theme-select-group select,
 .composer-select-group select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   min-width: 148px;
   max-width: min(36vw, 240px);
   border: 1px solid var(--input-border);
   border-radius: 999px;
-  padding: 7px 12px;
+  padding: 7px 34px 7px 12px;
   background: var(--input-bg);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
   color: var(--ink);
   font: inherit;
+  outline: none;
+  box-shadow: none;
 }
 
+.theme-select-group select {
+  min-width: 96px;
+}
+
+.theme-select-group select:focus,
+.composer-select-group select:focus {
+  border-color: var(--accent);
+  box-shadow: var(--modal-input-focus);
+}
+
+.theme-select-group select:disabled,
 .composer-select-group select:disabled {
   opacity: 0.72;
   cursor: not-allowed;
+}
+
+.theme-select-group select::-ms-expand,
+.composer-select-group select::-ms-expand {
+  display: none;
+}
+
+.theme-select-group select option,
+.composer-select-group select option {
+  background: var(--card-strong);
+  color: var(--ink);
 }
 
 .composer-input-row {
