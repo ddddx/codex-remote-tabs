@@ -25,7 +25,7 @@
 
 ```bash
 npm install
-npm run remote
+npm run remote:restart
 ```
 
 Windows 下也可以直接双击：
@@ -37,6 +37,8 @@ start-codex-remote.bat
 如果你只是调试某一层，再单独启动：
 
 ```bash
+npm run remote         # 只启动，不主动清理旧进程
+npm run remote:restart # 先杀旧进程再重启，推荐
 npm run appserver   # 只启动 Codex app-server
 npm run web         # 只启动 Web 控制端
 ```
@@ -81,7 +83,7 @@ npm run web         # 只启动 Web 控制端
 $env:CODEX_CMD='C:\path\to\codex.cmd'
 $env:PORT='9000'
 $env:WS_TOKEN='your-secret-token'
-npm run remote
+npm run remote:restart
 ```
 
 如果设置了 `WS_TOKEN`，访问控制端时可直接带上查询参数：
@@ -112,10 +114,11 @@ cc-workspace/
 │   ├── server.js     # Web 服务器 + WebSocket
 │   ├── codexAppServerClient.js  # Codex app-server 客户端
 │   └── windowManager.js         # 窗口管理
-├── start-all.js        # 推荐入口：同时拉起 app-server 和 Web 控制端
+├── start-all.js        # 同时拉起 app-server 和 Web 控制端
+├── restart-codex-remote.js # 按当前配置先杀旧进程再启动
 ├── start-appserver.js  # 调试用：只启动 app-server
 ├── start-web.js        # 调试用：只启动 Web 控制端
-├── start-codex-remote.bat # Windows 启动器，内部调用 start-all.js
+├── start-codex-remote.bat # Windows 一键重启入口
 └── package.json
 ```
 

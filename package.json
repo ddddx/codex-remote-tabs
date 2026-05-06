@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "remote": "node start-all.js",
+    "remote:restart": "node restart-codex-remote.js",
     "appserver": "node start-appserver.js",
     "web": "node start-web.js"
   },
