@@ -248,6 +248,7 @@ const state = {
   itemsByThread: new Map(),
   partialByThread: new Map(),
   turnActiveByThread: new Map(),
+  currentTurnIdByThread: new Map(),
   unreadThreadIds: new Set(),
   pendingUserMessages: new Map(),
   serverRequests: [],
@@ -409,6 +410,17 @@ function removePendingUserMessagesForThread(threadId) {
   }
 }
 
+function getLatestPendingUserMessage(threadId) {
+  let latest = null;
+  for (const pending of state.pendingUserMessages.values()) {
+    if (pending.threadId !== threadId) {
+      continue;
+    }
+    latest = pending;
+  }
+  return latest;
+}
+
 function getUserMessageText(item) {
   if (!item || item.type !== 'userMessage') {
     return '';
@@ -444,6 +456,36 @@ function reconcilePendingUserMessagesFromSync(threadId, items) {
   for (const item of items) {
     reconcilePendingUserMessage(threadId, item);
   }
+}
+
+function cloneItemForTurn(item, turnId) {
+  if (!item || typeof item !== 'object') {
+    return item;
+  }
+
+  return {
+    ...item,
+    _turnId: turnId || item._turnId || null,
+  };
+}
+
+function assignPendingUserMessageToTurn(threadId, turnId) {
+  if (!threadId || !turnId) {
+    return;
+  }
+
+  const pending = getLatestPendingUserMessage(threadId);
+  if (!pending?.itemId) {
+    return;
+  }
+
+  const items = ensureItems(threadId);
+  const item = items.find((entry) => entry.id === pending.itemId);
+  if (!item) {
+    return;
+  }
+
+  item._turnId = turnId;
 }
 
 function pruneUnreadThreads() {
@@ -533,6 +575,7 @@ function removeTab(threadId) {
   state.itemsByThread.delete(threadId);
   state.partialByThread.delete(threadId);
   state.turnActiveByThread.delete(threadId);
+  state.currentTurnIdByThread.delete(threadId);
   state.serverRequests = state.serverRequests.filter((entry) => entry.threadId !== threadId);
   removePendingUserMessagesForThread(threadId);
   state.unreadThreadIds.delete(threadId);
@@ -557,6 +600,7 @@ function markTabClosedLocally(threadId) {
   tab.status = 'closed';
   tab.updatedAt = Math.floor(Date.now() / 1000);
   state.turnActiveByThread.set(threadId, false);
+  state.currentTurnIdByThread.delete(threadId);
   return true;
 }
 
@@ -626,7 +670,7 @@ function syncTurns(threadId, turns) {
   const syncedItems = [];
   for (const turn of turns || []) {
     for (const item of turn.items || []) {
-      syncedItems.push(item);
+      syncedItems.push(cloneItemForTurn(item, turn.id || null));
     }
   }
 
@@ -664,12 +708,22 @@ function syncTurns(threadId, turns) {
   prunePendingUserMessages(threadId);
 
   const lastTurn = turns?.[turns.length - 1];
+  if (!lastTurn) {
+    state.partialByThread.delete(threadId);
+    state.turnActiveByThread.set(threadId, false);
+    state.currentTurnIdByThread.delete(threadId);
+    return;
+  }
   const lastTurnStatus = normalizeTurnStatus(lastTurn?.status);
   if (['completed', 'failed', 'cancelled', 'aborted', 'idle'].includes(lastTurnStatus)) {
     state.partialByThread.delete(threadId);
     state.turnActiveByThread.set(threadId, false);
+    state.currentTurnIdByThread.delete(threadId);
   } else if (lastTurnStatus === 'inProgress') {
     state.turnActiveByThread.set(threadId, true);
+    if (lastTurn?.id) {
+      state.currentTurnIdByThread.set(threadId, lastTurn.id);
+    }
   }
 }
 
@@ -677,7 +731,7 @@ function dedupeItems(items) {
   const seen = new Set();
   const deduped = [];
   for (const item of items) {
-    const key = `${item.type}:${item.id || ''}:${item.text || ''}`;
+    const key = `${item.type}:${item.id || ''}:${item._turnId || ''}:${item.text || ''}`;
     if (seen.has(key)) {
       continue;
     }
@@ -714,7 +768,7 @@ function normalizeTurnStatus(status) {
   return trimmed;
 }
 
-function upsertStreamingItem(threadId, itemId, delta) {
+function upsertStreamingItem(threadId, turnId, itemId, delta) {
   if (!itemId) {
     return;
   }
@@ -728,14 +782,23 @@ function upsertStreamingItem(threadId, itemId, delta) {
   if (existing) {
     existing.text = partials.get(itemId);
     existing._partial = true;
+    if (turnId) {
+      existing._turnId = turnId;
+    }
     return;
   }
 
-  existing = { type: 'agentMessage', id: itemId, text: partials.get(itemId), _partial: true };
+  existing = {
+    type: 'agentMessage',
+    id: itemId,
+    text: partials.get(itemId),
+    _partial: true,
+    _turnId: turnId || null,
+  };
   items.push(existing);
 }
 
-function finalizeItem(threadId, item) {
+function finalizeItem(threadId, turnId, item) {
   if (!item || !item.id) {
     return;
   }
@@ -743,14 +806,15 @@ function finalizeItem(threadId, item) {
   const items = ensureItems(threadId);
   const partials = ensurePartials(threadId);
   partials.delete(item.id);
+  const nextItem = cloneItemForTurn(item, turnId);
 
   const index = items.findIndex((entry) => entry.id === item.id);
   if (index >= 0) {
-    items[index] = { ...item, _partial: false };
+    items[index] = { ...nextItem, _partial: false };
     return;
   }
 
-  items.push({ ...item, _partial: false });
+  items.push({ ...nextItem, _partial: false });
 }
 
 function renderTabs() {
@@ -1075,7 +1139,7 @@ function renderMessages() {
     messagesEl.removeChild(messagesEl.lastChild);
   }
 
-  if (shouldStickToBottom || entries.some((entry) => entry.kind === 'thinking' || entry.partial)) {
+  if (shouldStickToBottom || entries.some((entry) => hasLiveEntryActivity(entry))) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 }
@@ -1118,27 +1182,215 @@ function buildMessageEntries(threadId) {
     }];
   }
 
-  const items = ensureItems(threadId);
-  const partials = state.partialByThread.get(threadId) || new Map();
-  const entries = items.map((item, index) => buildEntryFromItem(threadId, item, partials, index));
-  const requestEntries = getServerRequestsForThread(threadId).map((request) => buildEntryFromServerRequest(request));
-  entries.push(...requestEntries);
-
-  const hasAgentMessage = items.some((item) => item.type === 'agentMessage' && (item.text || partials.has(item.id)));
-  const hasPartialAgent = items.some((item) => item.type === 'agentMessage' && (item._partial || partials.has(item.id)));
-  if (state.turnActiveByThread.get(threadId) && !hasPartialAgent && !hasAgentMessage) {
+  const entries = buildSemanticTimelineEntries(threadId);
+  if (!entries.length) {
     entries.push({
-      key: '__thinking__',
-      kind: 'thinking',
-      signature: 'thinking',
+      key: 'thread-empty',
+      kind: 'empty',
+      text: '还没有消息，发送第一条指令开始。',
+      signature: 'thread-empty',
     });
   }
 
   return connectionEntries.concat(entries);
 }
 
+function buildSemanticTimelineEntries(threadId) {
+  const items = ensureItems(threadId);
+  const partials = state.partialByThread.get(threadId) || new Map();
+  const requests = getServerRequestsForThread(threadId);
+  const groups = [];
+  const groupsByKey = new Map();
+  const groupsByTurnId = new Map();
+  const itemToGroupKey = new Map();
+  const looseEntries = [];
+
+  function registerGroup(group) {
+    groups.push(group);
+    groupsByKey.set(group.key, group);
+    if (group.turnId) {
+      groupsByTurnId.set(group.turnId, group);
+    }
+    return group;
+  }
+
+  function ensureGroupForTurn(turnId) {
+    if (!turnId) {
+      return null;
+    }
+    const existing = groupsByTurnId.get(turnId);
+    if (existing) {
+      return existing;
+    }
+    return registerGroup({
+      key: `turn:${turnId}`,
+      turnId,
+      userEntry: null,
+      timelineEntries: [],
+      finalEntry: null,
+      isActive: false,
+      isPendingLocal: false,
+    });
+  }
+
+  function createPendingGroup(item) {
+    const key = `pending:${item.id || createLocalId('pending')}`;
+    const existing = groupsByKey.get(key);
+    if (existing) {
+      return existing;
+    }
+    return registerGroup({
+      key,
+      turnId: null,
+      userEntry: null,
+      timelineEntries: [],
+      finalEntry: null,
+      isActive: false,
+      isPendingLocal: true,
+    });
+  }
+
+  function getMostRecentGroup() {
+    return groups[groups.length - 1] || null;
+  }
+
+  function attachItemToGroup(group, item, entry) {
+    if (!group) {
+      looseEntries.push(entry);
+      return;
+    }
+
+    if (item?.type === 'userMessage' && !group.userEntry) {
+      group.userEntry = entry;
+    } else if (item && isFinalAgentItem(item)) {
+      group.finalEntry = entry;
+    } else {
+      group.timelineEntries.push(entry);
+    }
+
+    if (item?.id) {
+      itemToGroupKey.set(item.id, group.key);
+    }
+  }
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const entry = buildEntryFromItem(threadId, item, partials, index);
+    let group = null;
+
+    if (item.type === 'userMessage') {
+      group = item._turnId ? ensureGroupForTurn(item._turnId) : createPendingGroup(item);
+      attachItemToGroup(group, item, entry);
+      continue;
+    }
+
+    if (item._turnId) {
+      group = ensureGroupForTurn(item._turnId);
+    } else if (item.type !== '_error' && item.type !== '_warning') {
+      group = getMostRecentGroup();
+    } else if (getMostRecentGroup()) {
+      group = getMostRecentGroup();
+    }
+
+    attachItemToGroup(group, item, entry);
+  }
+
+  for (const request of requests) {
+    const entry = buildEntryFromServerRequest(request);
+    let group = null;
+
+    if (request.turnId) {
+      group = ensureGroupForTurn(request.turnId);
+    } else if (request.itemId && itemToGroupKey.has(request.itemId)) {
+      group = groupsByKey.get(itemToGroupKey.get(request.itemId)) || null;
+    } else {
+      group = getMostRecentGroup();
+    }
+
+    if (group) {
+      group.timelineEntries.push(entry);
+      continue;
+    }
+
+    looseEntries.push(entry);
+  }
+
+  if (state.turnActiveByThread.get(threadId)) {
+    const activeTurnId = state.currentTurnIdByThread.get(threadId) || null;
+    let activeGroup = activeTurnId ? ensureGroupForTurn(activeTurnId) : getMostRecentGroup();
+    if (!activeGroup) {
+      activeGroup = registerGroup({
+        key: activeTurnId ? `turn:${activeTurnId}` : `active:${threadId}`,
+        turnId: activeTurnId,
+        userEntry: null,
+        timelineEntries: [],
+        finalEntry: null,
+        isActive: true,
+        isPendingLocal: false,
+      });
+    }
+    activeGroup.isActive = true;
+  }
+
+  const groupEntries = groups.map((group, index) => ({
+    key: `timeline:${group.key}`,
+    kind: 'turn',
+    index: index + 1,
+    userEntry: group.userEntry,
+    timelineEntries: group.timelineEntries,
+    finalEntry: group.finalEntry,
+    isActive: group.isActive,
+    isPendingLocal: group.isPendingLocal,
+    signature: JSON.stringify([
+      'turn',
+      group.key,
+      group.userEntry?.signature || '',
+      group.timelineEntries.map((entry) => entry.signature),
+      group.finalEntry?.signature || '',
+      group.isActive,
+      group.isPendingLocal,
+    ]),
+  }));
+
+  return looseEntries.concat(groupEntries);
+}
+
+function hasLiveEntryActivity(entry) {
+  if (!entry) {
+    return false;
+  }
+
+  if (entry.kind === 'thinking') {
+    return true;
+  }
+
+  if (entry.partial) {
+    return true;
+  }
+
+  if (entry.kind === 'turn') {
+    return entry.isActive
+      || Boolean(entry.finalEntry?.partial)
+      || entry.timelineEntries.some((timelineEntry) => hasLiveEntryActivity(timelineEntry));
+  }
+
+  return false;
+}
+
+function createThinkingEntry(key = '__thinking__') {
+  return {
+    key,
+    kind: 'thinking',
+    signature: `thinking:${key}`,
+  };
+}
+
+function isFinalAgentItem(item) {
+  return item?.type === 'agentMessage' && (!item.phase || item.phase === 'final_answer');
+}
+
 function buildEntryFromItem(threadId, item, partials, index) {
-  const key = `${item.type}:${item.id || index}`;
+  const key = `${item.type}:${item.id || index}:${item._turnId || ''}`;
 
   if (item.type === 'userMessage') {
     const text = (item.content || [])
@@ -1256,23 +1508,98 @@ function buildEntryFromServerRequest(request) {
 function describeWebSearch(item) {
   const action = item.action || {};
   if (action.type === 'search') {
-    return `🔍 搜索 "${action.query || item.query || ''}"`;
+    return `搜索 "${action.query || item.query || ''}"`;
   }
   if (action.type === 'openPage') {
-    return `🌐 打开 ${action.url || ''}`;
+    return `打开 ${action.url || ''}`;
   }
-  return `🔍 ${item.query || JSON.stringify(action)}`;
+  return item.query || JSON.stringify(action);
 }
 
 function populateMessageNode(node, entry) {
-  node.className = 'message';
   node.replaceChildren();
 
   if (entry.kind === 'empty') {
+    node.className = 'message';
     node.classList.add('empty-state');
     node.textContent = entry.text;
     return;
   }
+
+  if (entry.kind === 'turn') {
+    node.className = 'turn-card';
+
+    const header = document.createElement('div');
+    header.className = 'turn-header';
+
+    const title = document.createElement('div');
+    title.className = 'turn-title';
+    title.textContent = `第 ${entry.index} 轮`;
+    header.appendChild(title);
+
+    const badges = document.createElement('div');
+    badges.className = 'turn-badges';
+    if (entry.isPendingLocal) {
+      badges.appendChild(createTurnBadge('待启动'));
+    }
+    if (entry.isActive) {
+      badges.appendChild(createTurnBadge('进行中', 'active'));
+    } else if (entry.finalEntry || entry.timelineEntries.length) {
+      badges.appendChild(createTurnBadge('已完成', 'done'));
+    }
+    header.appendChild(badges);
+    node.appendChild(header);
+
+    if (entry.userEntry) {
+      const promptSection = document.createElement('div');
+      promptSection.className = 'turn-section';
+
+      const promptLabel = document.createElement('div');
+      promptLabel.className = 'turn-section-title';
+      promptLabel.textContent = '你的输入';
+      promptSection.appendChild(promptLabel);
+      promptSection.appendChild(createEntryElement(entry.userEntry));
+      node.appendChild(promptSection);
+    }
+
+    const shouldRenderTimeline = entry.timelineEntries.length > 0 || (entry.isActive && !entry.finalEntry);
+    if (shouldRenderTimeline) {
+      const timelineSection = document.createElement('div');
+      timelineSection.className = 'turn-section';
+
+      const timelineLabel = document.createElement('div');
+      timelineLabel.className = 'turn-section-title';
+      timelineLabel.textContent = '执行过程';
+      timelineSection.appendChild(timelineLabel);
+
+      const timeline = document.createElement('div');
+      timeline.className = 'timeline-list';
+      for (const timelineEntry of entry.timelineEntries) {
+        timeline.appendChild(createTimelineEvent(timelineEntry));
+      }
+      if (entry.isActive && !entry.finalEntry) {
+        timeline.appendChild(createTimelineEvent(createThinkingEntry(`${entry.key}:thinking`)));
+      }
+      timelineSection.appendChild(timeline);
+      node.appendChild(timelineSection);
+    }
+
+    if (entry.finalEntry) {
+      const answerSection = document.createElement('div');
+      answerSection.className = 'turn-section';
+
+      const answerLabel = document.createElement('div');
+      answerLabel.className = 'turn-section-title';
+      answerLabel.textContent = '最终答复';
+      answerSection.appendChild(answerLabel);
+      answerSection.appendChild(createEntryElement(entry.finalEntry));
+      node.appendChild(answerSection);
+    }
+
+    return;
+  }
+
+  node.className = 'message';
 
   if (entry.kind === 'thinking') {
     node.classList.add('agent', 'thinking');
@@ -1312,7 +1639,7 @@ function populateMessageNode(node, entry) {
     node.classList.add('reasoning');
     const label = document.createElement('div');
     label.className = 'item-label';
-    label.textContent = entry.text ? '思考' : '思考中...';
+    label.textContent = entry.text ? '思考摘要' : '思考中...';
     node.appendChild(label);
     if (entry.text) {
       node.appendChild(createMessageBody(renderMarkdown(entry.text)));
@@ -1322,7 +1649,14 @@ function populateMessageNode(node, entry) {
 
   if (entry.kind === 'tool') {
     node.classList.add('tool-call');
-    node.textContent = entry.label;
+    const label = document.createElement('div');
+    label.className = 'item-label';
+    label.textContent = '网页操作';
+    node.appendChild(label);
+
+    const body = document.createElement('div');
+    body.textContent = entry.label;
+    node.appendChild(body);
     return;
   }
 
@@ -1330,7 +1664,7 @@ function populateMessageNode(node, entry) {
     node.classList.add('tool-call');
     const label = document.createElement('div');
     label.className = 'item-label';
-    label.textContent = `${commandStatusIcon(entry.status)} 命令执行`;
+    label.textContent = `${commandStatusIcon(entry.status)} 命令执行 · ${formatExecutionStatusText(entry.status)}`;
     node.appendChild(label);
 
     const code = document.createElement('code');
@@ -1350,7 +1684,7 @@ function populateMessageNode(node, entry) {
     node.classList.add('tool-call');
     const label = document.createElement('div');
     label.className = 'item-label';
-    label.textContent = `${commandStatusIcon(entry.status)} 文件修改`;
+    label.textContent = `${commandStatusIcon(entry.status)} 文件修改 · ${formatExecutionStatusText(entry.status)}`;
     node.appendChild(label);
 
     const changes = document.createElement('div');
@@ -1686,6 +2020,38 @@ function createMessageBody(html) {
   return body;
 }
 
+function createEntryElement(entry) {
+  const node = document.createElement('div');
+  populateMessageNode(node, entry);
+  return node;
+}
+
+function createTimelineEvent(entry) {
+  const row = document.createElement('div');
+  row.className = 'timeline-event';
+  if (entry?.kind) {
+    row.classList.add(`kind-${entry.kind}`);
+  }
+
+  const marker = document.createElement('div');
+  marker.className = 'timeline-marker';
+  row.appendChild(marker);
+
+  const content = document.createElement('div');
+  content.className = 'timeline-content';
+  content.appendChild(createEntryElement(entry));
+  row.appendChild(content);
+
+  return row;
+}
+
+function createTurnBadge(text, variant = '') {
+  const badge = document.createElement('span');
+  badge.className = variant ? `turn-badge ${variant}` : 'turn-badge';
+  badge.textContent = text;
+  return badge;
+}
+
 function createDot() {
   const dot = document.createElement('span');
   dot.className = 'dot';
@@ -1703,6 +2069,25 @@ function commandStatusIcon(status) {
     return '⏳';
   }
   return '⚡';
+}
+
+function formatExecutionStatusText(status) {
+  if (status === 'completed') {
+    return '已完成';
+  }
+  if (status === 'failed') {
+    return '失败';
+  }
+  if (status === 'declined') {
+    return '已拒绝';
+  }
+  if (status === 'pendingApproval') {
+    return '待批准';
+  }
+  if (status === 'in_progress' || status === 'running') {
+    return '进行中';
+  }
+  return '执行中';
 }
 
 function render() {
@@ -2112,6 +2497,10 @@ function handleMessage(msg) {
 
   if (msg.type === 'turn_started') {
     state.turnActiveByThread.set(msg.threadId, true);
+    if (msg.turnId) {
+      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
+      assignPendingUserMessageToTurn(msg.threadId, msg.turnId);
+    }
     if (msg.threadId === state.activeThreadId) {
       renderMessages();
     }
@@ -2120,6 +2509,9 @@ function handleMessage(msg) {
 
   if (msg.type === 'turn_completed') {
     state.turnActiveByThread.set(msg.threadId, false);
+    if (!msg.turnId || state.currentTurnIdByThread.get(msg.threadId) === msg.turnId) {
+      state.currentTurnIdByThread.delete(msg.threadId);
+    }
     if (msg.threadId === state.activeThreadId) {
       renderMessages();
     }
@@ -2128,7 +2520,10 @@ function handleMessage(msg) {
 
   if (msg.type === 'agent_delta') {
     state.turnActiveByThread.set(msg.threadId, true);
-    upsertStreamingItem(msg.threadId, msg.itemId, msg.delta || '');
+    if (msg.turnId) {
+      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
+    }
+    upsertStreamingItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg.itemId, msg.delta || '');
     if (msg.threadId === state.activeThreadId) {
       renderMessages();
     }
@@ -2136,8 +2531,12 @@ function handleMessage(msg) {
   }
 
   if (msg.type === 'item_started') {
+    state.turnActiveByThread.set(msg.threadId, true);
+    if (msg.turnId) {
+      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
+    }
     const items = ensureItems(msg.threadId);
-    const item = msg.item;
+    const item = cloneItemForTurn(msg.item, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null);
     reconcilePendingUserMessage(msg.threadId, item);
     if (item && item.id && !items.find((entry) => entry.id === item.id)) {
       items.push({ ...item, _partial: true });
@@ -2149,8 +2548,12 @@ function handleMessage(msg) {
   }
 
   if (msg.type === 'item_completed') {
-    reconcilePendingUserMessage(msg.threadId, msg.item);
-    finalizeItem(msg.threadId, msg.item);
+    if (msg.turnId) {
+      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
+    }
+    const item = cloneItemForTurn(msg.item, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null);
+    reconcilePendingUserMessage(msg.threadId, item);
+    finalizeItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, item);
     if (msg.threadId === state.activeThreadId) {
       renderMessages();
     }
@@ -2165,6 +2568,7 @@ function handleMessage(msg) {
       type: '_error',
       id: createLocalId('err'),
       text: error.message || JSON.stringify(error),
+      _turnId: state.currentTurnIdByThread.get(threadId) || null,
     });
     if (threadId === state.activeThreadId) {
       renderMessages();
@@ -2181,6 +2585,7 @@ function handleMessage(msg) {
       type: '_error',
       id: createLocalId('backend'),
       text: msg.message,
+      _turnId: state.currentTurnIdByThread.get(state.activeThreadId) || null,
     });
     renderMessages();
     return;
@@ -2212,6 +2617,7 @@ function handleMessage(msg) {
         type: '_error',
         id: createLocalId('thread-missing'),
         text: msg.message || '该会话在 Codex 中不存在，已标记为关闭。',
+        _turnId: state.currentTurnIdByThread.get(threadId) || null,
       });
       if (threadId === state.activeThreadId) {
         render();
@@ -2226,6 +2632,7 @@ function handleMessage(msg) {
       type: '_error',
       id: createLocalId('api'),
       text: msg.message || '服务端请求失败',
+      _turnId: state.currentTurnIdByThread.get(threadId) || null,
     });
     if (threadId === state.activeThreadId) {
       renderMessages();
@@ -2244,6 +2651,7 @@ function handleMessage(msg) {
       type: '_warning',
       id: createLocalId('warn'),
       text: msg.message,
+      _turnId: state.currentTurnIdByThread.get(threadId) || null,
     });
     if (threadId === state.activeThreadId) {
       renderMessages();
