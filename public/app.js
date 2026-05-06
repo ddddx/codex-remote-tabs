@@ -272,6 +272,7 @@ const workspaceShortcutList = document.getElementById('workspaceShortcutList');
 const workspaceBrowserPath = document.getElementById('workspaceBrowserPath');
 const workspaceBrowserList = document.getElementById('workspaceBrowserList');
 const sessionModalHint = document.getElementById('sessionModalHint');
+const sessionModalTopCloseBtn = document.getElementById('sessionModalTopCloseBtn');
 const sessionModalCancelBtn = document.getElementById('sessionModalCancelBtn');
 const sessionModalConfirmBtn = document.getElementById('sessionModalConfirmBtn');
 const customSelectControllers = new WeakMap();
@@ -4322,6 +4323,10 @@ useCurrentWorkspaceBtn.addEventListener('click', () => {
 });
 
 sessionModalCancelBtn.addEventListener('click', () => {
+  closeSessionModal(null);
+});
+
+sessionModalTopCloseBtn.addEventListener('click', () => {
   closeSessionModal(null);
 });
 

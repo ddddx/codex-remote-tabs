@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Codex Remote 会话</title>
-    <link rel="stylesheet" href="/style.css?v=25" />
+    <link rel="stylesheet" href="/style.css?v=26" />
   </head>
   <body>
     <div class="bg"></div>
@@ -99,32 +99,38 @@
     <div id="sessionModal" class="modal" aria-hidden="true">
       <div class="modal-backdrop" data-session-modal-close="true"></div>
       <div class="modal-card session-modal-card" role="dialog" aria-modal="true" aria-labelledby="sessionModalTitle">
-        <form id="sessionModalForm">
-          <h2 id="sessionModalTitle" class="modal-title">新建会话</h2>
-          <label class="modal-label" for="sessionNameInput">会话名称</label>
-          <input id="sessionNameInput" class="modal-input" type="text" maxlength="120" placeholder="可留空" />
-
-          <label class="modal-label session-workspace-label" for="sessionWorkspaceInput">工作区目录</label>
-          <div class="session-path-row">
-            <input id="sessionWorkspaceInput" class="modal-input session-path-input" type="text" placeholder="请输入或选择主机上的工作区目录" />
-            <button id="browseWorkspaceBtn" class="btn btn-secondary" type="button">进入路径</button>
+        <form id="sessionModalForm" class="session-modal-form">
+          <div class="session-modal-topbar">
+            <h2 id="sessionModalTitle" class="modal-title">新建会话</h2>
+            <button id="sessionModalTopCloseBtn" class="btn btn-secondary btn-inline session-modal-top-close" type="button">关闭</button>
           </div>
 
-          <div class="session-workspace-actions">
-            <button id="workspaceUpBtn" class="btn btn-secondary" type="button">上级目录</button>
-            <button id="workspaceRefreshBtn" class="btn btn-secondary" type="button">刷新</button>
-            <button id="createWorkspaceBtn" class="btn btn-secondary" type="button">新建文件夹</button>
-            <button id="useCurrentWorkspaceBtn" class="btn" type="button">使用当前目录</button>
+          <div class="session-modal-body">
+            <label class="modal-label" for="sessionNameInput">会话名称</label>
+            <input id="sessionNameInput" class="modal-input" type="text" maxlength="120" placeholder="可留空" />
+
+            <label class="modal-label session-workspace-label" for="sessionWorkspaceInput">工作区目录</label>
+            <div class="session-path-row">
+              <input id="sessionWorkspaceInput" class="modal-input session-path-input" type="text" placeholder="请输入或选择主机上的工作区目录" />
+              <button id="browseWorkspaceBtn" class="btn btn-secondary" type="button">进入路径</button>
+            </div>
+
+            <div class="session-workspace-actions">
+              <button id="workspaceUpBtn" class="btn btn-secondary" type="button">上级目录</button>
+              <button id="workspaceRefreshBtn" class="btn btn-secondary" type="button">刷新</button>
+              <button id="createWorkspaceBtn" class="btn btn-secondary" type="button">新建文件夹</button>
+              <button id="useCurrentWorkspaceBtn" class="btn" type="button">使用当前目录</button>
+            </div>
+
+            <div id="workspaceShortcutList" class="workspace-shortcut-list"></div>
+            <div class="workspace-browser">
+              <div id="workspaceBrowserPath" class="workspace-browser-path"></div>
+              <div id="workspaceBrowserList" class="workspace-browser-list"></div>
+            </div>
+            <div id="sessionModalHint" class="modal-label session-modal-hint">支持直接输入主机路径，也可以用下面的快捷路径。</div>
           </div>
 
-          <div id="workspaceShortcutList" class="workspace-shortcut-list"></div>
-          <div class="workspace-browser">
-            <div id="workspaceBrowserPath" class="workspace-browser-path"></div>
-            <div id="workspaceBrowserList" class="workspace-browser-list"></div>
-          </div>
-          <div id="sessionModalHint" class="modal-label session-modal-hint">支持直接输入主机路径，也可以用下面的快捷路径。</div>
-
-          <div class="modal-actions">
+          <div class="modal-actions session-modal-actions">
             <button id="sessionModalCancelBtn" class="btn btn-secondary" type="button">取消</button>
             <button id="sessionModalConfirmBtn" class="btn" type="submit">创建</button>
           </div>
@@ -142,6 +148,6 @@
     </template>
 
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js" crossorigin="anonymous"></script>
-    <script type="module" src="/app.js?v=32"></script>
+    <script type="module" src="/app.js?v=33"></script>
   </body>
 </html>
