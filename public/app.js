@@ -7,6 +7,8 @@ const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const DEFAULT_SESSION_NAME = '未命名会话';
 const DEFAULT_PROMPT_PLACEHOLDER = '给当前会话发送指令...';
+const COMPOSER_PREFS_STORAGE_KEY = 'codex-remote-composer-prefs';
+const REASONING_EFFORT_OPTIONS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
 function getReconnectDelayMs(attempt) {
   const baseDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** attempt));
@@ -172,6 +174,7 @@ function connect() {
     reconnectAttempt = 0;
     clearReconnectTimer();
     clearConnectionError();
+    void loadComposerOptions({ render: false });
     if (state.activeThreadId) {
       send({ type: 'thread_sync', threadId: state.activeThreadId });
     }
@@ -202,6 +205,7 @@ function connect() {
 }
 
 connect();
+void loadComposerOptions({ render: false });
 
 // DOM
 const sidebar = document.getElementById('sidebar');
@@ -212,6 +216,8 @@ const newTabBtn = document.getElementById('newTabBtn');
 const messagesEl = document.getElementById('messages');
 const sessionCreatingOverlay = document.getElementById('sessionCreatingOverlay');
 const composer = document.getElementById('composer');
+const modelSelect = document.getElementById('modelSelect');
+const reasoningEffortSelect = document.getElementById('reasoningEffortSelect');
 const promptInput = document.getElementById('promptInput');
 const composerSubmitBtn = composer.querySelector('button[type="submit"]');
 const activeTitle = document.getElementById('activeTitle');
@@ -252,6 +258,13 @@ const state = {
   unreadThreadIds: new Set(),
   pendingUserMessages: new Map(),
   serverRequests: [],
+  availableModels: [],
+  composerOptionsLoading: false,
+  composerOptionsLoaded: false,
+  composerModelDefault: '',
+  composerEffortDefault: '',
+  composerPrefsByThread: new Map(),
+  composerGlobalPrefs: { model: '', effort: '' },
   creatingTab: false,
   authFailed: false,
   connectionError: '',
@@ -273,6 +286,8 @@ const sessionModalState = {
   browserParentPath: '',
   browserEntries: [],
 };
+
+loadComposerGlobalPrefs();
 
 function send(payload) {
   if (window._ws && window._ws.readyState === WebSocket.OPEN) {
@@ -337,6 +352,190 @@ function renderMarkdown(text) {
     return window.DOMPurify.sanitize(html);
   }
   return html;
+}
+
+function normalizeComposerModel(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeComposerEffort(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return REASONING_EFFORT_OPTIONS.includes(normalized) ? normalized : '';
+}
+
+function loadComposerGlobalPrefs() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(COMPOSER_PREFS_STORAGE_KEY) || '{}');
+    state.composerGlobalPrefs = {
+      model: normalizeComposerModel(parsed?.model),
+      effort: normalizeComposerEffort(parsed?.effort),
+    };
+  } catch (_error) {
+    state.composerGlobalPrefs = { model: '', effort: '' };
+  }
+}
+
+function saveComposerGlobalPrefs() {
+  try {
+    window.localStorage.setItem(COMPOSER_PREFS_STORAGE_KEY, JSON.stringify(state.composerGlobalPrefs));
+  } catch (_error) {
+    // Ignore storage failures.
+  }
+}
+
+function getActiveComposerPrefs() {
+  const threadId = state.activeThreadId;
+  if (threadId) {
+    const threadPrefs = state.composerPrefsByThread.get(threadId);
+    if (threadPrefs) {
+      return threadPrefs;
+    }
+  }
+  return state.composerGlobalPrefs;
+}
+
+function setComposerPrefsForThread(threadId, prefs) {
+  const normalized = {
+    model: normalizeComposerModel(prefs?.model),
+    effort: normalizeComposerEffort(prefs?.effort),
+  };
+
+  if (threadId) {
+    state.composerPrefsByThread.set(threadId, normalized);
+  }
+  state.composerGlobalPrefs = normalized;
+  saveComposerGlobalPrefs();
+}
+
+function buildModelSelectOptions() {
+  const options = [{
+    value: '',
+    label: state.composerModelDefault ? `默认（${state.composerModelDefault}）` : '默认',
+  }];
+
+  for (const model of state.availableModels) {
+    const value = normalizeComposerModel(model.model || model.id || '');
+    if (!value) {
+      continue;
+    }
+    options.push({
+      value,
+      label: model.displayName ? `${model.displayName}${model.isDefault ? '（默认）' : ''}` : value,
+    });
+  }
+
+  return options;
+}
+
+function getModelDefinition(modelId) {
+  const normalized = normalizeComposerModel(modelId);
+  if (!normalized) {
+    return state.availableModels.find((model) => model.isDefault) || null;
+  }
+  return state.availableModels.find((model) => normalizeComposerModel(model.model || model.id) === normalized) || null;
+}
+
+function buildEffortSelectOptions() {
+  const activePrefs = getActiveComposerPrefs();
+  const activeModel = getModelDefinition(activePrefs?.model || state.composerModelDefault);
+  const supportedEfforts = Array.isArray(activeModel?.supportedReasoningEfforts) && activeModel.supportedReasoningEfforts.length
+    ? activeModel.supportedReasoningEfforts.map((effort) => normalizeComposerEffort(effort)).filter(Boolean)
+    : REASONING_EFFORT_OPTIONS;
+  const defaultLabel = state.composerEffortDefault
+    ? `默认（${formatReasoningEffortLabel(state.composerEffortDefault)}）`
+    : '默认';
+  return [{
+    value: '',
+    label: defaultLabel,
+  }].concat(supportedEfforts.map((effort) => ({
+    value: effort,
+    label: formatReasoningEffortLabel(effort),
+  })));
+}
+
+function fillSelectOptions(selectEl, options, selectedValue) {
+  if (!(selectEl instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const previousValue = selectEl.value;
+  selectEl.replaceChildren();
+  for (const optionData of options) {
+    const option = document.createElement('option');
+    option.value = optionData.value;
+    option.textContent = optionData.label;
+    selectEl.appendChild(option);
+  }
+
+  const nextValue = options.some((option) => option.value === selectedValue)
+    ? selectedValue
+    : (options.some((option) => option.value === previousValue) ? previousValue : options[0]?.value || '');
+  selectEl.value = nextValue;
+}
+
+function formatReasoningEffortLabel(effort) {
+  if (!effort) {
+    return '默认';
+  }
+  if (effort === 'xhigh') {
+    return '超高';
+  }
+  if (effort === 'none') {
+    return '关闭';
+  }
+  if (effort === 'minimal') {
+    return '极低';
+  }
+  if (effort === 'low') {
+    return '低';
+  }
+  if (effort === 'medium') {
+    return '中';
+  }
+  if (effort === 'high') {
+    return '高';
+  }
+  return effort;
+}
+
+function getEffectiveComposerSelection(threadId = state.activeThreadId) {
+  const prefs = threadId ? (state.composerPrefsByThread.get(threadId) || state.composerGlobalPrefs) : state.composerGlobalPrefs;
+  const model = normalizeComposerModel(prefs?.model) || state.composerModelDefault || '';
+  const effort = normalizeComposerEffort(prefs?.effort) || state.composerEffortDefault || '';
+  return { model, effort };
+}
+
+async function loadComposerOptions(options = {}) {
+  if (state.composerOptionsLoading) {
+    return;
+  }
+
+  state.composerOptionsLoading = true;
+  if (options.render !== false) {
+    renderComposer();
+  }
+
+  try {
+    const url = new URL('/api/codex/options', window.location.origin);
+    const activeTab = state.tabs.find((entry) => entry.threadId === state.activeThreadId);
+    if (activeTab?.cwd) {
+      url.searchParams.set('cwd', activeTab.cwd);
+    }
+    const result = await apiFetchJson(url);
+    state.availableModels = Array.isArray(result.models) ? result.models : [];
+    state.composerModelDefault = normalizeComposerModel(result.defaults?.model)
+      || normalizeComposerModel(state.availableModels.find((model) => model.isDefault)?.model);
+    state.composerEffortDefault = normalizeComposerEffort(result.defaults?.reasoningEffort)
+      || normalizeComposerEffort(
+        state.availableModels.find((model) => normalizeComposerModel(model.model) === state.composerModelDefault)?.defaultReasoningEffort
+      );
+    state.composerOptionsLoaded = true;
+  } catch (error) {
+    console.error('failed loading codex options', error);
+  } finally {
+    state.composerOptionsLoading = false;
+    renderComposer();
+  }
 }
 
 function ensureItems(threadId) {
@@ -576,6 +775,7 @@ function removeTab(threadId) {
   state.partialByThread.delete(threadId);
   state.turnActiveByThread.delete(threadId);
   state.currentTurnIdByThread.delete(threadId);
+  state.composerPrefsByThread.delete(threadId);
   state.serverRequests = state.serverRequests.filter((entry) => entry.threadId !== threadId);
   removePendingUserMessagesForThread(threadId);
   state.unreadThreadIds.delete(threadId);
@@ -624,6 +824,7 @@ function setActiveTab(threadId, options = {}) {
 
   state.activeThreadId = threadId;
   state.unreadThreadIds.delete(threadId);
+  void loadComposerOptions({ render: false });
   if (!skipSync && !send({ type: 'thread_sync', threadId })) {
     const items = ensureItems(threadId);
     items.push({
@@ -918,11 +1119,19 @@ function renderHeader() {
 
 function renderComposer() {
   const disabled = state.authFailed || !state.activeThreadId;
+  const prefs = getActiveComposerPrefs();
   promptInput.disabled = disabled;
   composerSubmitBtn.disabled = disabled;
   promptInput.placeholder = state.authFailed
     ? 'WebSocket 鉴权失败，请点击右上角“设置 Token”。'
     : (!state.activeThreadId ? '请先在左侧选择一个会话。' : DEFAULT_PROMPT_PLACEHOLDER);
+
+  fillSelectOptions(modelSelect, buildModelSelectOptions(), normalizeComposerModel(prefs?.model));
+  fillSelectOptions(reasoningEffortSelect, buildEffortSelectOptions(), normalizeComposerEffort(prefs?.effort));
+  modelSelect.disabled = state.authFailed || state.composerOptionsLoading;
+  reasoningEffortSelect.disabled = state.authFailed;
+  modelSelect.title = state.composerOptionsLoading ? '正在加载模型列表...' : '';
+  reasoningEffortSelect.title = '思考等级会应用到当前及后续轮次';
 }
 
 function renderCreatingOverlay() {
@@ -2345,7 +2554,13 @@ newTabBtn.addEventListener('click', async () => {
 
   state.creatingTab = true;
   render();
-  if (!send({ type: 'tab_create', name: draft.name, cwd: draft.cwd })) {
+  const createPrefs = getActiveComposerPrefs();
+  if (!send({
+    type: 'tab_create',
+    name: draft.name,
+    cwd: draft.cwd,
+    model: normalizeComposerModel(createPrefs?.model) || state.composerModelDefault || '',
+  })) {
     state.creatingTab = false;
     render();
     return;
@@ -2463,6 +2678,22 @@ promptInput.addEventListener('keydown', (event) => {
   composer.requestSubmit();
 });
 
+modelSelect.addEventListener('change', () => {
+  setComposerPrefsForThread(state.activeThreadId, {
+    model: modelSelect.value,
+    effort: reasoningEffortSelect.value,
+  });
+  renderComposer();
+});
+
+reasoningEffortSelect.addEventListener('change', () => {
+  setComposerPrefsForThread(state.activeThreadId, {
+    model: modelSelect.value,
+    effort: reasoningEffortSelect.value,
+  });
+  renderComposer();
+});
+
 composer.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = promptInput.value.trim();
@@ -2481,8 +2712,16 @@ composer.addEventListener('submit', (event) => {
   });
   registerPendingUserMessage(clientMessageId, threadId, localMessageId, text);
 
+  const composerSelection = getEffectiveComposerSelection(threadId);
   state.turnActiveByThread.set(threadId, true);
-  if (!send({ type: 'turn_send', threadId, text, clientMessageId })) {
+  if (!send({
+    type: 'turn_send',
+    threadId,
+    text,
+    clientMessageId,
+    model: composerSelection.model || '',
+    effort: composerSelection.effort || '',
+  })) {
     rollbackPendingUserMessage(clientMessageId);
     state.turnActiveByThread.set(threadId, false);
     ensureItems(threadId).push({

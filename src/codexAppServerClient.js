@@ -105,9 +105,10 @@ class CodexAppServerClient extends EventEmitter {
     return result.data || [];
   }
 
-  async startThread({ name, cwd } = {}) {
+  async startThread({ name, cwd, model } = {}) {
     const workingCwd = cwd || this.defaultCwd;
     const result = await this.request('thread/start', {
+      model: model || null,
       cwd: workingCwd,
       experimentalRawEvents: false,
       persistExtendedHistory: true,
@@ -139,9 +140,11 @@ class CodexAppServerClient extends EventEmitter {
     return result.thread;
   }
 
-  async startTurn(threadId, text) {
+  async startTurn(threadId, text, options = {}) {
     const result = await this.request('turn/start', {
       threadId,
+      model: options.model || null,
+      effort: options.effort || null,
       input: [
         {
           type: 'text',
@@ -151,6 +154,32 @@ class CodexAppServerClient extends EventEmitter {
       ],
     });
     return result.turn;
+  }
+
+  async listModels({ includeHidden = false, limit = 200 } = {}) {
+    const data = [];
+    let cursor = null;
+
+    do {
+      const result = await this.request('model/list', {
+        includeHidden,
+        limit,
+        cursor,
+      });
+      const page = Array.isArray(result.data) ? result.data : [];
+      data.push(...page);
+      cursor = result.nextCursor || null;
+    } while (cursor);
+
+    return data;
+  }
+
+  async readConfig({ cwd } = {}) {
+    const result = await this.request('config/read', {
+      includeLayers: false,
+      cwd: cwd || null,
+    });
+    return result;
   }
 
   async #startStdio() {

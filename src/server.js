@@ -21,6 +21,7 @@ const MAX_WORKSPACE_PATH_LENGTH = parsePositiveInteger(process.env.MAX_WORKSPACE
 const BOOTSTRAP_THREAD_LIMIT = parsePositiveInteger(process.env.BOOTSTRAP_THREAD_LIMIT) || 100;
 const WINDOW_STATUS_REFRESH_MS = parsePositiveInteger(process.env.WINDOW_STATUS_REFRESH_MS) || 5000;
 const THREAD_ID_REGEX = /^[0-9a-f]{8,12}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
 const app = express();
 app.use(express.json({ limit: '32kb' }));
@@ -90,6 +91,46 @@ app.post('/api/workspace/create-directory', (req, res) => {
     res.json({ path: createdPath });
   } catch (error) {
     res.status(400).json({ message: getErrorMessage(error) || '无法创建工作区目录' });
+  }
+});
+
+app.get('/api/codex/options', async (req, res) => {
+  if (!isAuthorizedHttpRequest(req)) {
+    res.status(401).json({ message: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const cwd = normalizeWorkspaceInput(req.query?.cwd);
+    const [models, configResponse] = await Promise.all([
+      codex.listModels({ includeHidden: false }),
+      codex.readConfig({ cwd: cwd || process.cwd() }),
+    ]);
+    const config = configResponse?.config || {};
+    const defaultModel = typeof config.model === 'string' ? config.model : '';
+    const defaultReasoningEffort = typeof config.model_reasoning_effort === 'string'
+      ? config.model_reasoning_effort
+      : '';
+
+    res.json({
+      models: models.map((model) => ({
+        id: model.id || model.model || '',
+        model: model.model || model.id || '',
+        displayName: model.displayName || model.model || model.id || '',
+        description: model.description || '',
+        isDefault: model.isDefault === true,
+        defaultReasoningEffort: model.defaultReasoningEffort || '',
+        supportedReasoningEfforts: Array.isArray(model.supportedReasoningEfforts)
+          ? model.supportedReasoningEfforts.map((entry) => entry?.value || entry).filter(Boolean)
+          : [],
+      })),
+      defaults: {
+        model: defaultModel,
+        reasoningEffort: defaultReasoningEffort,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: getErrorMessage(error) || '无法读取 Codex 选项' });
   }
 });
 
@@ -498,6 +539,7 @@ function normalizeClientMessage(raw) {
         type: 'tab_create',
         name: normalizeOptionalString(message.name, MAX_TAB_NAME_LENGTH),
         cwd: normalizeWorkspaceInput(message.cwd),
+        model: normalizeOptionalModel(message.model),
       };
     case 'tab_close':
       return {
@@ -510,6 +552,8 @@ function normalizeClientMessage(raw) {
         threadId: normalizeThreadId(message.threadId),
         text: normalizeRequiredString(message.text, MAX_TURN_INPUT_LENGTH, 'text'),
         clientMessageId: normalizeOptionalClientMessageId(message.clientMessageId),
+        model: normalizeOptionalModel(message.model),
+        effort: normalizeOptionalReasoningEffort(message.effort),
       };
     case 'thread_sync':
       return {
@@ -558,6 +602,30 @@ function normalizeOptionalClientMessageId(value) {
     throw new Error('invalid clientMessageId');
   }
   return value.trim().slice(0, 128);
+}
+
+function normalizeOptionalModel(value) {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error('invalid model');
+  }
+  return value.trim().slice(0, 200);
+}
+
+function normalizeOptionalReasoningEffort(value) {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error('invalid reasoning effort');
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!REASONING_EFFORTS.has(normalized)) {
+    throw new Error('invalid reasoning effort');
+  }
+  return normalized;
 }
 
 function normalizeWorkspaceInput(value) {
@@ -914,6 +982,7 @@ wss.on('connection', (ws, request) => {
         const thread = await codex.startThread({
           name: message.name || null,
           cwd: workspacePath,
+          model: message.model || null,
         });
         workspaces.rememberPath(workspacePath);
         const tab = ensureTab(thread);
@@ -942,7 +1011,10 @@ wss.on('connection', (ws, request) => {
       if (message.type === 'turn_send') {
         try {
           await ensureWindowForThread(message.threadId);
-          await codex.startTurn(message.threadId, message.text);
+          await codex.startTurn(message.threadId, message.text, {
+            model: message.model || null,
+            effort: message.effort || null,
+          });
         } catch (error) {
           if (isThreadNotFoundError(error)) {
             markTabClosed(message.threadId);

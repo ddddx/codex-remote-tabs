@@ -837,8 +837,51 @@ body {
   border-top: 1px solid var(--line);
   padding: 10px 16px;
   display: flex;
+  flex-direction: column;
   gap: 10px;
   background: var(--card);
+}
+
+.composer-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.composer-select-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: rgba(93, 86, 77, 0.72);
+}
+
+.composer-select-group span {
+  white-space: nowrap;
+}
+
+.composer-select-group select {
+  min-width: 148px;
+  max-width: min(36vw, 240px);
+  border: 1px solid rgba(120, 103, 84, 0.18);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(255, 252, 247, 0.96);
+  color: var(--ink);
+  font: inherit;
+}
+
+.composer-select-group select:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.composer-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
 }
 
 .session-creating-overlay {
@@ -910,11 +953,12 @@ body {
 #promptInput {
   flex: 1;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 9px;
+  border-radius: 14px;
+  padding: 11px 12px;
   resize: vertical;
   font-size: 14px;
   font-family: inherit;
+  min-height: 54px;
 }
 
 /* Reasoning / thinking */
@@ -1178,6 +1222,28 @@ body {
 
 .cursor {
   animation: blink-cursor 0.8s step-end infinite;
+}
+
+@media (max-width: 720px) {
+  .composer-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .composer-select-group {
+    justify-content: space-between;
+  }
+
+  .composer-select-group select {
+    max-width: none;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .composer-input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 @keyframes blink-cursor {
