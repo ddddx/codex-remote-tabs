@@ -466,10 +466,19 @@ function upsertTab(tab) {
     state.tabs.push(tab);
   }
 
-  state.tabs.sort((a, b) => b.updatedAt - a.updatedAt);
+  state.tabs.sort(compareTabs);
   if (!state.activeThreadId) {
     setActiveTab(tab.threadId);
   }
+}
+
+function compareTabs(a, b) {
+  const aClosed = normalizeTabStatus(a?.status) === 'closed';
+  const bClosed = normalizeTabStatus(b?.status) === 'closed';
+  if (aClosed !== bClosed) {
+    return aClosed ? 1 : -1;
+  }
+  return (b?.updatedAt || 0) - (a?.updatedAt || 0);
 }
 
 function removeTab(threadId) {

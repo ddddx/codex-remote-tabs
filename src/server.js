@@ -16,8 +16,6 @@ const WS_TOKEN = process.env.WS_TOKEN || '';
 const MAX_CLIENT_MESSAGE_BYTES = parsePositiveInteger(process.env.MAX_CLIENT_MESSAGE_BYTES) || 65536;
 const MAX_TURN_INPUT_LENGTH = parsePositiveInteger(process.env.MAX_TURN_INPUT_LENGTH) || 20000;
 const MAX_TAB_NAME_LENGTH = parsePositiveInteger(process.env.MAX_TAB_NAME_LENGTH) || 120;
-const CLOSED_TAB_TTL_MS = parsePositiveInteger(process.env.CLOSED_TAB_TTL_MS) || 30000;
-const MAX_CLOSED_TABS = parsePositiveInteger(process.env.MAX_CLOSED_TABS) || 20;
 const BOOTSTRAP_THREAD_LIMIT = parsePositiveInteger(process.env.BOOTSTRAP_THREAD_LIMIT) || 100;
 const WINDOW_STATUS_REFRESH_MS = parsePositiveInteger(process.env.WINDOW_STATUS_REFRESH_MS) || 5000;
 const THREAD_ID_REGEX = /^[0-9a-f]{8,12}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -191,33 +189,6 @@ function clearClosedTabCleanup(threadId) {
   }
 }
 
-function scheduleClosedTabCleanup(threadId) {
-  clearClosedTabCleanup(threadId);
-  const timer = setTimeout(() => {
-    closedTabTimers.delete(threadId);
-    const tab = tabs.get(threadId);
-    if (!tab || tab.status !== 'closed') {
-      return;
-    }
-    removeTab(threadId, { broadcastRemoval: true });
-  }, CLOSED_TAB_TTL_MS);
-  timer.unref?.();
-  closedTabTimers.set(threadId, timer);
-  pruneClosedTabs();
-  pruneClosedTabTimers();
-}
-
-function pruneClosedTabs() {
-  const closedTabs = tabsList().filter((tab) => tab.status === 'closed');
-  if (closedTabs.length <= MAX_CLOSED_TABS) {
-    return;
-  }
-
-  for (const tab of closedTabs.slice(MAX_CLOSED_TABS)) {
-    removeTab(tab.threadId, { broadcastRemoval: true });
-  }
-}
-
 function pruneClosedTabTimers() {
   for (const [threadId, timer] of closedTabTimers.entries()) {
     const tab = tabs.get(threadId);
@@ -235,9 +206,11 @@ function markTabClosed(threadId) {
     return;
   }
 
+  windows.clearPid(threadId);
   tab.status = 'closed';
+  tab.windowPid = null;
   tab.updatedAt = nowUnix();
-  scheduleClosedTabCleanup(threadId);
+  clearClosedTabCleanup(threadId);
   broadcast({ type: 'tab_updated', tab });
 }
 
@@ -251,7 +224,16 @@ function removeTab(threadId, options = {}) {
 }
 
 function tabsList() {
-  return Array.from(tabs.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  return Array.from(tabs.values()).sort(compareTabs);
+}
+
+function compareTabs(a, b) {
+  const aClosed = normalizeStatus(a?.status, 'idle') === 'closed';
+  const bClosed = normalizeStatus(b?.status, 'idle') === 'closed';
+  if (aClosed !== bClosed) {
+    return aClosed ? 1 : -1;
+  }
+  return (b?.updatedAt || 0) - (a?.updatedAt || 0);
 }
 
 function send(ws, payload) {
@@ -421,7 +403,7 @@ async function refreshAllTabWindowStatus() {
       currentTab.windowPid = null;
       currentTab.status = 'closed';
       currentTab.updatedAt = nowUnix();
-      scheduleClosedTabCleanup(currentTab.threadId);
+      clearClosedTabCleanup(currentTab.threadId);
       changedTabs.push(currentTab);
     })());
   }
@@ -875,13 +857,6 @@ wss.on('connection', (ws, request) => {
 
       if (message.type === 'tab_close') {
         await windows.closeWindow(message.threadId);
-        try {
-          await codex.archiveThread(message.threadId);
-        } catch (error) {
-          if (!isThreadNotFoundError(error)) {
-            throw error;
-          }
-        }
         markTabClosed(message.threadId);
         return;
       }
@@ -996,8 +971,12 @@ async function bootstrap() {
       return;
     }
 
+    const tab = ensureTab(verifiedThread);
     const windowPid = windows.getPid(verifiedThread.id);
     if (!windowPid) {
+      tab.status = 'closed';
+      tab.windowPid = null;
+      tab.updatedAt = nowUnix();
       return;
     }
 
@@ -1010,12 +989,16 @@ async function bootstrap() {
     }
 
     if (!windowAlive) {
+      windows.clearPid(verifiedThread.id);
+      tab.status = 'closed';
+      tab.windowPid = null;
+      tab.updatedAt = nowUnix();
       return;
     }
 
     // Lazy: only register tab metadata, load full data on click
-    const tab = ensureTab(verifiedThread);
     tab.status = 'idle';
+    tab.windowPid = windowPid;
     tab.updatedAt = nowUnix();
   }));
 
