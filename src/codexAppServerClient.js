@@ -105,14 +105,16 @@ class CodexAppServerClient extends EventEmitter {
     return result.data || [];
   }
 
-  async startThread({ name } = {}) {
+  async startThread({ name, cwd } = {}) {
+    const workingCwd = cwd || this.defaultCwd;
     const result = await this.request('thread/start', {
-      cwd: this.defaultCwd,
+      cwd: workingCwd,
       experimentalRawEvents: false,
       persistExtendedHistory: true,
     });
 
     const thread = result.thread;
+    thread.cwd = thread.cwd || workingCwd;
     if (name) {
       await this.request('thread/name/set', { threadId: thread.id, name });
       thread.name = name;

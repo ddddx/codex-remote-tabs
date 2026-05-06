@@ -8,6 +8,7 @@ const { WebSocketServer } = require('ws');
 const { CodexAppServerClient } = require('./codexAppServerClient');
 const { CodexWindowManager } = require('./windowManager');
 const { applyLocalConfig } = require('./localConfig');
+const { WorkspaceManager } = require('./workspaceManager');
 
 applyLocalConfig();
 
@@ -16,11 +17,13 @@ const WS_TOKEN = process.env.WS_TOKEN || '';
 const MAX_CLIENT_MESSAGE_BYTES = parsePositiveInteger(process.env.MAX_CLIENT_MESSAGE_BYTES) || 65536;
 const MAX_TURN_INPUT_LENGTH = parsePositiveInteger(process.env.MAX_TURN_INPUT_LENGTH) || 20000;
 const MAX_TAB_NAME_LENGTH = parsePositiveInteger(process.env.MAX_TAB_NAME_LENGTH) || 120;
+const MAX_WORKSPACE_PATH_LENGTH = parsePositiveInteger(process.env.MAX_WORKSPACE_PATH_LENGTH) || 2048;
 const BOOTSTRAP_THREAD_LIMIT = parsePositiveInteger(process.env.BOOTSTRAP_THREAD_LIMIT) || 100;
 const WINDOW_STATUS_REFRESH_MS = parsePositiveInteger(process.env.WINDOW_STATUS_REFRESH_MS) || 5000;
 const THREAD_ID_REGEX = /^[0-9a-f]{8,12}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const app = express();
+app.use(express.json({ limit: '32kb' }));
 app.get('/health', (_req, res) => {
   res.json({
     status: shuttingDown ? 'shutting_down' : 'ok',
@@ -41,6 +44,9 @@ const codex = new CodexAppServerClient({
 const windows = new CodexWindowManager({
   appServerWs: process.env.CODEX_APP_SERVER_WS,
 });
+const workspaces = new WorkspaceManager({
+  projectRoot: process.cwd(),
+});
 
 const tabs = new Map();
 const closedTabTimers = new Map();
@@ -48,6 +54,48 @@ const pendingWindowOpens = new Map();
 const pendingServerRequests = new Map();
 let shuttingDown = false;
 let windowStatusTimer = null;
+
+app.get('/api/workspace/shortcuts', (req, res) => {
+  if (!isAuthorizedHttpRequest(req)) {
+    res.status(401).json({ message: 'Unauthorized' });
+    return;
+  }
+  res.json(workspaces.getShortcuts());
+});
+
+app.post('/api/workspace/pick', async (req, res) => {
+  if (!isAuthorizedHttpRequest(req)) {
+    res.status(401).json({ message: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const selectedPath = await workspaces.pickDirectory(normalizeWorkspaceInput(req.body?.initialPath));
+    res.json({
+      cancelled: !selectedPath,
+      path: selectedPath || '',
+    });
+  } catch (error) {
+    res.status(400).json({ message: getErrorMessage(error) || '无法打开主机文件夹选择器' });
+  }
+});
+
+app.post('/api/workspace/create-directory', (req, res) => {
+  if (!isAuthorizedHttpRequest(req)) {
+    res.status(401).json({ message: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const createdPath = workspaces.createDirectory(
+      normalizeWorkspaceInput(req.body?.parentPath),
+      req.body?.folderName
+    );
+    res.json({ path: createdPath });
+  } catch (error) {
+    res.status(400).json({ message: getErrorMessage(error) || '无法创建工作区目录' });
+  }
+});
 
 server.on('upgrade', (request, socket, head) => {
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
@@ -63,6 +111,18 @@ server.on('upgrade', (request, socket, head) => {
 
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
+}
+
+function isAuthorizedHttpRequest(req) {
+  if (!WS_TOKEN) {
+    return true;
+  }
+
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token : '';
+  const headerToken = typeof req.headers['x-codex-remote-token'] === 'string'
+    ? req.headers['x-codex-remote-token']
+    : '';
+  return queryToken === WS_TOKEN || headerToken === WS_TOKEN;
 }
 
 function parsePositiveInteger(value) {
@@ -441,6 +501,7 @@ function normalizeClientMessage(raw) {
       return {
         type: 'tab_create',
         name: normalizeOptionalString(message.name, MAX_TAB_NAME_LENGTH),
+        cwd: normalizeWorkspaceInput(message.cwd),
       };
     case 'tab_close':
       return {
@@ -501,6 +562,21 @@ function normalizeOptionalClientMessageId(value) {
     throw new Error('invalid clientMessageId');
   }
   return value.trim().slice(0, 128);
+}
+
+function normalizeWorkspaceInput(value) {
+  if (value == null || value === '') {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error('invalid workspace path');
+  }
+
+  const normalized = value.trim();
+  if (normalized.length > MAX_WORKSPACE_PATH_LENGTH) {
+    throw new Error(`workspace path too long (max ${MAX_WORKSPACE_PATH_LENGTH})`);
+  }
+  return normalized;
 }
 
 function normalizeRequestId(value) {
@@ -838,7 +914,12 @@ wss.on('connection', (ws, request) => {
 
     try {
       if (message.type === 'tab_create') {
-        const thread = await codex.startThread({ name: message.name || null });
+        const workspacePath = workspaces.resolveWorkspacePath(message.cwd || workspaces.getPreferredPath());
+        const thread = await codex.startThread({
+          name: message.name || null,
+          cwd: workspacePath,
+        });
+        workspaces.rememberPath(workspacePath);
         const tab = ensureTab(thread);
 
         try {

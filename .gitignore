@@ -10,4 +10,5 @@ tmp-bindings/
 config.local.json
 .window-map.json
 .closed-tabs.json
+.codex-remote-state.json
 run-review.ps1
