@@ -22,6 +22,14 @@ const BOOTSTRAP_THREAD_LIMIT = parsePositiveInteger(process.env.BOOTSTRAP_THREAD
 const WINDOW_STATUS_REFRESH_MS = parsePositiveInteger(process.env.WINDOW_STATUS_REFRESH_MS) || 5000;
 const THREAD_ID_REGEX = /^[0-9a-f]{8,12}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const STREAM_ITEM_DELTA_METHODS = new Set([
+  'item/commandExecution/outputDelta',
+  'item/fileChange/outputDelta',
+  'item/fileChange/patchUpdated',
+  'item/reasoning/summaryTextDelta',
+  'item/reasoning/summaryPartAdded',
+  'item/reasoning/textDelta',
+]);
 
 const app = express();
 app.use(express.json({ limit: '32kb' }));
@@ -851,7 +859,12 @@ codex.on('notification', (msg) => {
       tab.updatedAt = nowUnix();
       broadcast({ type: 'tab_updated', tab });
     }
-    broadcast({ type: 'turn_started', threadId: params.threadId, turnId: params.turn?.id || null });
+    broadcast({
+      type: 'turn_started',
+      threadId: params.threadId,
+      turnId: params.turn?.id || null,
+      startedAt: params.turn?.startedAt || params.turn?.createdAt || Date.now(),
+    });
     return;
   }
 
@@ -875,7 +888,13 @@ codex.on('notification', (msg) => {
   }
 
   if (method === 'item/started') {
-    broadcast({ type: 'item_started', threadId: params.threadId, turnId: params.turnId, item: params.item });
+    broadcast({
+      type: 'item_started',
+      threadId: params.threadId,
+      turnId: params.turnId,
+      item: params.item,
+      startedAt: params.item?.startedAt || params.item?.createdAt || Date.now(),
+    });
     return;
   }
 
@@ -894,8 +913,19 @@ codex.on('notification', (msg) => {
       turnId: params.turnId,
       itemId: params.itemId,
       delta: params.delta,
+      startedAt: params.startedAt || Date.now(),
     });
     broadcastUnreadIfNeeded(params.threadId);
+    return;
+  }
+
+  if (STREAM_ITEM_DELTA_METHODS.has(method)) {
+    broadcast({
+      type: 'item_delta',
+      method,
+      ...params,
+      startedAt: params.startedAt || Date.now(),
+    });
     return;
   }
 

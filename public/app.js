@@ -255,6 +255,7 @@ const state = {
   partialByThread: new Map(),
   turnActiveByThread: new Map(),
   currentTurnIdByThread: new Map(),
+  turnStartedAtByThread: new Map(),
   unreadThreadIds: new Set(),
   pendingUserMessages: new Map(),
   serverRequests: [],
@@ -668,6 +669,214 @@ function cloneItemForTurn(item, turnId) {
   };
 }
 
+function normalizeTimestampMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1e12 ? value * 1000 : value;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      return normalizeTimestampMs(Number(trimmed));
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function getTurnStartedAtFromTurn(turn) {
+  return normalizeTimestampMs(turn?.startedAt)
+    || normalizeTimestampMs(turn?.createdAt)
+    || normalizeTimestampMs(turn?.updatedAt)
+    || null;
+}
+
+function rememberTurnStartedAt(threadId, timestamp) {
+  if (!threadId) {
+    return;
+  }
+
+  const normalized = normalizeTimestampMs(timestamp) || Date.now();
+  const existing = state.turnStartedAtByThread.get(threadId);
+  if (!existing || normalized < existing) {
+    state.turnStartedAtByThread.set(threadId, normalized);
+  }
+}
+
+function clearTurnStartedAt(threadId) {
+  state.turnStartedAtByThread.delete(threadId);
+}
+
+function formatElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}小时${minutes}分`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分${seconds}秒`;
+  }
+  return `${seconds}秒`;
+}
+
+function getTurnElapsedLabel(threadId) {
+  const startedAt = state.turnStartedAtByThread.get(threadId);
+  if (!startedAt) {
+    return '';
+  }
+  return `已执行 ${formatElapsed(Date.now() - startedAt)}`;
+}
+
+function findItemIndexById(threadId, itemId) {
+  if (!itemId) {
+    return -1;
+  }
+  return ensureItems(threadId).findIndex((item) => item.id === itemId);
+}
+
+function upsertLiveItem(threadId, turnId, itemId, type, mutate) {
+  if (!threadId || !itemId) {
+    return null;
+  }
+
+  const items = ensureItems(threadId);
+  let index = findItemIndexById(threadId, itemId);
+  if (index < 0) {
+    items.push({
+      id: itemId,
+      type,
+      status: 'running',
+      _turnId: turnId || state.currentTurnIdByThread.get(threadId) || null,
+      _partial: true,
+    });
+    index = items.length - 1;
+  }
+
+  const item = items[index];
+  item.type = type || item.type;
+  if (turnId) {
+    item._turnId = turnId;
+  }
+  if (!item.status) {
+    item.status = 'running';
+  }
+  item._partial = true;
+  mutate(item);
+  return item;
+}
+
+function extractTextParts(value) {
+  if (!value) {
+    return [];
+  }
+  if (typeof value === 'string') {
+    return value.trim() ? [value] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => extractTextParts(entry));
+  }
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') {
+      return extractTextParts(value.text);
+    }
+    if (typeof value.delta === 'string') {
+      return extractTextParts(value.delta);
+    }
+    if (typeof value.content === 'string') {
+      return extractTextParts(value.content);
+    }
+    if (Array.isArray(value.content)) {
+      return extractTextParts(value.content);
+    }
+  }
+  return [];
+}
+
+function appendReasoningSummaryPart(item, part) {
+  const nextParts = extractTextParts(part);
+  if (!nextParts.length) {
+    return;
+  }
+
+  if (!Array.isArray(item.summary)) {
+    item.summary = [];
+  }
+  nextParts.forEach((text) => {
+    item.summary.push({ type: 'summary_text', text });
+  });
+}
+
+function appendReasoningSummaryText(item, delta) {
+  if (typeof delta !== 'string' || !delta) {
+    return;
+  }
+
+  if (!Array.isArray(item.summary)) {
+    item.summary = [];
+  }
+
+  const last = item.summary[item.summary.length - 1];
+  if (last && typeof last.text === 'string') {
+    last.text += delta;
+    return;
+  }
+
+  item.summary.push({ type: 'summary_text', text: delta });
+}
+
+function appendReasoningContentText(item, delta) {
+  if (typeof delta !== 'string' || !delta) {
+    return;
+  }
+
+  if (!Array.isArray(item.content)) {
+    item.content = [];
+  }
+
+  const last = item.content[item.content.length - 1];
+  if (last && typeof last.text === 'string') {
+    last.text += delta;
+    return;
+  }
+
+  item.content.push({ type: 'text', text: delta });
+}
+
+function getReasoningText(item) {
+  const parts = []
+    .concat(extractTextParts(item?.summary))
+    .concat(extractTextParts(item?.content));
+  const unique = [];
+  for (const part of parts) {
+    const normalized = String(part || '').trim();
+    if (!normalized || unique[unique.length - 1] === normalized) {
+      continue;
+    }
+    unique.push(normalized);
+  }
+  return unique.join('\n').trim();
+}
+
+function getCommandOutput(item) {
+  return String(item?.aggregatedOutput || item?.output || '').trim();
+}
+
+function getFileChangeOutput(item) {
+  return String(item?.aggregatedOutput || item?.output || '').trim();
+}
+
+function getFileChangePatch(item) {
+  return String(item?.patch || item?.aggregatedPatch || '').trim();
+}
+
 function assignPendingUserMessageToTurn(threadId, turnId) {
   if (!threadId || !turnId) {
     return;
@@ -913,6 +1122,7 @@ function syncTurns(threadId, turns) {
     state.partialByThread.delete(threadId);
     state.turnActiveByThread.set(threadId, false);
     state.currentTurnIdByThread.delete(threadId);
+    clearTurnStartedAt(threadId);
     return;
   }
   const lastTurnStatus = normalizeTurnStatus(lastTurn?.status);
@@ -920,11 +1130,13 @@ function syncTurns(threadId, turns) {
     state.partialByThread.delete(threadId);
     state.turnActiveByThread.set(threadId, false);
     state.currentTurnIdByThread.delete(threadId);
+    clearTurnStartedAt(threadId);
   } else if (lastTurnStatus === 'inProgress') {
     state.turnActiveByThread.set(threadId, true);
     if (lastTurn?.id) {
       state.currentTurnIdByThread.set(threadId, lastTurn.id);
     }
+    rememberTurnStartedAt(threadId, getTurnStartedAtFromTurn(lastTurn));
   }
 }
 
@@ -1097,14 +1309,22 @@ function renderHeader() {
     return;
   }
 
+  const elapsedLabel = tab && state.turnActiveByThread.get(tab.threadId)
+    ? getTurnElapsedLabel(tab.threadId)
+    : '';
+
   if (tab && hasPendingServerRequest(tab.threadId)) {
-    activeStatus.textContent = '待批准';
+    activeStatus.textContent = elapsedLabel ? `待批准 · ${elapsedLabel}` : '待批准';
     activeStatus.className = 'status-badge waiting';
     return;
   }
 
   const status = tab ? normalizeTabStatus(tab.status) : '';
-  activeStatus.textContent = status === 'closed' ? '已关闭' : status;
+  if (status === 'running' || status === 'active') {
+    activeStatus.textContent = elapsedLabel ? `进行中 · ${elapsedLabel}` : '进行中';
+  } else {
+    activeStatus.textContent = status === 'closed' ? '已关闭' : status;
+  }
   activeStatus.className = 'status-badge';
   if (status === 'running' || status === 'active') {
     activeStatus.classList.add('running');
@@ -1485,6 +1705,9 @@ function buildSemanticTimelineEntries(threadId) {
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     const entry = buildEntryFromItem(threadId, item, partials, index);
+    if (!entry) {
+      continue;
+    }
     let group = null;
 
     if (item.type === 'userMessage') {
@@ -1628,7 +1851,10 @@ function buildEntryFromItem(threadId, item, partials, index) {
   }
 
   if (item.type === 'reasoning') {
-    const summary = (item.summary || []).map((entry) => entry.text || entry).join('\n');
+    const summary = getReasoningText(item);
+    if (!summary) {
+      return null;
+    }
     return {
       key,
       kind: 'reasoning',
@@ -1651,7 +1877,7 @@ function buildEntryFromItem(threadId, item, partials, index) {
     const command = item.command || item.input || '';
     const pendingRequest = findPendingRequestForItem(threadId, item.id);
     const status = pendingRequest ? 'pendingApproval' : (item.status || '');
-    const output = item.aggregatedOutput || item.output || '';
+    const output = getCommandOutput(item);
     return {
       key,
       kind: 'command',
@@ -1666,12 +1892,16 @@ function buildEntryFromItem(threadId, item, partials, index) {
     const pendingRequest = findPendingRequestForItem(threadId, item.id);
     const status = pendingRequest ? 'pendingApproval' : (item.status || '');
     const changes = Array.isArray(item.changes) ? item.changes : [];
+    const output = getFileChangeOutput(item);
+    const patch = getFileChangePatch(item);
     return {
       key,
       kind: 'fileChange',
       status,
       changes,
-      signature: JSON.stringify(['fileChange', key, status, JSON.stringify(changes)]),
+      output,
+      patch,
+      signature: JSON.stringify(['fileChange', key, status, JSON.stringify(changes), output, patch]),
     };
   }
 
@@ -1853,6 +2083,11 @@ function populateFileChangeEntry(node, entry) {
   if (!entry.changes.length) {
     body.appendChild(createTimelinePlaceholder('等待文件变更详情…'));
   }
+  if (entry.patch) {
+    body.appendChild(createTimelinePre(entry.patch, 'timeline-inline-pre-output'));
+  } else if (entry.output) {
+    body.appendChild(createTimelinePre(entry.output, 'timeline-inline-pre-output'));
+  }
   details.appendChild(body);
 
   node.appendChild(details);
@@ -1866,10 +2101,8 @@ function populateToolEntry(node, entry) {
 
 function populateReasoningEntry(node, entry) {
   node.className = 'timeline-card timeline-card-reasoning';
-  node.appendChild(createTimelineTitle(entry.text ? '思考摘要' : '思考中…'));
-  if (entry.text) {
-    node.appendChild(createMessageBody(renderMarkdown(entry.text)));
-  }
+  node.appendChild(createTimelineMeta('思考'));
+  node.appendChild(createMessageBody(renderMarkdown(entry.text)));
 }
 
 function populateThinkingEntry(node) {
@@ -2823,11 +3056,13 @@ function handleMessage(msg) {
 
   if (msg.type === 'turn_started') {
     state.turnActiveByThread.set(msg.threadId, true);
+    rememberTurnStartedAt(msg.threadId, msg.startedAt);
     if (msg.turnId) {
       state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
       assignPendingUserMessageToTurn(msg.threadId, msg.turnId);
     }
     if (msg.threadId === state.activeThreadId) {
+      renderHeader();
       renderMessages();
     }
     return;
@@ -2835,10 +3070,12 @@ function handleMessage(msg) {
 
   if (msg.type === 'turn_completed') {
     state.turnActiveByThread.set(msg.threadId, false);
+    clearTurnStartedAt(msg.threadId);
     if (!msg.turnId || state.currentTurnIdByThread.get(msg.threadId) === msg.turnId) {
       state.currentTurnIdByThread.delete(msg.threadId);
     }
     if (msg.threadId === state.activeThreadId) {
+      renderHeader();
       renderMessages();
     }
     return;
@@ -2846,11 +3083,13 @@ function handleMessage(msg) {
 
   if (msg.type === 'agent_delta') {
     state.turnActiveByThread.set(msg.threadId, true);
+    rememberTurnStartedAt(msg.threadId, msg.startedAt);
     if (msg.turnId) {
       state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
     }
     upsertStreamingItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg.itemId, msg.delta || '');
     if (msg.threadId === state.activeThreadId) {
+      renderHeader();
       renderMessages();
     }
     return;
@@ -2858,6 +3097,7 @@ function handleMessage(msg) {
 
   if (msg.type === 'item_started') {
     state.turnActiveByThread.set(msg.threadId, true);
+    rememberTurnStartedAt(msg.threadId, msg.startedAt);
     if (msg.turnId) {
       state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
     }
@@ -2868,6 +3108,7 @@ function handleMessage(msg) {
       items.push({ ...item, _partial: true });
     }
     if (msg.threadId === state.activeThreadId) {
+      renderHeader();
       renderMessages();
     }
     return;
@@ -2881,6 +3122,53 @@ function handleMessage(msg) {
     reconcilePendingUserMessage(msg.threadId, item);
     finalizeItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, item);
     if (msg.threadId === state.activeThreadId) {
+      renderMessages();
+    }
+    return;
+  }
+
+  if (msg.type === 'item_delta') {
+    state.turnActiveByThread.set(msg.threadId, true);
+    rememberTurnStartedAt(msg.threadId, msg.startedAt);
+    if (msg.turnId) {
+      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
+    }
+
+    if (msg.method === 'item/commandExecution/outputDelta') {
+      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'commandExecution', (item) => {
+        const delta = typeof msg.delta === 'string' ? msg.delta : '';
+        item.aggregatedOutput = `${item.aggregatedOutput || item.output || ''}${delta}`;
+      });
+    } else if (msg.method === 'item/fileChange/outputDelta') {
+      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'fileChange', (item) => {
+        const delta = typeof msg.delta === 'string' ? msg.delta : '';
+        item.aggregatedOutput = `${item.aggregatedOutput || item.output || ''}${delta}`;
+      });
+    } else if (msg.method === 'item/fileChange/patchUpdated') {
+      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'fileChange', (item) => {
+        if (typeof msg.patch === 'string') {
+          item.patch = msg.patch;
+        }
+        if (Array.isArray(msg.changes)) {
+          item.changes = msg.changes;
+        }
+      });
+    } else if (msg.method === 'item/reasoning/summaryTextDelta') {
+      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'reasoning', (item) => {
+        appendReasoningSummaryText(item, typeof msg.delta === 'string' ? msg.delta : '');
+      });
+    } else if (msg.method === 'item/reasoning/summaryPartAdded') {
+      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'reasoning', (item) => {
+        appendReasoningSummaryPart(item, msg.part);
+      });
+    } else if (msg.method === 'item/reasoning/textDelta') {
+      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'reasoning', (item) => {
+        appendReasoningContentText(item, typeof msg.delta === 'string' ? msg.delta : '');
+      });
+    }
+
+    if (msg.threadId === state.activeThreadId) {
+      renderHeader();
       renderMessages();
     }
     return;
@@ -2987,3 +3275,9 @@ function handleMessage(msg) {
 
   console.log('Unhandled message:', msg.type, msg);
 }
+
+window.setInterval(() => {
+  if (state.creatingTab || Array.from(state.turnActiveByThread.values()).some(Boolean)) {
+    renderHeader();
+  }
+}, 1000);
