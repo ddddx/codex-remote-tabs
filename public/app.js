@@ -320,6 +320,12 @@ ensureCustomSelect(permissionPresetSelect);
 ensureCustomSelect(approvalPolicySelect);
 ensureCustomSelect(sandboxModeSelect);
 
+modelSelect.dataset.hideEmptyOption = 'true';
+reasoningEffortSelect.dataset.hideEmptyOption = 'true';
+permissionPresetSelect.dataset.hideEmptyOption = 'true';
+approvalPolicySelect.dataset.hideEmptyOption = 'true';
+sandboxModeSelect.dataset.hideEmptyOption = 'true';
+
 document.addEventListener('click', (event) => {
   const target = event.target;
   if (!(target instanceof Node)) {
@@ -797,7 +803,7 @@ function buildModelSelectOptions() {
     }
     options.push({
       value,
-      label: model.displayName || value,
+      label: value,
     });
   }
 
@@ -1215,6 +1221,13 @@ function ensureCustomSelect(selectEl) {
   return controller;
 }
 
+function getCustomSelectDisplayLabel(selectEl, fallbackLabel = '') {
+  const override = typeof selectEl?.dataset?.currentLabel === 'string'
+    ? selectEl.dataset.currentLabel.trim()
+    : '';
+  return override || fallbackLabel;
+}
+
 function syncCustomSelect(selectEl) {
   const controller = ensureCustomSelect(selectEl);
   if (!controller) {
@@ -1223,13 +1236,16 @@ function syncCustomSelect(selectEl) {
 
   const { wrapper, trigger, label, menu } = controller;
   const selectedOption = selectEl.options[selectEl.selectedIndex] || selectEl.options[0] || null;
-  label.textContent = selectedOption?.textContent || '';
+  label.textContent = getCustomSelectDisplayLabel(selectEl, selectedOption?.textContent || '');
   trigger.disabled = selectEl.disabled;
   trigger.title = selectEl.title || '';
   wrapper.classList.toggle('disabled', selectEl.disabled);
 
   menu.replaceChildren();
   Array.from(selectEl.options).forEach((option) => {
+    if (option.value === '' && selectEl.dataset.hideEmptyOption === 'true') {
+      return;
+    }
     const optionButton = document.createElement('button');
     optionButton.type = 'button';
     optionButton.className = 'select-option';
@@ -2980,6 +2996,16 @@ function renderComposer() {
   const uploadCount = getComposerUploadCount();
   const hasDraftContent = Boolean(promptInput.value.trim() || attachments.length);
   const prefs = getActiveComposerPrefs();
+  const effectiveModelLabel = normalizeComposerModel(prefs?.model) || state.composerModelDefault || '';
+  const effectiveEffortLabel = formatReasoningEffortLabel(normalizeComposerEffort(prefs?.effort) || state.composerEffortDefault || '');
+  const effectiveApprovalValue = normalizeComposerApprovalPolicy(prefs?.approvalPolicy) || state.composerApprovalPolicyDefault || '';
+  const effectiveSandboxValue = normalizeComposerSandboxMode(prefs?.sandboxMode) || state.composerSandboxModeDefault || '';
+  const effectiveApprovalLabel = formatApprovalPolicyLabel(effectiveApprovalValue);
+  const effectiveSandboxLabel = formatSandboxModeLabel(effectiveSandboxValue);
+  const effectivePresetLabel = formatPermissionPresetLabel(
+    inferPermissionPresetValue(effectiveApprovalValue, effectiveSandboxValue),
+    { includeDescription: true }
+  );
   promptInput.disabled = disabled;
   attachImageBtn.disabled = disabled || uploadCount > 0;
   composerSubmitBtn.disabled = disabled || uploadCount > 0 || !hasDraftContent;
@@ -3001,6 +3027,11 @@ function renderComposer() {
   );
   fillSelectOptions(approvalPolicySelect, buildApprovalPolicySelectOptions(), normalizeComposerApprovalPolicy(prefs?.approvalPolicy));
   fillSelectOptions(sandboxModeSelect, buildSandboxModeSelectOptions(), normalizeComposerSandboxMode(prefs?.sandboxMode));
+  modelSelect.dataset.currentLabel = effectiveModelLabel;
+  reasoningEffortSelect.dataset.currentLabel = effectiveEffortLabel;
+  permissionPresetSelect.dataset.currentLabel = effectivePresetLabel;
+  approvalPolicySelect.dataset.currentLabel = effectiveApprovalLabel;
+  sandboxModeSelect.dataset.currentLabel = effectiveSandboxLabel;
   modelSelect.disabled = state.authFailed || state.composerOptionsLoading;
   reasoningEffortSelect.disabled = state.authFailed;
   permissionPresetSelect.disabled = state.authFailed;
