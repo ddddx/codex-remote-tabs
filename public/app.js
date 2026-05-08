@@ -232,6 +232,7 @@ const menuBtn = document.getElementById('menuBtn');
 const tabList = document.getElementById('tabList');
 const newTabBtn = document.getElementById('newTabBtn');
 const messagesEl = document.getElementById('messages');
+const jumpToBottomBtn = document.getElementById('jumpToBottomBtn');
 const sessionCreatingOverlay = document.getElementById('sessionCreatingOverlay');
 const composer = document.getElementById('composer');
 const composerControlsToggle = document.getElementById('composerControlsToggle');
@@ -310,6 +311,7 @@ let scheduledRenderFrame = 0;
 let scheduledRenderHeader = false;
 let scheduledRenderMessages = false;
 let lastRenderedMessagesThreadKey = EMPTY_THREAD_KEY;
+let unreadMessagesBelowFold = false;
 
 const PERMISSION_PRESET_VALUES = new Set(['', 'read-only', 'auto', 'full-access', 'custom']);
 
@@ -355,6 +357,19 @@ window.addEventListener('resize', () => {
     composer.classList.remove('mobile-controls-open');
     composerControlsToggle.setAttribute('aria-expanded', 'false');
   }
+});
+
+messagesEl.addEventListener('scroll', () => {
+  if (isMessagesNearBottom()) {
+    unreadMessagesBelowFold = false;
+  }
+  renderJumpToBottomButton();
+});
+
+jumpToBottomBtn.addEventListener('click', () => {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  unreadMessagesBelowFold = false;
+  renderJumpToBottomButton();
 });
 
 const state = {
@@ -411,6 +426,15 @@ function send(payload) {
     return true;
   }
   return false;
+}
+
+function isMessagesNearBottom() {
+  return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 24;
+}
+
+function renderJumpToBottomButton() {
+  const shouldShow = unreadMessagesBelowFold && !isMessagesNearBottom();
+  jumpToBottomBtn.hidden = !shouldShow;
 }
 
 async function apiFetchJson(url, options = {}) {
@@ -3361,7 +3385,7 @@ function renderMessages() {
   const domMap = ensureMessageDomMap(threadKey);
   const nextKeys = new Set(entries.map((entry) => entry.key));
   const didThreadChange = lastRenderedMessagesThreadKey !== threadKey;
-  const shouldStickToBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 24;
+  const shouldStickToBottom = isMessagesNearBottom();
 
   for (const [key] of domMap) {
     if (!nextKeys.has(key)) {
@@ -3398,9 +3422,13 @@ function renderMessages() {
 
   if (didThreadChange || shouldStickToBottom) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    unreadMessagesBelowFold = false;
+  } else if (entries.some((entry) => hasLiveEntryActivity(entry))) {
+    unreadMessagesBelowFold = true;
   }
 
   lastRenderedMessagesThreadKey = threadKey;
+  renderJumpToBottomButton();
 }
 
 function buildMessageEntries(threadId) {

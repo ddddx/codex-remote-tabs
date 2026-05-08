@@ -704,6 +704,17 @@ body {
   gap: 10px;
 }
 
+.jump-to-bottom-btn {
+  position: absolute;
+  right: 18px;
+  bottom: 132px;
+  z-index: 4;
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+}
+
 .message {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1956,6 +1967,11 @@ body {
 
   .composer-attachment-card {
     max-width: 220px;
+  }
+
+  .jump-to-bottom-btn {
+    right: 14px;
+    bottom: 144px;
   }
 }
 
