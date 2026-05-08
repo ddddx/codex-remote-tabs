@@ -1974,6 +1974,14 @@ body {
   z-index: 30;
 }
 
+#sessionModal {
+  z-index: 30;
+}
+
+#textModal {
+  z-index: 40;
+}
+
 .modal.open {
   display: flex;
 }

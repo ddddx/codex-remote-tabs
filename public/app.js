@@ -767,12 +767,18 @@ function setComposerPrefsForThread(threadId, prefs) {
 }
 
 function setComposerPrefsFromInputs(threadId = state.activeThreadId, overrides = {}) {
+  const currentPrefs = threadId
+    ? (state.composerPrefsByThread.get(threadId) || state.composerGlobalPrefs)
+    : state.composerGlobalPrefs;
   const normalized = buildComposerPrefs(threadId, {
     model: Object.prototype.hasOwnProperty.call(overrides, 'model') ? overrides.model : modelSelect.value,
     effort: Object.prototype.hasOwnProperty.call(overrides, 'effort') ? overrides.effort : reasoningEffortSelect.value,
     approvalPolicy: Object.prototype.hasOwnProperty.call(overrides, 'approvalPolicy') ? overrides.approvalPolicy : approvalPolicySelect.value,
     sandboxMode: Object.prototype.hasOwnProperty.call(overrides, 'sandboxMode') ? overrides.sandboxMode : sandboxModeSelect.value,
   });
+  if (!confirmHighRiskPermissionChange(currentPrefs, normalized)) {
+    return null;
+  }
   setComposerPrefsForThread(threadId, normalized);
   return normalized;
 }
@@ -832,10 +838,10 @@ function formatApprovalPolicyLabel(value) {
     return '仅不受信命令需批准';
   }
   if (value === 'on-request') {
-    return '按需批准';
+    return '按需批准（On Request）';
   }
   if (value === 'never') {
-    return '从不询问';
+    return '从不询问（Never）';
   }
   if (value === 'on-failure') {
     return '失败后询问（已弃用）';
@@ -866,12 +872,58 @@ function getPermissionPresetDefinition(value) {
     return {
       value,
       label: 'Full Access',
-      description: '完全权限 + 从不询问',
-      approvalPolicy: 'never',
+      description: '完全权限 + 按需批准',
+      approvalPolicy: 'on-request',
       sandboxMode: 'danger-full-access',
     };
   }
   return null;
+}
+
+function isApprovalPolicyHighRisk(value) {
+  return normalizeComposerApprovalPolicy(value) === 'never';
+}
+
+function isSandboxModeHighRisk(value) {
+  return normalizeComposerSandboxMode(value) === 'danger-full-access';
+}
+
+function buildHighRiskPermissionChangeMessage(nextPrefs) {
+  const approvalPolicy = normalizeComposerApprovalPolicy(nextPrefs?.approvalPolicy);
+  const sandboxMode = normalizeComposerSandboxMode(nextPrefs?.sandboxMode);
+
+  if (isApprovalPolicyHighRisk(approvalPolicy) && isSandboxModeHighRisk(sandboxMode)) {
+    return '即将切换到高风险组合：Full Access + Never。\n\n这会同时关闭沙箱限制，并停止后续批准确认。Codex 之后可以直接执行高权限操作。确定继续吗？';
+  }
+  if (isSandboxModeHighRisk(sandboxMode)) {
+    return '即将切换到 Full Access（danger-full-access）。\n\n这会取消沙箱限制，允许 Codex 访问当前主机；但后续是否仍需确认，取决于“执行批准”设置。单独的 Full Access 仍不等于 Never。确定继续吗？';
+  }
+  if (isApprovalPolicyHighRisk(approvalPolicy)) {
+    return '即将切换到 Never。\n\n后续命令执行将不再经过网页批准确认。这比仅切到 Full Access 更危险。确定继续吗？';
+  }
+  return '';
+}
+
+function shouldConfirmHighRiskPermissionChange(previousPrefs, nextPrefs) {
+  const previousApprovalPolicy = normalizeComposerApprovalPolicy(previousPrefs?.approvalPolicy);
+  const previousSandboxMode = normalizeComposerSandboxMode(previousPrefs?.sandboxMode);
+  const nextApprovalPolicy = normalizeComposerApprovalPolicy(nextPrefs?.approvalPolicy);
+  const nextSandboxMode = normalizeComposerSandboxMode(nextPrefs?.sandboxMode);
+
+  const sandboxEscalated = !isSandboxModeHighRisk(previousSandboxMode) && isSandboxModeHighRisk(nextSandboxMode);
+  const approvalEscalated = !isApprovalPolicyHighRisk(previousApprovalPolicy) && isApprovalPolicyHighRisk(nextApprovalPolicy);
+  return sandboxEscalated || approvalEscalated;
+}
+
+function confirmHighRiskPermissionChange(previousPrefs, nextPrefs) {
+  if (!shouldConfirmHighRiskPermissionChange(previousPrefs, nextPrefs)) {
+    return true;
+  }
+  const message = buildHighRiskPermissionChangeMessage(nextPrefs);
+  if (!message) {
+    return true;
+  }
+  return window.confirm(message);
 }
 
 function inferPermissionPresetValue(approvalPolicy, sandboxMode) {
@@ -964,10 +1016,16 @@ function applyPermissionPreset(threadId, presetValue) {
     return null;
   }
 
+  const currentPrefs = threadId
+    ? (state.composerPrefsByThread.get(threadId) || state.composerGlobalPrefs)
+    : state.composerGlobalPrefs;
   const prefs = buildComposerPrefs(threadId, {
     approvalPolicy: preset.approvalPolicy,
     sandboxMode: preset.sandboxMode,
   });
+  if (!confirmHighRiskPermissionChange(currentPrefs, prefs)) {
+    return null;
+  }
   setComposerPrefsForThread(threadId, prefs);
   return prefs;
 }
@@ -996,7 +1054,7 @@ function formatSandboxModeLabel(value) {
     return '工作区可写';
   }
   if (value === 'danger-full-access') {
-    return '完全权限';
+    return '完全权限（Full Access）';
   }
   return value;
 }
@@ -1676,6 +1734,100 @@ function executeSlashCommand(command) {
     return true;
   }
   return false;
+}
+
+function canExecuteSlashCommandAfterSend(command) {
+  const action = command?.action || '';
+  return action === 'open_workspace_picker'
+    || action === 'open_sessions'
+    || action === 'refresh_session'
+    || action === 'reconnect_socket'
+    || action === 'show_permission_settings'
+    || action === 'open_sandbox'
+    || action === 'show_approvals'
+    || action === 'show_status'
+    || action === 'open_model'
+    || action === 'open_effort'
+    || action === 'open_theme'
+    || action === 'open_token'
+    || action === 'show_help';
+}
+
+function buildComposerMessageContent(text, attachments) {
+  const content = [];
+  if (text) {
+    content.push({ type: 'text', text });
+  }
+  for (const attachment of attachments) {
+    content.push({
+      type: 'localImage',
+      path: attachment.path,
+      name: attachment.name || getAttachmentFileName(attachment.path),
+      previewUrl: attachment.previewUrl || buildUploadPreviewUrl(attachment.path),
+    });
+  }
+  return content;
+}
+
+function submitTurnMessage(threadId, text, attachments, options = {}) {
+  if (!threadId || (!text && !attachments.length) || getComposerUploadCount() > 0) {
+    return false;
+  }
+
+  const clientMessageId = createLocalId('turn');
+  const localMessageId = createLocalId('local');
+  const content = buildComposerMessageContent(text, attachments);
+  const items = ensureItems(threadId);
+  items.push({
+    type: 'userMessage',
+    id: localMessageId,
+    content,
+  });
+  registerPendingUserMessage(clientMessageId, threadId, localMessageId, content);
+
+  const composerSelection = getEffectiveComposerSelection(threadId);
+  state.turnActiveByThread.set(threadId, true);
+  if (!send({
+    type: 'turn_send',
+    threadId,
+    text,
+    attachments: attachments.map((attachment) => ({
+      path: attachment.path,
+      name: attachment.name || getAttachmentFileName(attachment.path),
+    })),
+    clientMessageId,
+    model: composerSelection.model || '',
+    effort: composerSelection.effort || '',
+    approvalPolicy: composerSelection.approvalPolicy || '',
+    sandboxMode: composerSelection.sandboxMode || '',
+  })) {
+    rollbackPendingUserMessage(clientMessageId);
+    state.turnActiveByThread.set(threadId, false);
+    promptInput.value = text;
+    setComposerAttachments(threadId, attachments);
+    ensureItems(threadId).push({
+      type: '_error',
+      id: createLocalId('send'),
+      text: '消息发送失败：WebSocket 未连接，请稍后重试。',
+    });
+    autoResizePromptInput();
+    render();
+    return false;
+  }
+
+  promptInput.value = '';
+  clearComposerAttachments(threadId);
+  autoResizePromptInput();
+  closeSlashMenu();
+  render();
+
+  if (typeof options.afterSend === 'function') {
+    window.setTimeout(() => {
+      options.afterSend();
+    }, 0);
+  }
+
+  return true;
 }
 
 function getExactSlashCommand(text) {
@@ -2418,6 +2570,10 @@ function upsertTab(tab) {
     state.tabs.push(tab);
   }
 
+  if (normalizeTabStatus(tab?.status) === 'closed') {
+    clearActiveTabIfMatches(tab.threadId);
+  }
+
   state.tabs.sort(compareTabs);
 }
 
@@ -2441,6 +2597,14 @@ function compareTabs(a, b) {
   return String(a?.threadId || '').localeCompare(String(b?.threadId || ''));
 }
 
+function clearActiveTabIfMatches(threadId) {
+  if (state.activeThreadId !== threadId) {
+    return false;
+  }
+  state.activeThreadId = null;
+  return true;
+}
+
 function removeTab(threadId) {
   state.tabs = state.tabs.filter((tab) => tab.threadId !== threadId);
   state.itemsByThread.delete(threadId);
@@ -2455,9 +2619,7 @@ function removeTab(threadId) {
   state.unreadThreadIds.delete(threadId);
   messageDomByThread.delete(threadId);
 
-  if (state.activeThreadId === threadId) {
-    state.activeThreadId = null;
-  }
+  clearActiveTabIfMatches(threadId);
 
   render();
 }
@@ -2475,6 +2637,7 @@ function markTabClosedLocally(threadId) {
   tab.updatedAt = Math.floor(Date.now() / 1000);
   state.turnActiveByThread.set(threadId, false);
   state.currentTurnIdByThread.delete(threadId);
+  clearActiveTabIfMatches(threadId);
   return true;
 }
 
@@ -2844,9 +3007,9 @@ function renderComposer() {
   sandboxModeSelect.disabled = state.authFailed;
   modelSelect.title = state.composerOptionsLoading ? '正在加载模型列表...' : '';
   reasoningEffortSelect.title = '思考等级会应用到当前及后续轮次';
-  permissionPresetSelect.title = '/approvals 权限预设，会同时设置执行批准和权限范围';
-  approvalPolicySelect.title = '/approvals 的执行批准部分，会应用到当前及后续轮次';
-  sandboxModeSelect.title = '/approvals 的权限范围部分，会应用到当前及后续轮次';
+  permissionPresetSelect.title = '/approvals 预设：Read Only = 只读 + 按需批准，Auto = 工作区可写 + 按需批准，Full Access = 完全权限 + 按需批准';
+  approvalPolicySelect.title = '执行批准独立于权限范围；“从不询问（Never）”比 Full Access 更危险';
+  sandboxModeSelect.title = '权限范围只控制沙箱；Full Access 不等于“从不询问（Never）”';
   syncCustomSelect(modelSelect);
   syncCustomSelect(reasoningEffortSelect);
   syncCustomSelect(permissionPresetSelect);
@@ -3287,8 +3450,7 @@ function buildSemanticTimelineEntries(threadId) {
       key: `turn:${turnId}`,
       turnId,
       userEntry: null,
-      timelineEntries: [],
-      finalEntry: null,
+      assistantEntries: [],
       isActive: false,
       isPendingLocal: false,
     });
@@ -3304,8 +3466,7 @@ function buildSemanticTimelineEntries(threadId) {
       key,
       turnId: null,
       userEntry: null,
-      timelineEntries: [],
-      finalEntry: null,
+      assistantEntries: [],
       isActive: false,
       isPendingLocal: true,
     });
@@ -3323,10 +3484,8 @@ function buildSemanticTimelineEntries(threadId) {
 
     if (item?.type === 'userMessage' && !group.userEntry) {
       group.userEntry = entry;
-    } else if (item && isFinalAgentItem(item)) {
-      group.finalEntry = entry;
     } else {
-      group.timelineEntries.push(entry);
+      group.assistantEntries.push(entry);
     }
 
     if (item?.id) {
@@ -3372,7 +3531,7 @@ function buildSemanticTimelineEntries(threadId) {
     }
 
     if (group) {
-      group.timelineEntries.push(entry);
+      group.assistantEntries.push(entry);
       continue;
     }
 
@@ -3387,8 +3546,7 @@ function buildSemanticTimelineEntries(threadId) {
         key: activeTurnId ? `turn:${activeTurnId}` : `active:${threadId}`,
         turnId: activeTurnId,
         userEntry: null,
-        timelineEntries: [],
-        finalEntry: null,
+        assistantEntries: [],
         isActive: true,
         isPendingLocal: false,
       });
@@ -3402,16 +3560,14 @@ function buildSemanticTimelineEntries(threadId) {
     threadId,
     index: index + 1,
     userEntry: group.userEntry,
-    timelineEntries: group.timelineEntries,
-    finalEntry: group.finalEntry,
+    assistantEntries: group.assistantEntries,
     isActive: group.isActive,
     isPendingLocal: group.isPendingLocal,
     signature: JSON.stringify([
       'turn',
       group.key,
       group.userEntry?.signature || '',
-      group.timelineEntries.map((entry) => entry.signature),
-      group.finalEntry?.signature || '',
+      group.assistantEntries.map((entry) => entry.signature),
       group.isActive,
       group.isPendingLocal,
     ]),
@@ -3435,8 +3591,7 @@ function hasLiveEntryActivity(entry) {
 
   if (entry.kind === 'turn') {
     return entry.isActive
-      || Boolean(entry.finalEntry?.partial)
-      || entry.timelineEntries.some((timelineEntry) => hasLiveEntryActivity(timelineEntry));
+      || entry.assistantEntries.some((assistantEntry) => hasLiveEntryActivity(assistantEntry));
   }
 
   return false;
@@ -3449,10 +3604,6 @@ function createThinkingEntry(key = '__thinking__', threadId = '') {
     threadId,
     signature: JSON.stringify(['thinking', key, threadId]),
   };
-}
-
-function isFinalAgentItem(item) {
-  return item?.type === 'agentMessage' && (!item.phase || item.phase === 'final_answer');
 }
 
 function buildEntryFromItem(threadId, item, partials, index) {
@@ -3909,7 +4060,7 @@ function populateMessageNode(node, entry) {
     }
     if (entry.isActive) {
       meta.appendChild(createTurnBadge('进行中', 'active'));
-    } else if (entry.finalEntry || entry.timelineEntries.length) {
+    } else if (entry.assistantEntries.length) {
       meta.appendChild(createTurnBadge('已完成', 'done'));
     }
     node.appendChild(meta);
@@ -3920,22 +4071,19 @@ function populateMessageNode(node, entry) {
       node.appendChild(userRow.row);
     }
 
-    const shouldRenderAssistantRow = entry.timelineEntries.length > 0 || entry.isActive || entry.finalEntry;
+    const shouldRenderAssistantRow = entry.assistantEntries.length > 0 || entry.isActive;
     if (shouldRenderAssistantRow) {
       const assistantRow = createTranscriptRow('assistant');
       const stack = document.createElement('div');
       stack.className = 'assistant-main-stack';
-      for (const timelineEntry of entry.timelineEntries) {
-        stack.appendChild(createTimelineEvent(timelineEntry));
+      for (const assistantEntry of entry.assistantEntries) {
+        stack.appendChild(createTimelineEvent(assistantEntry));
       }
-      if (entry.isActive && !entry.finalEntry) {
+      if (entry.isActive) {
         stack.appendChild(createTimelineEvent(createThinkingEntry(`${entry.key}:thinking`, entry.threadId || '')));
       }
       if (stack.childNodes.length) {
         assistantRow.body.appendChild(stack);
-      }
-      if (entry.finalEntry) {
-        assistantRow.body.appendChild(createEntryElement(entry.finalEntry));
       }
       node.appendChild(assistantRow.row);
     }
@@ -4781,6 +4929,14 @@ composer.addEventListener('submit', (event) => {
 
   const slashCommand = attachments.length ? null : getExactSlashCommand(text);
   if (slashCommand) {
+    if (canExecuteSlashCommandAfterSend(slashCommand) && state.activeThreadId && getComposerUploadCount() === 0) {
+      submitTurnMessage(state.activeThreadId, text, attachments, {
+        afterSend: () => {
+          executeSlashCommand(slashCommand);
+        },
+      });
+      return;
+    }
     executeSlashCommand(slashCommand);
     return;
   }
@@ -4789,63 +4945,7 @@ composer.addEventListener('submit', (event) => {
     return;
   }
 
-  const threadId = state.activeThreadId;
-  const clientMessageId = createLocalId('turn');
-  const localMessageId = createLocalId('local');
-  const content = [];
-  if (text) {
-    content.push({ type: 'text', text });
-  }
-  for (const attachment of attachments) {
-    content.push({
-      type: 'localImage',
-      path: attachment.path,
-      name: attachment.name || getAttachmentFileName(attachment.path),
-      previewUrl: attachment.previewUrl || buildUploadPreviewUrl(attachment.path),
-    });
-  }
-  const items = ensureItems(threadId);
-  items.push({
-    type: 'userMessage',
-    id: localMessageId,
-    content,
-  });
-  registerPendingUserMessage(clientMessageId, threadId, localMessageId, content);
-
-  const composerSelection = getEffectiveComposerSelection(threadId);
-  state.turnActiveByThread.set(threadId, true);
-  if (!send({
-    type: 'turn_send',
-    threadId,
-    text,
-    attachments: attachments.map((attachment) => ({
-      path: attachment.path,
-      name: attachment.name || getAttachmentFileName(attachment.path),
-    })),
-    clientMessageId,
-    model: composerSelection.model || '',
-    effort: composerSelection.effort || '',
-    approvalPolicy: composerSelection.approvalPolicy || '',
-    sandboxMode: composerSelection.sandboxMode || '',
-  })) {
-    rollbackPendingUserMessage(clientMessageId);
-    state.turnActiveByThread.set(threadId, false);
-    promptInput.value = text;
-    setComposerAttachments(threadId, attachments);
-    ensureItems(threadId).push({
-      type: '_error',
-      id: createLocalId('send'),
-      text: '消息发送失败：WebSocket 未连接，请稍后重试。',
-    });
-    autoResizePromptInput();
-    render();
-    return;
-  }
-  promptInput.value = '';
-  clearComposerAttachments(threadId);
-  autoResizePromptInput();
-  closeSlashMenu();
-  render();
+  submitTurnMessage(state.activeThreadId, text, attachments);
 });
 
 function handleMessage(msg) {
