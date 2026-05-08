@@ -393,6 +393,18 @@ function isThreadNotFoundError(error) {
   );
 }
 
+function isThreadUnmaterializedError(error) {
+  const message = getErrorMessage(error).toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes('not materialized yet')
+    || message.includes('no rollout found')
+  );
+}
+
 function assertThreadId(threadId) {
   if (!THREAD_ID_REGEX.test(threadId || '')) {
     throw new Error('invalid threadId');
@@ -655,11 +667,35 @@ async function ensureWindowForThread(threadId) {
 
 async function syncThreadToClients(ws, threadId) {
   assertThreadId(threadId);
-  const thread = await codex.resumeThread(threadId);
+  let thread;
+  let materialized = true;
+  try {
+    thread = await codex.resumeThread(threadId);
+  } catch (error) {
+    if (!isThreadUnmaterializedError(error)) {
+      throw error;
+    }
+
+    materialized = false;
+    const existingTab = tabs.get(threadId);
+    if (!existingTab) {
+      throw error;
+    }
+
+    thread = {
+      id: threadId,
+      name: existingTab.name,
+      cwd: existingTab.cwd,
+      status: existingTab.status || 'idle',
+      createdAt: existingTab.createdAt || nowUnix(),
+      updatedAt: existingTab.updatedAt || nowUnix(),
+      turns: [],
+    };
+  }
   const tab = ensureTab(thread);
   send(ws, { type: 'tab_updated', tab });
   send(ws, { type: 'thread_sync', threadId, turns: thread.turns || [] });
-  return thread;
+  return { thread, materialized };
 }
 
 async function refreshAllTabWindowStatus() {
@@ -1322,16 +1358,6 @@ wss.on('connection', (ws, request) => {
           sandboxMode: tab.sandboxMode,
         });
 
-        try {
-          await ensureWindowForThread(thread.id);
-        } catch (error) {
-          send(ws, {
-            type: 'warning',
-            message: `thread created but local codex window failed: ${error.message}`,
-            threadId: thread.id,
-          });
-        }
-
         broadcast({ type: 'tab_updated', tab });
         send(ws, { type: 'tab_created', threadId: thread.id, tab });
         return;
@@ -1355,7 +1381,6 @@ wss.on('connection', (ws, request) => {
           return;
         }
         try {
-          await ensureWindowForThread(message.threadId);
           await codex.startTurn(message.threadId, message.text, {
             attachments: message.attachments,
             model: message.model || null,
@@ -1373,6 +1398,15 @@ wss.on('connection', (ws, request) => {
               sandboxMode: tab.sandboxMode,
             });
             broadcast({ type: 'tab_updated', tab });
+          }
+          try {
+            await ensureWindowForThread(message.threadId);
+          } catch (error) {
+            send(ws, {
+              type: 'warning',
+              message: `local codex window restore failed: ${error.message}`,
+              threadId: message.threadId,
+            });
           }
         } catch (error) {
           if (isThreadNotFoundError(error)) {
@@ -1441,6 +1475,10 @@ wss.on('connection', (ws, request) => {
 
       if (message.type === 'thread_sync') {
         ws.activeThreadId = message.threadId;
+        const syncResult = await syncThreadToClients(ws, message.threadId);
+        if (!syncResult.materialized) {
+          return;
+        }
         try {
           await ensureWindowForThread(message.threadId);
         } catch (error) {
@@ -1450,7 +1488,6 @@ wss.on('connection', (ws, request) => {
             threadId: message.threadId,
           });
         }
-        await syncThreadToClients(ws, message.threadId);
       }
     } catch (error) {
       send(ws, { type: 'error', message: getErrorMessage(error) || '服务端请求失败' });
