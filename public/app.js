@@ -309,6 +309,7 @@ let slashFocusTimer = null;
 let scheduledRenderFrame = 0;
 let scheduledRenderHeader = false;
 let scheduledRenderMessages = false;
+let lastRenderedMessagesThreadKey = EMPTY_THREAD_KEY;
 
 const PERMISSION_PRESET_VALUES = new Set(['', 'read-only', 'auto', 'full-access', 'custom']);
 
@@ -3328,6 +3329,7 @@ function renderMessages() {
   const entries = buildMessageEntries(state.activeThreadId);
   const domMap = ensureMessageDomMap(threadKey);
   const nextKeys = new Set(entries.map((entry) => entry.key));
+  const didThreadChange = lastRenderedMessagesThreadKey !== threadKey;
   const shouldStickToBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 24;
 
   for (const [key] of domMap) {
@@ -3363,9 +3365,11 @@ function renderMessages() {
     messagesEl.removeChild(messagesEl.lastChild);
   }
 
-  if (shouldStickToBottom || entries.some((entry) => hasLiveEntryActivity(entry))) {
+  if (didThreadChange || shouldStickToBottom) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+
+  lastRenderedMessagesThreadKey = threadKey;
 }
 
 function buildMessageEntries(threadId) {
