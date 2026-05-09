@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 
-const PORT = Number.parseInt(process.env.PORT || '8787', 10);
+const PORT = Number.parseInt(process.env.PORT || '18637', 10);
 const HOST = process.env.HOST || '127.0.0.1';
 const GOOD_TOKEN = process.env.WS_TOKEN || 'test-token';
 const BAD_TOKEN = process.env.BAD_WS_TOKEN || 'bad-token';

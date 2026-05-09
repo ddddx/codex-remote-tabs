@@ -46,28 +46,28 @@ npm run web         # 只启动 Web 控制端
 
 默认地址：
 
-- 本机：`http://localhost:8787`
-- 局域网：`http://<本机IP>:8787`
+- 本机：`http://localhost:18637`
+- 局域网：`http://<本机IP>:18637`
 
 ## 配置
 
-默认会优先读取项目根目录下的 `config.local.json`；如果同名环境变量已设置，则环境变量优先级更高。
+默认会优先读取项目根目录下的 `config.local.json`；如果文件不存在，首次启动会自动生成一份，并写入随机 `WS_TOKEN`。如果同名环境变量已设置，则环境变量优先级更高。
 
 可用配置项 / 环境变量：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | `8787` | Web 控制端端口 |
+| `PORT` | `18637` | Web 控制端端口（浏览器/手机访问这个端口） |
 | `CODEX_HOME` | Codex 默认目录 | 可选；仅在你想强制切换到另一套 Codex 数据目录时设置 |
 | `CODEX_CMD` | `codex.cmd` | Codex 命令行路径 |
-| `CODEX_APP_SERVER_WS` | `ws://127.0.0.1:4792` | Codex 服务端 WebSocket 地址 |
-| `WS_TOKEN` | 空 | WebSocket 鉴权 token；设置后，控制端连接必须携带同值 |
+| `CODEX_APP_SERVER_WS` | `ws://127.0.0.1:4792` | Codex 服务端 WebSocket 地址（项目内部连接，通常保持本机回环地址） |
+| `WS_TOKEN` | 首次启动自动生成 | WebSocket 鉴权 token；设置后，控制端连接必须携带同值 |
 
 本地配置文件示例：
 
 ```json
 {
-  "PORT": 8787,
+  "PORT": 18637,
   "CODEX_CMD": "codex.cmd",
   "CODEX_APP_SERVER_WS": "ws://127.0.0.1:4792",
   "WS_TOKEN": "your-secret-token"
@@ -76,7 +76,7 @@ npm run web         # 只启动 Web 控制端
 
 默认不设置 `CODEX_HOME`，这样远程控制的就是你平时在本机直接使用的那套 Codex。只有需要强制隔离时，才额外加上 `CODEX_HOME`。
 
-仓库里提供了模板文件 `config.local.example.json`，实际生效的是你本机的 `config.local.json`。
+仓库里提供了模板文件 `config.local.example.json`，实际生效的是你本机的 `config.local.json`。如果你直接运行 `start-codex-remote.bat` 或 `npm run remote:restart`，首次启动缺少配置文件时会自动生成。
 
 也可以继续使用环境变量覆盖：
 
@@ -87,13 +87,13 @@ $env:WS_TOKEN='your-secret-token'
 npm run remote:restart
 ```
 
-如果设置了 `WS_TOKEN`，首次访问后可通过页面右上角的 `Token` / `设置 Token` 按钮输入并保存在浏览器本地。为了避免 token 暴露在地址栏、浏览器历史或截图里，不建议再用 `?token=` 方式访问。
+如果设置了 `WS_TOKEN`，首次访问后可通过页面右上角的 `Token` / `设置 Token` 按钮输入并保存在浏览器本地。`start-codex-remote.bat` 启动时会在控制台打印当前 token。为了避免 token 暴露在地址栏、浏览器历史或截图里，不建议再用 `?token=` 方式访问。
 
 ## 远程访问（手机）
 
 1. 让手机和 PC 在同一局域网。
-2. 在 PC 上放开 `8787` 端口（只对内网）。
-3. 手机浏览器访问 `http://<PC局域网IP>:8787`。
+2. 在 PC 上放开 `18637` 端口（只对内网）。
+3. 手机浏览器访问 `http://<PC局域网IP>:18637`。
 
 如果要公网访问，建议使用反向代理 + HTTPS + 强认证，不要直接暴露端口。
 

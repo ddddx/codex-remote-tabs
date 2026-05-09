@@ -15,7 +15,7 @@ const { WorkspaceManager } = require('./workspaceManager');
 
 applyLocalConfig();
 
-const PORT = Number.parseInt(process.env.PORT || '8787', 10);
+const PORT = Number.parseInt(process.env.PORT || '18637', 10);
 const WS_TOKEN = process.env.WS_TOKEN || '';
 const MAX_CLIENT_MESSAGE_BYTES = parsePositiveInteger(process.env.MAX_CLIENT_MESSAGE_BYTES) || 65536;
 const MAX_TURN_INPUT_LENGTH = parsePositiveInteger(process.env.MAX_TURN_INPUT_LENGTH) || 20000;

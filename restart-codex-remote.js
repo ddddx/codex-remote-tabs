@@ -6,10 +6,10 @@ const net = require('node:net');
 
 const { applyLocalConfig } = require('./src/localConfig');
 
-applyLocalConfig();
+const localConfigState = applyLocalConfig();
 
 const MODE = (process.argv[2] || 'restart').trim().toLowerCase();
-const PORT = Number.parseInt(process.env.PORT || '8787', 10);
+const PORT = Number.parseInt(process.env.PORT || '18637', 10);
 const APP_SERVER_WS = process.env.CODEX_APP_SERVER_WS || 'ws://127.0.0.1:4792';
 const APP_SERVER_PORT = Number.parseInt(new URL(APP_SERVER_WS).port || '4792', 10);
 const ports = Array.from(new Set([APP_SERVER_PORT, PORT].filter(Number.isFinite)));
@@ -85,6 +85,23 @@ writeLog('startup', `log file=${LOG_FILE}`);
 writeLog('startup', `ports=${ports.join(', ')}`);
 writeLog('startup', `codex_cmd=${CODEX_CMD}`);
 writeLog('startup', `app_server_ws=${APP_SERVER_WS}`);
+if (localConfigState.created) {
+  writeLog('startup', `created local config at ${localConfigState.created.configPath}`);
+}
+
+function printStartupHints() {
+  if (localConfigState.created) {
+    console.log(`[config] created ${path.basename(localConfigState.created.configPath)}`);
+  }
+
+  if (process.env.WS_TOKEN) {
+    console.log(`[config] WS_TOKEN=${process.env.WS_TOKEN}`);
+  } else {
+    console.log('[config] WS_TOKEN is empty');
+  }
+}
+
+printStartupHints();
 
 process.on('uncaughtException', (error) => {
   console.error('[fatal] uncaught exception:', error);
