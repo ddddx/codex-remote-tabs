@@ -4109,12 +4109,38 @@ function createDetailContent() {
   return body;
 }
 
+function getDetailStateKey(entry, suffix = '') {
+  if (!entry?.key) {
+    return '';
+  }
+  return suffix ? `${entry.key}:${suffix}` : entry.key;
+}
+
+function preserveDetailOpenState(container, stateKey) {
+  if (!stateKey || !(container instanceof HTMLElement)) {
+    return null;
+  }
+  const existing = container.querySelector('details.timeline-inline-detail-row');
+  if (!(existing instanceof HTMLDetailsElement)) {
+    return null;
+  }
+  return { open: existing.open, stateKey };
+}
+
+function applyDetailOpenState(details, preservedState, fallbackOpen) {
+  if (!(details instanceof HTMLDetailsElement)) {
+    return;
+  }
+  details.open = preservedState ? preservedState.open : !!fallbackOpen;
+}
+
 function populateCommandEntry(node, entry) {
   node.className = 'timeline-card timeline-card-command';
+  const preservedState = preserveDetailOpenState(node, getDetailStateKey(entry, 'command'));
 
   const details = document.createElement('details');
   details.className = 'timeline-inline-detail-row';
-  details.open = entry.status === 'running' || entry.status === 'pendingApproval' || entry.status === 'failed';
+  applyDetailOpenState(details, preservedState, entry.status === 'running' || entry.status === 'pendingApproval' || entry.status === 'failed');
 
   const summary = document.createElement('summary');
   summary.appendChild(createTimelineTitle(`${commandStatusIcon(entry.status)} ${compactText(entry.command, 110) || '命令执行'}`));
@@ -4141,10 +4167,11 @@ function populateCommandEntry(node, entry) {
 
 function populateFileChangeEntry(node, entry) {
   node.className = 'timeline-card timeline-card-file-change';
+  const preservedState = preserveDetailOpenState(node, getDetailStateKey(entry, 'fileChange'));
 
   const details = document.createElement('details');
   details.className = 'timeline-inline-detail-row';
-  details.open = entry.status === 'pendingApproval' || entry.status === 'running';
+  applyDetailOpenState(details, preservedState, entry.status === 'pendingApproval' || entry.status === 'running');
 
   const summaryText = summarizeFileChanges(entry.changes) || '文件修改';
   const preview = entry.changes.slice(0, 3).map((change) => basenamePath(change.path) || change.path).filter(Boolean);
