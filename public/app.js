@@ -22,6 +22,7 @@ import {
   normalizeUserMessageContent,
   renderMarkdown,
 } from './messageContent.js';
+import { createApiFetchJson } from './apiClient.js';
 import { createSocketController } from './socket.js';
 import { createSessionModalController } from './sessionModal.js';
 import { createMessageHandler } from './messageHandlers.js';
@@ -30,6 +31,7 @@ import { createMessageRenderer } from './messageRenderer.js';
 import { createSlashController } from './slashController.js';
 import { createTextModalController } from './textModal.js';
 import { createThreadStore } from './threadStore.js';
+import { createUploadController } from './uploadController.js';
 import { createComposerSettingsController } from './composerSettings.js';
 
 const EMPTY_THREAD_KEY = '__empty__';
@@ -170,24 +172,6 @@ const sessionModalState = {
   browserParentPath: '',
   browserEntries: [],
 };
-
-async function apiFetchJson(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  const token = getWebSocketToken();
-  if (token) {
-    headers.set('x-codex-remote-token', token);
-  }
-
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.message || `HTTP ${response.status}`);
-  }
-  return data;
-}
 
 function getComposerAttachments(threadId = state.activeThreadId) {
   if (!threadId) {
@@ -603,56 +587,6 @@ function renderCreatingOverlay() {
   sessionCreatingOverlay.setAttribute('aria-hidden', state.creatingTab ? 'false' : 'true');
 }
 
-async function uploadComposerImageFiles(fileList) {
-  const threadId = state.activeThreadId;
-  if (!threadId) {
-    return;
-  }
-
-  const files = Array.from(fileList || []).filter((file) => file && String(file.type || '').startsWith('image/'));
-  if (!files.length) {
-    return;
-  }
-
-  setComposerUploadCount(threadId, getComposerUploadCount(threadId) + files.length);
-  renderComposer();
-
-  const uploaded = [];
-  try {
-    for (const file of files) {
-      const result = await apiFetchJson('/api/uploads/image', {
-        method: 'POST',
-        headers: {
-          'content-type': file.type || 'application/octet-stream',
-          'x-upload-filename': encodeURIComponent(file.name || 'image'),
-        },
-        body: await file.arrayBuffer(),
-      });
-      uploaded.push({
-        type: 'localImage',
-        path: result.filePath,
-        name: result.name || file.name || getAttachmentFileName(result.filePath),
-        previewUrl: result.url ? withAuthTokenQuery(result.url) : buildUploadPreviewUrl(result.filePath),
-      });
-      setComposerUploadCount(threadId, Math.max(0, getComposerUploadCount(threadId) - 1));
-      renderComposer();
-    }
-  } catch (error) {
-    if (uploaded.length) {
-      setComposerAttachments(threadId, getComposerAttachments(threadId).concat(uploaded));
-    }
-    setComposerUploadCount(threadId, 0);
-    addThreadNotice(threadId, `图片上传失败：${error.message || '请稍后重试。'}`, '_error');
-    render();
-    return;
-  }
-
-  if (uploaded.length) {
-    setComposerAttachments(threadId, getComposerAttachments(threadId).concat(uploaded));
-  }
-  renderComposer();
-}
-
 function render() {
   renderTabs();
   renderHeader();
@@ -721,6 +655,8 @@ const {
   themeOptions: THEME_OPTIONS,
 } = composerSettings;
 
+const normalizeMessageContent = (item) => normalizeUserMessageContent(item, { buildUploadPreviewUrl });
+
 const threadStore = createThreadStore({
   state,
   compareTabs,
@@ -728,7 +664,7 @@ const threadStore = createThreadStore({
   normalizeComposerEffort,
   normalizeComposerApprovalPolicy,
   normalizeComposerSandboxMode,
-  normalizeUserMessageContent,
+  normalizeUserMessageContent: normalizeMessageContent,
   createUserMessageFingerprint,
   createLocalId,
   rememberTurnStartedAt,
@@ -848,6 +784,7 @@ const {
   markAuthFailed,
 } = socketController;
 
+const apiFetchJson = createApiFetchJson(getWebSocketToken);
 const buildUploadPreviewUrl = createBuildUploadPreviewUrl(withAuthTokenQuery);
 
 const {
@@ -862,7 +799,7 @@ const {
   ensureItems,
   getServerRequestsForThread,
   createLocalId,
-  normalizeUserMessageContent: (item) => normalizeUserMessageContent(item, { buildUploadPreviewUrl }),
+  normalizeUserMessageContent: normalizeMessageContent,
   extractItemTimestampMs,
   createUserMessageFingerprint,
   ensureItemRenderVersion,
@@ -967,6 +904,21 @@ const {
   closeSlashMenu,
   showPermissionPresetPrompt,
 } = slashController;
+
+const { uploadComposerImageFiles } = createUploadController({
+  state,
+  apiFetchJson,
+  render,
+  renderComposer,
+  addThreadNotice,
+  withAuthTokenQuery,
+  getAttachmentFileName,
+  buildUploadPreviewUrl,
+  getComposerAttachments,
+  setComposerAttachments,
+  getComposerUploadCount,
+  setComposerUploadCount,
+});
 
 const handleMessage = createMessageHandler({
   state,

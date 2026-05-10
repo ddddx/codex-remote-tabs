@@ -5,7 +5,7 @@
 ## 功能
 
 - 控制端新建会话 -> PC 创建新的 Codex 会话线程，并尝试打开一个本地 Codex 窗口
-- 控制端关闭会话 -> 关闭对应窗口并归档对应会话线程
+- 控制端关闭会话窗口 -> 仅关闭对应本地 Codex 窗口，会话线程仍保留在列表中，后续可继续恢复
 - 支持在控制端发送提示词到指定会话
 - 支持流式查看助手输出（delta）
 - 手机/PC 都可访问（响应式 Web UI）
@@ -102,9 +102,24 @@ npm run remote:restart
 ```
 cc-workspace/
 ├── public/           # 前端静态文件
+│   ├── app.js                 # 前端组装 / 事件绑定
+│   ├── apiClient.js           # 带鉴权 token 的 HTTP 请求封装
+│   ├── composer.js            # 输入区渲染
+│   ├── composerSettings.js    # 模型 / 权限 / 主题设置
+│   ├── header.js              # 顶栏与上下文用量
 │   ├── index.html
-│   ├── app.js
-│   └── style.css
+│   ├── messageContent.js      # 消息内容标准化与 markdown
+│   ├── messageEntries.js      # 消息语义分组
+│   ├── messageHandlers.js     # WebSocket 消息分发
+│   ├── messageRenderer.js     # 消息渲染
+│   ├── sessionModal.js        # 新建会话弹窗
+│   ├── slashController.js     # 斜杠菜单与快捷动作
+│   ├── socket.js              # WebSocket 控制器
+│   ├── style.css
+│   ├── tabs.js                # 左侧会话列表
+│   ├── textModal.js           # 通用文本输入弹窗
+│   ├── threadStore.js         # 前端线程状态存储
+│   └── uploadController.js    # 图片上传流程
 ├── src/              # 后端源码
 │   ├── server.js     # Web 服务器 + WebSocket
 │   ├── codexAppServerClient.js  # Codex 服务端客户端
@@ -119,5 +134,5 @@ cc-workspace/
 
 ## 当前限制
 
-- 会话关闭是归档（`thread/archive`），不是物理删除。
+- 左侧“关闭”只关闭本地 Codex 窗口，不会归档或删除线程；线程仍可继续同步和恢复窗口。
 - “本地窗口映射”依赖 Windows `Start-Process`；若权限策略限制，仍可远程控制会话线程，但不会自动弹出本地窗口。

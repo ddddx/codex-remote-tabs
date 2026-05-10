@@ -159,6 +159,7 @@ export function createSocketController(deps) {
   }
 
   function connect() {
+    disconnectSocket();
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl = new URL(`${wsProtocol}://${window.location.host}/ws`);
     const token = getWebSocketToken();
@@ -169,6 +170,9 @@ export function createSocketController(deps) {
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
+      if (currentSocket !== socket) {
+        return;
+      }
       console.log('ws connected');
       reconnectAttempt = 0;
       clearReconnectTimer();
@@ -184,6 +188,9 @@ export function createSocketController(deps) {
     };
 
     socket.onmessage = (event) => {
+      if (currentSocket !== socket) {
+        return;
+      }
       try {
         handleMessage(JSON.parse(event.data));
       } catch (error) {
@@ -192,6 +199,9 @@ export function createSocketController(deps) {
     };
 
     socket.onclose = (event) => {
+      if (currentSocket === socket) {
+        currentSocket = null;
+      }
       if (isAuthFailureClose(event)) {
         markAuthFailed('WebSocket 鉴权失败，请检查 token 是否正确，然后刷新页面重试。');
         return;
@@ -200,6 +210,9 @@ export function createSocketController(deps) {
     };
 
     socket.onerror = (error) => {
+      if (currentSocket !== socket) {
+        return;
+      }
       console.error('ws error', error);
       socket.close();
     };
