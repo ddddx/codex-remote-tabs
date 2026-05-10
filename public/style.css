@@ -1308,6 +1308,12 @@ body {
   color: var(--timeline-muted);
 }
 
+.timeline-inline-meta-code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
 .timeline-inline-detail-row {
   margin: 0;
 }

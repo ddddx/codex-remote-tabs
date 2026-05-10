@@ -323,6 +323,7 @@ export function createMessageEntryBuilder(deps) {
       const renderVersion = ensureItemRenderVersion(item);
       const partial = item._partial || partials.has(item.id);
       const text = partial ? (partials.get(item.id) || item.text || '') : (item.text || '');
+      const memoryCitation = item.memoryCitation || item.memory_citation || null;
       const timestampMs = extractItemTimestampMs(item);
       return {
         key,
@@ -330,8 +331,17 @@ export function createMessageEntryBuilder(deps) {
         text,
         partial,
         phase: item.phase || '',
+        memoryCitation,
         timestampMs,
-        signature: JSON.stringify(['agent', key, renderVersion, partial, item.phase || '', timestampMs || 0]),
+        signature: JSON.stringify([
+          'agent',
+          key,
+          renderVersion,
+          partial,
+          item.phase || '',
+          createContentDigest(memoryCitation),
+          timestampMs || 0,
+        ]),
       };
     }
 
@@ -396,9 +406,27 @@ export function createMessageEntryBuilder(deps) {
         command: typeof command === 'string' ? command : JSON.stringify(command),
         status,
         output,
+        cwd: item.cwd || '',
+        processId: item.processId || item.process_id || '',
+        exitCode: Number.isFinite(item.exitCode) ? item.exitCode : (Number.isFinite(item.exit_code) ? item.exit_code : null),
+        durationMs: Number.isFinite(item.durationMs) ? item.durationMs : (Number.isFinite(item.duration_ms) ? item.duration_ms : null),
+        commandActions: Array.isArray(item.commandActions) ? item.commandActions : (Array.isArray(item.command_actions) ? item.command_actions : []),
         timestampMs,
         threadId: activeThreadId,
-        signature: JSON.stringify(['command', key, renderVersion, status, activeThreadId, createContentDigest(output), timestampMs || 0]),
+        signature: JSON.stringify([
+          'command',
+          key,
+          renderVersion,
+          status,
+          activeThreadId,
+          item.cwd || '',
+          item.processId || item.process_id || '',
+          Number.isFinite(item.exitCode) ? item.exitCode : (Number.isFinite(item.exit_code) ? item.exit_code : null),
+          Number.isFinite(item.durationMs) ? item.durationMs : (Number.isFinite(item.duration_ms) ? item.duration_ms : null),
+          createContentDigest(item.commandActions || item.command_actions || []),
+          createContentDigest(output),
+          timestampMs || 0,
+        ]),
       };
     }
 
@@ -449,8 +477,10 @@ export function createMessageEntryBuilder(deps) {
         tool: item.tool || '',
         status: item.status || '',
         arguments: item.arguments,
+        appResourceUri: item.mcpAppResourceUri || item.mcp_app_resource_uri || '',
         result: item.result || null,
         error: item.error || null,
+        durationMs: Number.isFinite(item.durationMs) ? item.durationMs : (Number.isFinite(item.duration_ms) ? item.duration_ms : null),
         progressMessages,
         timestampMs,
         signature: JSON.stringify([
@@ -458,6 +488,8 @@ export function createMessageEntryBuilder(deps) {
           key,
           renderVersion,
           item.status || '',
+          item.mcpAppResourceUri || item.mcp_app_resource_uri || '',
+          Number.isFinite(item.durationMs) ? item.durationMs : (Number.isFinite(item.duration_ms) ? item.duration_ms : null),
           createContentDigest(item.arguments),
           createContentDigest(item.result || null),
           createContentDigest(item.error || null),
@@ -470,16 +502,23 @@ export function createMessageEntryBuilder(deps) {
     if (item.type === 'collabToolCall') {
       const renderVersion = ensureItemRenderVersion(item);
       const timestampMs = extractItemTimestampMs(item);
+      const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+        ? item.receiverThreadIds
+        : (Array.isArray(item.receiver_thread_ids) ? item.receiver_thread_ids : []);
+      const agentsStates = item.agentsStates && typeof item.agentsStates === 'object'
+        ? item.agentsStates
+        : (item.agents_states && typeof item.agents_states === 'object' ? item.agents_states : {});
       return {
         key,
         kind: 'collabToolCall',
         tool: item.tool || '',
         status: item.status || '',
-        senderThreadId: item.senderThreadId || '',
-        receiverThreadId: item.receiverThreadId || '',
-        newThreadId: item.newThreadId || '',
+        senderThreadId: item.senderThreadId || item.sender_thread_id || '',
+        receiverThreadIds,
         prompt: item.prompt || '',
-        agentStatus: item.agentStatus || '',
+        model: item.model || '',
+        reasoningEffort: item.reasoningEffort || item.reasoning_effort || '',
+        agentsStates,
         timestampMs,
         signature: JSON.stringify([
           'collabToolCall',
@@ -487,10 +526,11 @@ export function createMessageEntryBuilder(deps) {
           renderVersion,
           item.status || '',
           item.tool || '',
-          item.agentStatus || '',
-          item.senderThreadId || '',
-          item.receiverThreadId || '',
-          item.newThreadId || '',
+          item.senderThreadId || item.sender_thread_id || '',
+          JSON.stringify(receiverThreadIds),
+          item.model || '',
+          item.reasoningEffort || item.reasoning_effort || '',
+          JSON.stringify(agentsStates),
           createContentDigest(item.prompt || ''),
           timestampMs || 0,
         ]),
@@ -500,6 +540,9 @@ export function createMessageEntryBuilder(deps) {
     if (item.type === 'dynamicToolCall') {
       const renderVersion = ensureItemRenderVersion(item);
       const timestampMs = extractItemTimestampMs(item);
+      const contentItems = Array.isArray(item.contentItems)
+        ? item.contentItems
+        : (Array.isArray(item.content_items) ? item.content_items : []);
       return {
         key,
         kind: 'dynamicToolCall',
@@ -508,7 +551,8 @@ export function createMessageEntryBuilder(deps) {
         status: item.status || '',
         arguments: item.arguments,
         success: typeof item.success === 'boolean' ? item.success : null,
-        contentItems: Array.isArray(item.contentItems) ? item.contentItems : [],
+        contentItems,
+        durationMs: Number.isFinite(item.durationMs) ? item.durationMs : (Number.isFinite(item.duration_ms) ? item.duration_ms : null),
         timestampMs,
         signature: JSON.stringify([
           'dynamicToolCall',
@@ -517,8 +561,9 @@ export function createMessageEntryBuilder(deps) {
           item.status || '',
           item.tool || '',
           item.success,
+          Number.isFinite(item.durationMs) ? item.durationMs : (Number.isFinite(item.duration_ms) ? item.duration_ms : null),
           createContentDigest(item.arguments),
-          createContentDigest(item.contentItems || []),
+          createContentDigest(contentItems),
           timestampMs || 0,
         ]),
       };

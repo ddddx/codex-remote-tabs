@@ -175,6 +175,13 @@ export function createMessageRenderer(deps) {
     return meta;
   }
 
+  function createTimelineMetaCode(text) {
+    const meta = document.createElement('div');
+    meta.className = 'timeline-inline-meta timeline-inline-meta-code';
+    meta.textContent = text;
+    return meta;
+  }
+
   function createLiveWorkingMeta(threadId) {
     const meta = document.createElement('div');
     meta.className = 'timeline-inline-meta timeline-inline-meta-working';
@@ -309,10 +316,29 @@ export function createMessageRenderer(deps) {
 
     const body = createDetailContent();
     body.appendChild(createTimelinePre(entry.command || '', 'timeline-inline-pre-shell'));
+    if (entry.cwd) {
+      body.appendChild(createTimelineMetaCode(`cwd: ${entry.cwd}`));
+    }
+    if (Array.isArray(entry.commandActions) && entry.commandActions.length) {
+      body.appendChild(createTimelinePre(JSON.stringify(entry.commandActions, null, 2), 'timeline-inline-pre-output'));
+    }
     if (entry.output) {
       body.appendChild(createTimelinePre(entry.output, 'timeline-inline-pre-output'));
     } else if (isExecutionStatusActive(entry.status) || entry.status === 'pendingApproval') {
       body.appendChild(createTimelinePlaceholder(entry.status === 'pendingApproval' ? '等待批准后继续执行…' : '命令正在执行…'));
+    }
+    const facts = [];
+    if (entry.processId) {
+      facts.push(`pid=${entry.processId}`);
+    }
+    if (entry.exitCode != null) {
+      facts.push(`exit=${entry.exitCode}`);
+    }
+    if (entry.durationMs != null) {
+      facts.push(`duration=${formatDurationMs(entry.durationMs)}`);
+    }
+    if (facts.length) {
+      body.appendChild(createTimelineMeta(facts.join(' · ')));
     }
     details.appendChild(body);
 
@@ -444,6 +470,9 @@ export function createMessageRenderer(deps) {
     if (Array.isArray(entry.progressMessages) && entry.progressMessages.length) {
       node.appendChild(createTimelineMeta(entry.progressMessages.join(' · ')));
     }
+    if (entry.appResourceUri) {
+      node.appendChild(createTimelineMetaCode(entry.appResourceUri));
+    }
     if (entry.arguments) {
       node.appendChild(createTimelinePre(JSON.stringify(entry.arguments, null, 2), 'timeline-inline-pre-output'));
     }
@@ -452,6 +481,9 @@ export function createMessageRenderer(deps) {
     }
     if (entry.error) {
       node.appendChild(createTimelinePre(JSON.stringify(entry.error, null, 2), 'timeline-inline-pre-output'));
+    }
+    if (entry.durationMs != null) {
+      node.appendChild(createTimelineMeta(`耗时 ${formatDurationMs(entry.durationMs)}`));
     }
     if (entry.timestampMs) {
       node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
@@ -469,6 +501,9 @@ export function createMessageRenderer(deps) {
     if (Array.isArray(entry.contentItems) && entry.contentItems.length) {
       node.appendChild(createTimelinePre(JSON.stringify(entry.contentItems, null, 2), 'timeline-inline-pre-output'));
     }
+    if (entry.durationMs != null) {
+      node.appendChild(createTimelineMeta(`耗时 ${formatDurationMs(entry.durationMs)}`));
+    }
     if (entry.timestampMs) {
       node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
     }
@@ -478,22 +513,28 @@ export function createMessageRenderer(deps) {
     node.className = 'timeline-card timeline-card-collab';
     node.appendChild(createTimelineTitle(`协作代理 · ${entry.tool || 'tool'}`));
     const metaParts = [formatExecutionStatusText(entry.status)];
-    if (entry.agentStatus) {
-      metaParts.push(`agent=${entry.agentStatus}`);
+    if (entry.model) {
+      metaParts.push(`model=${entry.model}`);
+    }
+    if (entry.reasoningEffort) {
+      metaParts.push(`effort=${entry.reasoningEffort}`);
     }
     node.appendChild(createTimelineMeta(metaParts.join(' · ')));
     const facts = [];
     if (entry.senderThreadId) {
       facts.push(`sender: ${entry.senderThreadId}`);
     }
-    if (entry.receiverThreadId) {
-      facts.push(`receiver: ${entry.receiverThreadId}`);
-    }
-    if (entry.newThreadId) {
-      facts.push(`new: ${entry.newThreadId}`);
+    if (Array.isArray(entry.receiverThreadIds) && entry.receiverThreadIds.length) {
+      facts.push(`targets: ${entry.receiverThreadIds.join(', ')}`);
     }
     if (facts.length) {
       node.appendChild(createTimelineMeta(facts.join(' · ')));
+    }
+    const agentStates = entry.agentsStates && typeof entry.agentsStates === 'object'
+      ? Object.entries(entry.agentsStates)
+      : [];
+    if (agentStates.length) {
+      node.appendChild(createTimelinePre(JSON.stringify(entry.agentsStates, null, 2), 'timeline-inline-pre-output'));
     }
     if (entry.prompt) {
       node.appendChild(createTimelinePre(entry.prompt, 'timeline-inline-pre-output'));
@@ -844,6 +885,24 @@ export function createMessageRenderer(deps) {
 
       const body = createMessageBody(renderMarkdown(entry.text));
       node.appendChild(body);
+      if (entry.memoryCitation?.entries?.length) {
+        const citationSummary = entry.memoryCitation.entries
+          .slice(0, 4)
+          .map((citation) => {
+            const path = citation?.path || '';
+            const lineStart = citation?.lineStart ?? citation?.line_start ?? null;
+            const lineEnd = citation?.lineEnd ?? citation?.line_end ?? null;
+            const note = citation?.note || '';
+            const lineLabel = lineStart != null
+              ? `${path}:${lineStart}${lineEnd && lineEnd !== lineStart ? `-${lineEnd}` : ''}`
+              : path;
+            return note ? `${lineLabel} · ${note}` : lineLabel;
+          })
+          .filter(Boolean);
+        if (citationSummary.length) {
+          node.appendChild(createTimelineMeta(`记忆引用 · ${citationSummary.join(' · ')}`));
+        }
+      }
       if (entry.partial) {
         const cursor = document.createElement('span');
         cursor.className = 'cursor';
@@ -1550,6 +1609,23 @@ export function createMessageRenderer(deps) {
       }
     }
     return '';
+  }
+
+  function formatDurationMs(value) {
+    const ms = Number.parseInt(value, 10);
+    if (!Number.isFinite(ms) || ms < 0) {
+      return '';
+    }
+    if (ms < 1000) {
+      return `${ms}ms`;
+    }
+    const seconds = ms / 1000;
+    if (seconds < 60) {
+      return `${seconds.toFixed(seconds >= 10 ? 1 : 2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')}s`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const remainSeconds = Math.round(seconds % 60);
+    return `${minutes}m ${remainSeconds}s`;
   }
 
   function normalizePlanStepStatus(status) {
