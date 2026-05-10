@@ -441,6 +441,9 @@ export function createMessageRenderer(deps) {
     node.className = 'timeline-card timeline-card-tool';
     node.appendChild(createTimelineTitle(`MCP · ${entry.server}.${entry.tool}`));
     node.appendChild(createTimelineMeta(`MCP 工具调用 · ${formatExecutionStatusText(entry.status)}`));
+    if (Array.isArray(entry.progressMessages) && entry.progressMessages.length) {
+      node.appendChild(createTimelineMeta(entry.progressMessages.join(' · ')));
+    }
     if (entry.arguments) {
       node.appendChild(createTimelinePre(JSON.stringify(entry.arguments, null, 2), 'timeline-inline-pre-output'));
     }
@@ -558,6 +561,91 @@ export function createMessageRenderer(deps) {
         node.appendChild(createTimelineMeta(`hook run: ${fragment.hookRunId}`));
       }
     }
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateHookEventEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-hook-event';
+    const status = String(entry.status || '').trim().toLowerCase();
+    const titlePrefix = status === 'running' ? 'Hook 运行中' : 'Hook 已完成';
+    const eventName = entry.eventName || 'Hook';
+    node.appendChild(createTimelineTitle(`${titlePrefix} · ${eventName}`));
+
+    const metaParts = [];
+    if (entry.handlerType) {
+      metaParts.push(entry.handlerType);
+    }
+    if (entry.scope) {
+      metaParts.push(entry.scope);
+    }
+    if (entry.executionMode) {
+      metaParts.push(entry.executionMode);
+    }
+    if (entry.status) {
+      metaParts.push(entry.status);
+    }
+    if (metaParts.length) {
+      node.appendChild(createTimelineMeta(metaParts.join(' · ')));
+    }
+
+    if (entry.statusMessage) {
+      node.appendChild(createTimelineMeta(entry.statusMessage));
+    }
+
+    if (entry.sourcePath) {
+      node.appendChild(createTimelineMeta(entry.sourcePath));
+    }
+
+    const hookEntries = Array.isArray(entry.entries) ? entry.entries : [];
+    if (hookEntries.length) {
+      const list = document.createElement('div');
+      list.className = 'hook-output-list';
+      for (const hookEntry of hookEntries) {
+        const line = document.createElement('div');
+        line.className = `hook-output-entry kind-${normalizeHookOutputKind(hookEntry.kind)}`;
+        line.textContent = `${formatHookOutputPrefix(hookEntry.kind)}${hookEntry.text || ''}`;
+        list.appendChild(line);
+      }
+      node.appendChild(list);
+    } else if (status === 'running') {
+      node.appendChild(createTimelinePlaceholder('Hook 正在执行…'));
+    }
+
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateGuardianReviewEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-guardian-review';
+    node.appendChild(createTimelineTitle(formatGuardianReviewTitle(entry.status)));
+
+    const metaParts = [];
+    const actionLabel = describeGuardianReviewAction(entry.action);
+    if (actionLabel) {
+      metaParts.push(actionLabel);
+    }
+    if (entry.riskLevel) {
+      metaParts.push(`risk=${entry.riskLevel}`);
+    }
+    if (entry.userAuthorization) {
+      metaParts.push(`auth=${entry.userAuthorization}`);
+    }
+    if (entry.decisionSource) {
+      metaParts.push(`decision=${entry.decisionSource}`);
+    }
+    if (metaParts.length) {
+      node.appendChild(createTimelineMeta(metaParts.join(' · ')));
+    }
+
+    if (entry.rationale) {
+      node.appendChild(createTimelinePre(entry.rationale, 'timeline-inline-pre-output'));
+    } else if (String(entry.status || '').trim().toLowerCase() === 'inprogress') {
+      node.appendChild(createTimelinePlaceholder('Guardian 正在审查批准请求…'));
+    }
+
     if (entry.timestampMs) {
       node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
     }
@@ -839,6 +927,16 @@ export function createMessageRenderer(deps) {
       return;
     }
 
+    if (entry.kind === 'hookEvent') {
+      populateHookEventEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'guardianReview') {
+      populateGuardianReviewEntry(node, entry);
+      return;
+    }
+
     if (entry.kind === 'serverRequest') {
       node.className = 'approval-banner approval-card';
       node.dataset.serverRequestId = entry.request?.requestId || '';
@@ -890,6 +988,76 @@ export function createMessageRenderer(deps) {
       return '- 删除';
     }
     return '~ 修改';
+  }
+
+  function normalizeHookOutputKind(kind) {
+    const normalized = String(kind || '').trim().toLowerCase();
+    if (['warning', 'stop', 'feedback', 'context', 'error'].includes(normalized)) {
+      return normalized;
+    }
+    return 'feedback';
+  }
+
+  function formatHookOutputPrefix(kind) {
+    const normalized = normalizeHookOutputKind(kind);
+    if (normalized === 'warning') {
+      return 'warning: ';
+    }
+    if (normalized === 'stop') {
+      return 'stop: ';
+    }
+    if (normalized === 'context') {
+      return 'hook context: ';
+    }
+    if (normalized === 'error') {
+      return 'error: ';
+    }
+    return 'feedback: ';
+  }
+
+  function formatGuardianReviewTitle(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'approved') {
+      return 'Guardian 已批准';
+    }
+    if (normalized === 'denied') {
+      return 'Guardian 已拒绝';
+    }
+    if (normalized === 'timedout') {
+      return 'Guardian 审查超时';
+    }
+    if (normalized === 'aborted') {
+      return 'Guardian 审查已中止';
+    }
+    return 'Guardian 审查中';
+  }
+
+  function describeGuardianReviewAction(action) {
+    if (!action || typeof action !== 'object') {
+      return '';
+    }
+    const type = String(action.type || '').trim();
+    if (type === 'command') {
+      return action.command || 'command';
+    }
+    if (type === 'execve') {
+      return Array.isArray(action.argv) && action.argv.length ? action.argv.join(' ') : (action.program || 'execve');
+    }
+    if (type === 'applyPatch') {
+      return Array.isArray(action.files) && action.files.length
+        ? `apply_patch · ${action.files.length} files`
+        : 'apply_patch';
+    }
+    if (type === 'networkAccess') {
+      return action.target || action.host || 'network access';
+    }
+    if (type === 'mcpToolCall') {
+      return action.toolTitle || action.toolName || action.tool_name || 'MCP tool';
+    }
+    if (type === 'requestPermissions') {
+      return action.reason || 'request permissions';
+    }
+    return type || '';
   }
 
   function formatFileChangeLineStats(change) {

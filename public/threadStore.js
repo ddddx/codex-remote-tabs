@@ -33,6 +33,13 @@ export function createThreadStore(deps) {
       && (item._localNoticeCode === 'send_disconnected' || item._localNoticeCode === 'ws_reconnecting');
   }
 
+  function isNotificationBackedPersistentItem(item) {
+    if (!item || typeof item !== 'object') {
+      return false;
+    }
+    return item._supplemental === true;
+  }
+
   function clearTransientConnectionNotices(threadId = null) {
     let changed = false;
     const targets = threadId
@@ -187,6 +194,20 @@ export function createThreadStore(deps) {
         if (existingOutput) {
           merged.output = existingOutput;
         }
+      }
+    }
+
+    if (nextItem.type === 'hookEvent') {
+      const nextRun = nextItem.run && typeof nextItem.run === 'object' ? nextItem.run : null;
+      const existingRun = existingItem.run && typeof existingItem.run === 'object' ? existingItem.run : null;
+      if (nextRun && existingRun) {
+        merged.run = {
+          ...existingRun,
+          ...nextRun,
+          entries: Array.isArray(nextRun.entries) ? nextRun.entries : (Array.isArray(existingRun.entries) ? existingRun.entries : []),
+        };
+      } else if (existingRun && !nextRun) {
+        merged.run = existingRun;
       }
     }
 
@@ -987,8 +1008,13 @@ export function createThreadStore(deps) {
 
     for (const item of existing) {
       const isLocalNotice = item.type === '_error' || item.type === '_warning';
+      const isPersistentNotificationItem = isNotificationBackedPersistentItem(item);
       const isPartial = item._partial || partials.has(item.id);
       if (isLocalNotice && !syncedIds.has(item.id)) {
+        merged.push(item);
+        continue;
+      }
+      if (isPersistentNotificationItem && !syncedIds.has(item.id)) {
         merged.push(item);
         continue;
       }
@@ -1024,6 +1050,27 @@ export function createThreadStore(deps) {
       }
       rememberTurnStartedAt(threadId, getTurnStartedAtFromTurn(lastTurn));
     }
+  }
+
+  function syncSupplementalItems(threadId, items) {
+    if (!threadId) {
+      return;
+    }
+
+    const existing = state.itemsByThread.get(threadId) || [];
+    const baseItems = existing.filter((item) => item?._supplemental !== true);
+    const supplemental = Array.isArray(items)
+      ? items
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          ...item,
+          _supplemental: item._supplemental === true,
+          _turnId: item._turnId || null,
+          _partial: false,
+          _renderVersion: 1,
+        }))
+      : [];
+    state.itemsByThread.set(threadId, dedupeItems(baseItems.concat(supplemental)));
   }
 
   function upsertStreamingItem(threadId, turnId, itemId, delta) {
@@ -1083,6 +1130,129 @@ export function createThreadStore(deps) {
     items.push({ ...nextItem, _partial: false, _renderVersion: 1 });
   }
 
+  function shouldPersistHookRun(run) {
+    if (!run || typeof run !== 'object') {
+      return false;
+    }
+    const status = String(run.status || '').trim().toLowerCase();
+    const entries = Array.isArray(run.entries) ? run.entries : [];
+    return status !== 'completed' || entries.length > 0;
+  }
+
+  function upsertHookEvent(threadId, turnId, run, phase) {
+    if (!threadId || !run?.id) {
+      return null;
+    }
+
+    const item = {
+      id: run.id,
+      type: 'hookEvent',
+      phase: phase === 'completed' ? 'completed' : 'started',
+      run,
+      status: String(run.status || ''),
+      startedAt: run.startedAt || run.started_at || Date.now(),
+      completedAt: run.completedAt || run.completed_at || null,
+    };
+
+    if (phase === 'completed') {
+      if (!shouldPersistHookRun(run)) {
+        const items = ensureItems(threadId);
+        const index = items.findIndex((entry) => entry.id === run.id);
+        if (index >= 0) {
+          items.splice(index, 1);
+        }
+        return null;
+      }
+      finalizeItem(threadId, turnId, item);
+      return item;
+    }
+
+    const items = ensureItems(threadId);
+    const index = items.findIndex((entry) => entry.id === run.id);
+    if (index >= 0) {
+      const previousVersion = ensureItemRenderVersion(items[index]);
+      items[index] = {
+        ...items[index],
+        ...item,
+        _turnId: turnId || items[index]._turnId || null,
+        _partial: true,
+        _renderVersion: previousVersion + 1,
+      };
+      return items[index];
+    }
+
+    items.push({
+      ...cloneItemForTurn(item, turnId),
+      _partial: true,
+      _renderVersion: 1,
+    });
+    return items[items.length - 1];
+  }
+
+  function upsertGuardianReviewEvent(threadId, turnId, payload, phase) {
+    if (!threadId || !payload?.reviewId) {
+      return null;
+    }
+
+    const review = payload.review && typeof payload.review === 'object' ? payload.review : {};
+    const item = {
+      id: payload.reviewId,
+      type: 'guardianReview',
+      phase: phase === 'completed' ? 'completed' : 'started',
+      targetItemId: payload.targetItemId || null,
+      decisionSource: payload.decisionSource || null,
+      review,
+      action: payload.action || null,
+      status: String(review.status || ''),
+      startedAt: payload.startedAt || Date.now(),
+      completedAt: payload.completedAt || null,
+    };
+
+    if (phase === 'completed') {
+      finalizeItem(threadId, turnId, item);
+      return item;
+    }
+
+    const items = ensureItems(threadId);
+    const index = items.findIndex((entry) => entry.id === payload.reviewId);
+    if (index >= 0) {
+      const previousVersion = ensureItemRenderVersion(items[index]);
+      items[index] = {
+        ...items[index],
+        ...item,
+        _turnId: turnId || items[index]._turnId || null,
+        _partial: true,
+        _renderVersion: previousVersion + 1,
+      };
+      return items[index];
+    }
+
+    items.push({
+      ...cloneItemForTurn(item, turnId),
+      _partial: true,
+      _renderVersion: 1,
+    });
+    return items[items.length - 1];
+  }
+
+  function appendMcpToolProgress(threadId, turnId, itemId, message) {
+    if (!threadId || !itemId || typeof message !== 'string') {
+      return null;
+    }
+    const text = message.trim();
+    if (!text) {
+      return null;
+    }
+
+    return upsertLiveItem(threadId, turnId, itemId, 'mcpToolCall', (item) => {
+      const progress = Array.isArray(item.progressMessages) ? item.progressMessages.slice() : [];
+      if (progress[progress.length - 1] !== text) {
+        progress.push(text);
+      }
+      item.progressMessages = progress.slice(-6);
+    });
+  }
+
   return {
     appendReasoningContentText,
     appendReasoningSummaryPart,
@@ -1120,8 +1290,12 @@ export function createThreadStore(deps) {
     setThreadTurnPlan,
     setThreadTokenUsage,
     summarizeFileChanges,
+    syncSupplementalItems,
     syncTurns,
     normalizeFileChanges,
+    appendMcpToolProgress,
+    upsertGuardianReviewEvent,
+    upsertHookEvent,
     upsertLiveItem,
     upsertServerRequest,
     upsertStreamingItem,

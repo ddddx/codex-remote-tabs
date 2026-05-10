@@ -83,6 +83,8 @@ const pendingWindowOpens = new Map();
 const pendingServerRequests = new Map();
 const turnPlansByThread = new Map();
 const turnDiffsByThread = new Map();
+const supplementalItemsByThread = new Map();
+const globalSupplementalItems = [];
 let shuttingDown = false;
 let windowStatusTimer = null;
 let windowAttachments = null;
@@ -510,6 +512,7 @@ function removeTab(threadId, options = {}) {
   tabs.delete(threadId);
   turnPlansByThread.delete(threadId);
   turnDiffsByThread.delete(threadId);
+  supplementalItemsByThread.delete(threadId);
   clearClosedTabCleanup(threadId);
   if (broadcastRemoval) {
     broadcast({ type: 'tab_removed', threadId });
@@ -564,6 +567,16 @@ windowAttachments = createWindowAttachmentService({
 function toClientServerRequest(request) {
   const { rawRequestId, ...clientRequest } = request;
   return clientRequest;
+}
+
+function trimGlobalSupplementalItems(limit = 100) {
+  while (globalSupplementalItems.length > limit) {
+    globalSupplementalItems.shift();
+  }
+}
+
+function buildGlobalSupplementalItemSnapshots() {
+  return globalSupplementalItems.slice();
 }
 
 function listPendingServerRequests(threadId = null) {
@@ -699,6 +712,60 @@ function buildTurnDiffSnapshots(threadId, turns) {
   return Array.from(merged.values());
 }
 
+function ensureSupplementalItemMap(threadId) {
+  if (!threadId) {
+    return null;
+  }
+  if (!supplementalItemsByThread.has(threadId)) {
+    supplementalItemsByThread.set(threadId, new Map());
+  }
+  return supplementalItemsByThread.get(threadId);
+}
+
+function upsertSupplementalItem(threadId, item) {
+  if (!threadId || !item?.id) {
+    return null;
+  }
+  const store = ensureSupplementalItemMap(threadId);
+  if (!store) {
+    return null;
+  }
+  const existing = store.get(item.id) || null;
+  const next = {
+    ...(existing || {}),
+    ...item,
+    updatedAt: Date.now(),
+  };
+  if (!next.createdAt) {
+    next.createdAt = Date.now();
+  }
+  store.set(item.id, next);
+  return next;
+}
+
+function removeSupplementalItem(threadId, itemId) {
+  if (!threadId || !itemId) {
+    return false;
+  }
+  const store = supplementalItemsByThread.get(threadId);
+  if (!store) {
+    return false;
+  }
+  return store.delete(itemId);
+}
+
+function buildSupplementalItemSnapshots(threadId) {
+  const store = supplementalItemsByThread.get(threadId);
+  if (!store) {
+    return [];
+  }
+  return Array.from(store.values()).sort((a, b) => {
+    const aTime = Number(a.completedAt || a.startedAt || a.createdAt || a.updatedAt || 0);
+    const bTime = Number(b.completedAt || b.startedAt || b.createdAt || b.updatedAt || 0);
+    return aTime - bTime;
+  });
+}
+
 async function ensureWindowForThread(threadId) {
   assertThreadId(threadId);
   if (!windowAttachments) {
@@ -747,6 +814,8 @@ async function syncThreadToClients(ws, threadId) {
     turns: thread.turns || [],
     turnPlans: buildTurnPlanSnapshots(threadId, thread.turns || []),
     turnDiffs: buildTurnDiffSnapshots(threadId, thread.turns || []),
+    supplementalItems: buildSupplementalItemSnapshots(threadId),
+    globalSupplementalItems: buildGlobalSupplementalItemSnapshots(),
     tokenUsage: thread.tokenUsage || thread.token_usage || null,
   });
   return { thread, materialized };
@@ -1026,9 +1095,30 @@ function normalizeObject(value, fieldName) {
 
 function pushSystemNotice(threadId, kind, text, extra = {}) {
   const normalizedThreadId = typeof threadId === 'string' && threadId.trim() ? threadId.trim() : null;
+  const notice = {
+    id: extra.noticeId || `notice-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+    type: kind === 'error' ? '_error' : '_warning',
+    text,
+    createdAt: Date.now(),
+    _supplemental: true,
+    ...(extra.noticeKind ? { noticeKind: extra.noticeKind } : {}),
+  };
+
+  if (normalizedThreadId) {
+    upsertSupplementalItem(normalizedThreadId, {
+      ...notice,
+      _turnId: extra.turnId || null,
+    });
+  } else {
+    globalSupplementalItems.push(notice);
+    trimGlobalSupplementalItems();
+  }
+
   broadcast({
     type: kind === 'error' ? 'error_notice' : 'warning',
     threadId: normalizedThreadId,
+    noticeId: notice.id,
+    createdAt: notice.createdAt,
     message: text,
     ...extra,
   });
@@ -1051,6 +1141,528 @@ function hasTrustedAccessForCyberVerification(params = {}) {
     }
     return entry?.type === TRUSTED_ACCESS_FOR_CYBER_VERIFICATION || entry?.value === TRUSTED_ACCESS_FOR_CYBER_VERIFICATION;
   });
+}
+
+function normalizeHookRun(run) {
+  if (!run || typeof run !== 'object') {
+    return null;
+  }
+  return {
+    id: run.id || '',
+    eventName: run.eventName || run.event_name || '',
+    handlerType: run.handlerType || run.handler_type || '',
+    executionMode: run.executionMode || run.execution_mode || '',
+    scope: run.scope || '',
+    sourcePath: run.sourcePath || run.source_path || '',
+    status: run.status || '',
+    statusMessage: run.statusMessage || run.status_message || '',
+    startedAt: run.startedAt || run.started_at || Date.now(),
+    completedAt: run.completedAt || run.completed_at || null,
+    durationMs: run.durationMs || run.duration_ms || null,
+    entries: Array.isArray(run.entries) ? run.entries : [],
+  };
+}
+
+function shouldPersistHookRunSnapshot(run) {
+  if (!run) {
+    return false;
+  }
+  const status = String(run.status || '').trim().toLowerCase();
+  const entries = Array.isArray(run.entries) ? run.entries : [];
+  return status !== 'completed' || entries.length > 0;
+}
+
+function buildGuardianReviewSupplementalItem(params, phase) {
+  const review = params?.review && typeof params.review === 'object' ? params.review : null;
+  return {
+    id: params.reviewId || '',
+    type: 'guardianReview',
+    phase,
+    _supplemental: true,
+    _turnId: params.turnId || null,
+    targetItemId: params.targetItemId || null,
+    decisionSource: params.decisionSource || null,
+    review,
+    action: params.action || null,
+    status: review?.status || '',
+    startedAt: params.startedAtMs || Date.now(),
+    completedAt: params.completedAtMs || null,
+    createdAt: params.startedAtMs || Date.now(),
+  };
+}
+
+function updateTab(threadId, mutate) {
+  const tab = tabs.get(threadId);
+  if (!tab) {
+    return null;
+  }
+  mutate(tab);
+  tab.updatedAt = nowUnix();
+  broadcast({ type: 'tab_updated', tab });
+  return tab;
+}
+
+function broadcastTurnStarted(params) {
+  broadcast({
+    type: 'turn_started',
+    threadId: params.threadId,
+    turnId: params.turn?.id || null,
+    startedAt: params.turn?.startedAt || params.turn?.createdAt || Date.now(),
+  });
+}
+
+function broadcastTurnCompleted(params) {
+  broadcast({
+    type: 'turn_completed',
+    threadId: params.threadId,
+    turnId: params.turn?.id || null,
+    status: params.turn?.status || 'unknown',
+    error: params.turn?.error || null,
+  });
+}
+
+function handleThreadNotification(method, params) {
+  if (method === 'thread/started' && params.thread) {
+    const tab = ensureTab(params.thread);
+    broadcast({ type: 'tab_updated', tab });
+    return true;
+  }
+
+  if (method === 'thread/status/changed') {
+    const status = normalizeStatus(params.status, tabs.get(params.threadId)?.status || 'idle');
+    updateTab(params.threadId, (tab) => {
+      tab.status = status;
+    });
+    if (status === 'closed') {
+      markTabClosed(params.threadId);
+    }
+    return true;
+  }
+
+  if (method === 'thread/name/updated') {
+    updateTab(params.threadId, (tab) => {
+      tab.name = params.threadName || tab.name;
+    });
+    return true;
+  }
+
+  if (method === 'thread/closed') {
+    markTabClosed(params.threadId);
+    return true;
+  }
+
+  if (method === 'thread/tokenUsage/updated') {
+    broadcast({
+      type: 'token_usage',
+      threadId: params.threadId,
+      turnId: params.turnId,
+      usage: params.tokenUsage,
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function handleTurnNotification(method, params) {
+  if (method === 'turn/started') {
+    updateTab(params.threadId, (tab) => {
+      tab.status = 'running';
+    });
+    broadcastTurnStarted(params);
+    return true;
+  }
+
+  if (method === 'turn/completed') {
+    updateTab(params.threadId, (tab) => {
+      tab.status = normalizeTabStatusFromTurn(params.turn?.status, 'idle');
+    });
+    broadcastTurnCompleted(params);
+    broadcastUnreadIfNeeded(params.threadId);
+    return true;
+  }
+
+  if (method === 'turn/diff/updated') {
+    setCachedTurnDiff(params.threadId || null, params.turnId || null, params.diff);
+    broadcast({
+      type: 'turn_diff_updated',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      diff: typeof params.diff === 'string' ? params.diff : '',
+    });
+    return true;
+  }
+
+  if (method === 'turn/plan/updated') {
+    setCachedTurnPlan(params.threadId || null, params.turnId || null, {
+      explanation: params.explanation,
+      plan: params.plan,
+    });
+    broadcast({
+      type: 'turn_plan_updated',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      explanation: typeof params.explanation === 'string' ? params.explanation : '',
+      plan: Array.isArray(params.plan) ? params.plan : [],
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function handleSupplementalNotification(method, params) {
+  if (method === 'hook/started') {
+    const run = normalizeHookRun(params.run);
+    if (run?.id) {
+      upsertSupplementalItem(params.threadId || null, {
+        id: run.id,
+        type: 'hookEvent',
+        phase: 'started',
+        _supplemental: true,
+        _turnId: params.turnId || null,
+        run,
+        status: run.status || '',
+        startedAt: run.startedAt || Date.now(),
+        completedAt: run.completedAt || null,
+        createdAt: run.startedAt || Date.now(),
+      });
+    }
+    broadcast({
+      type: 'hook_started',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      run,
+    });
+    return true;
+  }
+
+  if (method === 'hook/completed') {
+    const run = normalizeHookRun(params.run);
+    if (run?.id) {
+      if (shouldPersistHookRunSnapshot(run)) {
+        upsertSupplementalItem(params.threadId || null, {
+          id: run.id,
+          type: 'hookEvent',
+          phase: 'completed',
+          _supplemental: true,
+          _turnId: params.turnId || null,
+          run,
+          status: run.status || '',
+          startedAt: run.startedAt || Date.now(),
+          completedAt: run.completedAt || Date.now(),
+          createdAt: run.startedAt || Date.now(),
+        });
+      } else {
+        removeSupplementalItem(params.threadId || null, run.id);
+      }
+    }
+    broadcast({
+      type: 'hook_completed',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      run,
+    });
+    return true;
+  }
+
+  if (method === 'item/autoApprovalReview/started') {
+    const reviewItem = buildGuardianReviewSupplementalItem(params, 'started');
+    if (reviewItem.id) {
+      upsertSupplementalItem(params.threadId || null, reviewItem);
+    }
+    broadcast({
+      type: 'guardian_review_started',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      reviewId: params.reviewId || '',
+      startedAt: params.startedAtMs || Date.now(),
+      targetItemId: params.targetItemId || null,
+      review: params.review || null,
+      action: params.action || null,
+    });
+    return true;
+  }
+
+  if (method === 'item/autoApprovalReview/completed') {
+    const reviewItem = buildGuardianReviewSupplementalItem(params, 'completed');
+    if (reviewItem.id) {
+      upsertSupplementalItem(params.threadId || null, reviewItem);
+    }
+    broadcast({
+      type: 'guardian_review_completed',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      reviewId: params.reviewId || '',
+      startedAt: params.startedAtMs || Date.now(),
+      completedAt: params.completedAtMs || Date.now(),
+      targetItemId: params.targetItemId || null,
+      decisionSource: params.decisionSource || null,
+      review: params.review || null,
+      action: params.action || null,
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function handleItemNotification(method, params) {
+  if (method === 'item/started') {
+    broadcast({
+      type: 'item_started',
+      threadId: params.threadId,
+      turnId: params.turnId,
+      item: params.item,
+      startedAt: params.item?.startedAt || params.item?.createdAt || Date.now(),
+    });
+    return true;
+  }
+
+  if (method === 'item/completed') {
+    broadcast({ type: 'item_completed', threadId: params.threadId, turnId: params.turnId, item: params.item });
+    if (params.item?.type === 'agentMessage') {
+      broadcastUnreadIfNeeded(params.threadId);
+    }
+    return true;
+  }
+
+  if (method === 'item/agentMessage/delta') {
+    broadcast({
+      type: 'agent_delta',
+      threadId: params.threadId,
+      turnId: params.turnId,
+      itemId: params.itemId,
+      delta: params.delta,
+      startedAt: params.startedAt || Date.now(),
+    });
+    broadcastUnreadIfNeeded(params.threadId);
+    return true;
+  }
+
+  if (method === 'item/mcpToolCall/progress') {
+    broadcast({
+      type: 'mcp_tool_progress',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      itemId: params.itemId || null,
+      message: typeof params.message === 'string' ? params.message : '',
+      startedAt: params.startedAt || Date.now(),
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function handleStreamNotification(method, params) {
+  if (!STREAM_ITEM_DELTA_METHODS.has(method)) {
+    return false;
+  }
+
+  if (method === 'item/plan/delta') {
+    broadcast({
+      type: 'plan_delta',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      itemId: params.itemId || null,
+      delta: typeof params.delta === 'string' ? params.delta : '',
+      startedAt: params.startedAt || Date.now(),
+    });
+    return true;
+  }
+
+  if (method === 'item/fileChange/patchUpdated') {
+    const requestId = params.requestId != null ? String(params.requestId) : '';
+    const request = requestId ? getPendingServerRequest(requestId) : null;
+    if (request && (request.kind === 'file_change_approval' || request.kind === 'file_change_approval_legacy')) {
+      updatePendingServerRequest(requestId, {
+        patch: typeof params.patch === 'string' ? params.patch : (request.patch || ''),
+        changes: Array.isArray(params.changes) ? params.changes : (request.changes || []),
+      });
+      broadcast({
+        type: 'server_request_updated',
+        request: toClientServerRequest(getPendingServerRequest(requestId)),
+      });
+    }
+  }
+
+  broadcast({
+    type: 'item_delta',
+    method,
+    ...params,
+    startedAt: params.startedAt || Date.now(),
+  });
+  return true;
+}
+
+function handleServerRequestResolvedNotification(method, params) {
+  if (method !== 'serverRequest/resolved') {
+    return false;
+  }
+  const resolvedRequest = resolvePendingServerRequest(params.requestId);
+  broadcast({
+    type: 'server_request_resolved',
+    threadId: resolvedRequest?.threadId || params.threadId || null,
+    requestId: normalizeRequestId(params.requestId),
+  });
+  return true;
+}
+
+function buildModelReroutedNotice(params) {
+  const fromModel = typeof params.fromModel === 'string' ? params.fromModel.trim() : '';
+  const toModel = typeof params.toModel === 'string' ? params.toModel.trim() : '';
+  const reason = typeof params.reason === 'string'
+    ? params.reason.trim()
+    : (typeof params.reason?.type === 'string' ? params.reason.type.trim() : '');
+  const parts = ['模型已切换'];
+  if (fromModel || toModel) {
+    parts.push(`${fromModel || 'unknown'} -> ${toModel || 'unknown'}`);
+  }
+  if (reason) {
+    parts.push(`原因: ${reason}`);
+  }
+  return parts.join('\n');
+}
+
+function buildWindowsWorldWritableWarningMessage(params) {
+  const samplePaths = Array.isArray(params.samplePaths) ? params.samplePaths.filter(Boolean) : [];
+  const preview = samplePaths.slice(0, 3).join('\n');
+  const extraCount = Math.max(0, Number.parseInt(params.extraCount, 10) || 0);
+  const suffix = extraCount > 0 ? `\n另有 ${extraCount} 个目录未展示` : '';
+  const failedScan = params.failedScan ? '\n部分目录扫描失败' : '';
+  return `Windows 沙箱无法保护 world-writable 目录。${preview ? `\n${preview}` : ''}${suffix}${failedScan}`;
+}
+
+function handleSystemNotification(method, params) {
+  if (method === 'error') {
+    broadcast({ type: 'codex_error', threadId: params.threadId, error: params.error });
+    return true;
+  }
+
+  if (method === 'warning') {
+    pushSystemNotice(params.threadId || null, 'warning', params.message || '警告');
+    return true;
+  }
+
+  if (method === 'guardianWarning') {
+    pushSystemNotice(params.threadId || null, 'warning', params.message || 'Guardian 警告');
+    return true;
+  }
+
+  if (method === 'deprecationNotice') {
+    const summary = typeof params.summary === 'string' ? params.summary.trim() : '';
+    const details = typeof params.details === 'string' ? params.details.trim() : '';
+    const message = details ? `${summary}\n\n${details}` : (summary || '功能弃用提醒');
+    pushSystemNotice(null, 'warning', message, { noticeKind: 'deprecation' });
+    return true;
+  }
+
+  if (method === 'configWarning') {
+    pushSystemNotice(null, 'warning', formatConfigWarningMessage(params), { noticeKind: 'config' });
+    return true;
+  }
+
+  if (method === 'model/verification' || method === 'modelVerification') {
+    if (hasTrustedAccessForCyberVerification(params)) {
+      pushSystemNotice(params.threadId || null, 'warning', TRUSTED_ACCESS_FOR_CYBER_WARNING, {
+        noticeKind: 'modelVerification',
+      });
+    }
+    return true;
+  }
+
+  if (method === 'model/rerouted') {
+    pushSystemNotice(params.threadId || null, 'warning', buildModelReroutedNotice(params), {
+      noticeKind: 'modelRerouted',
+    });
+    return true;
+  }
+
+  if (method === 'thread/compacted') {
+    broadcast({
+      type: 'warning',
+      threadId: params.threadId || null,
+      message: '上下文已压缩',
+      noticeKind: 'contextCompactedLegacy',
+    });
+    return true;
+  }
+
+  if (method === 'windows/worldWritableWarning') {
+    pushSystemNotice(null, 'warning', buildWindowsWorldWritableWarningMessage(params), {
+      noticeKind: 'windowsWorldWritableWarning',
+    });
+    return true;
+  }
+
+  return false;
+}
+
+const IGNORED_NOTIFICATION_METHODS = new Set([
+  'terminalInteraction',
+  'thread/archived',
+  'thread/unarchived',
+  'thread/goal/updated',
+  'thread/goal/cleared',
+  'rawResponseItem/completed',
+  'command/exec/outputDelta',
+  'process/outputDelta',
+  'process/exited',
+  'mcpServer/oauthLogin/completed',
+  'mcpServer/startupStatus/updated',
+  'account/updated',
+  'account/rateLimits/updated',
+  'app/list/updated',
+  'remoteControl/status/changed',
+  'externalAgentConfig/import/completed',
+  'fs/changed',
+  'fuzzyFileSearch/sessionUpdated',
+  'fuzzyFileSearch/sessionCompleted',
+  'skills/changed',
+  'thread/realtime/started',
+  'thread/realtime/itemAdded',
+  'thread/realtime/transcript/delta',
+  'thread/realtime/transcript/done',
+  'thread/realtime/outputAudio/delta',
+  'thread/realtime/sdp',
+  'thread/realtime/error',
+  'thread/realtime/closed',
+  'windowsSandbox/setupCompleted',
+  'account/login/completed',
+]);
+
+function handleNotification(msg) {
+  const method = msg.method;
+  const params = msg.params || {};
+  console.log(`[notification] ${method}`, JSON.stringify(params).substring(0, 200));
+
+  if (handleThreadNotification(method, params)) {
+    return;
+  }
+  if (handleTurnNotification(method, params)) {
+    return;
+  }
+  if (handleSupplementalNotification(method, params)) {
+    return;
+  }
+  if (handleItemNotification(method, params)) {
+    return;
+  }
+  if (handleStreamNotification(method, params)) {
+    return;
+  }
+  if (handleServerRequestResolvedNotification(method, params)) {
+    return;
+  }
+  if (handleSystemNotification(method, params)) {
+    return;
+  }
+  if (IGNORED_NOTIFICATION_METHODS.has(method)) {
+    return;
+  }
+
+  broadcast({ type: 'notification', method, params });
 }
 
 function normalizeRequiredString(value, maxLength, fieldName) {
@@ -1228,239 +1840,7 @@ function createServerRequestRecord(msg) {
   throw new Error(`unsupported server request method: ${method}`);
 }
 
-codex.on('notification', (msg) => {
-  const method = msg.method;
-  const params = msg.params || {};
-  console.log(`[notification] ${method}`, JSON.stringify(params).substring(0, 200));
-
-  if (method === 'thread/started' && params.thread) {
-    const tab = ensureTab(params.thread);
-    broadcast({ type: 'tab_updated', tab });
-    return;
-  }
-
-  if (method === 'thread/status/changed') {
-    const tab = tabs.get(params.threadId);
-    const status = normalizeStatus(params.status, tab?.status || 'idle');
-
-    if (tab) {
-      tab.status = status;
-      tab.updatedAt = nowUnix();
-      broadcast({ type: 'tab_updated', tab });
-    }
-
-    if (status === 'closed') {
-      markTabClosed(params.threadId);
-    }
-    return;
-  }
-
-  if (method === 'thread/name/updated') {
-    const tab = tabs.get(params.threadId);
-    if (!tab) {
-      return;
-    }
-
-    if (tab) {
-      tab.name = params.threadName || tab.name;
-      tab.updatedAt = nowUnix();
-      broadcast({ type: 'tab_updated', tab });
-    }
-    return;
-  }
-
-  if (method === 'thread/closed') {
-    markTabClosed(params.threadId);
-    return;
-  }
-
-  if (method === 'thread/tokenUsage/updated') {
-    broadcast({ type: 'token_usage', threadId: params.threadId, turnId: params.turnId, usage: params.tokenUsage });
-    return;
-  }
-
-  if (method === 'turn/started') {
-    const tab = tabs.get(params.threadId);
-    if (tab) {
-      tab.status = 'running';
-      tab.updatedAt = nowUnix();
-      broadcast({ type: 'tab_updated', tab });
-    }
-    broadcast({
-      type: 'turn_started',
-      threadId: params.threadId,
-      turnId: params.turn?.id || null,
-      startedAt: params.turn?.startedAt || params.turn?.createdAt || Date.now(),
-    });
-    return;
-  }
-
-  if (method === 'turn/completed') {
-    const tab = tabs.get(params.threadId);
-    if (tab) {
-      tab.status = normalizeTabStatusFromTurn(params.turn?.status, 'idle');
-      tab.updatedAt = nowUnix();
-      broadcast({ type: 'tab_updated', tab });
-    }
-
-    broadcast({
-      type: 'turn_completed',
-      threadId: params.threadId,
-      turnId: params.turn?.id || null,
-      status: params.turn?.status || 'unknown',
-      error: params.turn?.error || null,
-    });
-    broadcastUnreadIfNeeded(params.threadId);
-    return;
-  }
-
-  if (method === 'turn/diff/updated') {
-    setCachedTurnDiff(params.threadId || null, params.turnId || null, params.diff);
-    broadcast({
-      type: 'turn_diff_updated',
-      threadId: params.threadId || null,
-      turnId: params.turnId || null,
-      diff: typeof params.diff === 'string' ? params.diff : '',
-    });
-    return;
-  }
-
-  if (method === 'turn/plan/updated') {
-    setCachedTurnPlan(params.threadId || null, params.turnId || null, {
-      explanation: params.explanation,
-      plan: params.plan,
-    });
-    broadcast({
-      type: 'turn_plan_updated',
-      threadId: params.threadId || null,
-      turnId: params.turnId || null,
-      explanation: typeof params.explanation === 'string' ? params.explanation : '',
-      plan: Array.isArray(params.plan) ? params.plan : [],
-    });
-    return;
-  }
-
-  if (method === 'item/started') {
-    broadcast({
-      type: 'item_started',
-      threadId: params.threadId,
-      turnId: params.turnId,
-      item: params.item,
-      startedAt: params.item?.startedAt || params.item?.createdAt || Date.now(),
-    });
-    return;
-  }
-
-  if (method === 'item/completed') {
-    broadcast({ type: 'item_completed', threadId: params.threadId, turnId: params.turnId, item: params.item });
-    if (params.item?.type === 'agentMessage') {
-      broadcastUnreadIfNeeded(params.threadId);
-    }
-    return;
-  }
-
-  if (method === 'item/agentMessage/delta') {
-    broadcast({
-      type: 'agent_delta',
-      threadId: params.threadId,
-      turnId: params.turnId,
-      itemId: params.itemId,
-      delta: params.delta,
-      startedAt: params.startedAt || Date.now(),
-    });
-    broadcastUnreadIfNeeded(params.threadId);
-    return;
-  }
-
-  if (STREAM_ITEM_DELTA_METHODS.has(method)) {
-    if (method === 'item/plan/delta') {
-      broadcast({
-        type: 'plan_delta',
-        threadId: params.threadId || null,
-        turnId: params.turnId || null,
-        itemId: params.itemId || null,
-        delta: typeof params.delta === 'string' ? params.delta : '',
-        startedAt: params.startedAt || Date.now(),
-      });
-      return;
-    }
-
-    if (method === 'item/fileChange/patchUpdated') {
-      const requestId = params.requestId != null ? String(params.requestId) : '';
-      const request = requestId ? getPendingServerRequest(requestId) : null;
-      if (request && (request.kind === 'file_change_approval' || request.kind === 'file_change_approval_legacy')) {
-        updatePendingServerRequest(requestId, {
-          patch: typeof params.patch === 'string' ? params.patch : (request.patch || ''),
-          changes: Array.isArray(params.changes) ? params.changes : (request.changes || []),
-        });
-        broadcast({
-          type: 'server_request_updated',
-          request: toClientServerRequest(getPendingServerRequest(requestId)),
-        });
-      }
-    }
-    broadcast({
-      type: 'item_delta',
-      method,
-      ...params,
-      startedAt: params.startedAt || Date.now(),
-    });
-    return;
-  }
-
-  if (method === 'serverRequest/resolved') {
-    const resolvedRequest = resolvePendingServerRequest(params.requestId);
-    broadcast({
-      type: 'server_request_resolved',
-      threadId: resolvedRequest?.threadId || params.threadId || null,
-      requestId: normalizeRequestId(params.requestId),
-    });
-    return;
-  }
-
-  if (method === 'error') {
-    broadcast({ type: 'codex_error', threadId: params.threadId, error: params.error });
-    return;
-  }
-
-  if (method === 'warning') {
-    pushSystemNotice(params.threadId || null, 'warning', params.message || '警告');
-    return;
-  }
-
-  if (method === 'guardianWarning') {
-    pushSystemNotice(params.threadId || null, 'warning', params.message || 'Guardian 警告');
-    return;
-  }
-
-  if (method === 'deprecationNotice') {
-    const summary = typeof params.summary === 'string' ? params.summary.trim() : '';
-    const details = typeof params.details === 'string' ? params.details.trim() : '';
-    const message = details ? `${summary}\n\n${details}` : (summary || '功能弃用提醒');
-    pushSystemNotice(null, 'warning', message, { noticeKind: 'deprecation' });
-    return;
-  }
-
-  if (method === 'configWarning') {
-    pushSystemNotice(null, 'warning', formatConfigWarningMessage(params), { noticeKind: 'config' });
-    return;
-  }
-
-  if (method === 'modelVerification') {
-    if (hasTrustedAccessForCyberVerification(params)) {
-      pushSystemNotice(params.threadId || null, 'warning', TRUSTED_ACCESS_FOR_CYBER_WARNING, {
-        noticeKind: 'modelVerification',
-      });
-    }
-    return;
-  }
-
-  if (method === 'terminalInteraction') {
-    return;
-  }
-
-  broadcast({ type: 'notification', method, params });
-});
+codex.on('notification', handleNotification);
 
 codex.on('log', (line) => {
   if (!line) {
@@ -1511,7 +1891,12 @@ wss.on('connection', (ws, request) => {
   }
 
   ws.activeThreadId = null;
-  send(ws, { type: 'state', tabs: tabsList(), serverRequests: listPendingServerRequests() });
+  send(ws, {
+    type: 'state',
+    tabs: tabsList(),
+    serverRequests: listPendingServerRequests(),
+    globalSupplementalItems: buildGlobalSupplementalItemSnapshots(),
+  });
 
   ws.on('message', async (raw) => {
     let message;

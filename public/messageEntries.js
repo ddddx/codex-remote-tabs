@@ -439,6 +439,9 @@ export function createMessageEntryBuilder(deps) {
     if (item.type === 'mcpToolCall') {
       const renderVersion = ensureItemRenderVersion(item);
       const timestampMs = extractItemTimestampMs(item);
+      const progressMessages = Array.isArray(item.progressMessages)
+        ? item.progressMessages.filter((entry) => typeof entry === 'string' && entry.trim())
+        : [];
       return {
         key,
         kind: 'mcpToolCall',
@@ -448,6 +451,7 @@ export function createMessageEntryBuilder(deps) {
         arguments: item.arguments,
         result: item.result || null,
         error: item.error || null,
+        progressMessages,
         timestampMs,
         signature: JSON.stringify([
           'mcpToolCall',
@@ -457,6 +461,7 @@ export function createMessageEntryBuilder(deps) {
           createContentDigest(item.arguments),
           createContentDigest(item.result || null),
           createContentDigest(item.error || null),
+          createContentDigest(progressMessages),
           timestampMs || 0,
         ]),
       };
@@ -578,6 +583,81 @@ export function createMessageEntryBuilder(deps) {
           key,
           renderVersion,
           JSON.stringify(fragments),
+          timestampMs || 0,
+        ]),
+      };
+    }
+
+    if (item.type === 'hookEvent') {
+      const renderVersion = ensureItemRenderVersion(item);
+      const run = item.run && typeof item.run === 'object' ? item.run : {};
+      const entries = Array.isArray(run.entries)
+        ? run.entries.map((hookEntry) => ({
+          kind: typeof hookEntry?.kind === 'string' ? hookEntry.kind : '',
+          text: typeof hookEntry?.text === 'string' ? hookEntry.text : '',
+        }))
+        : [];
+      const timestampMs = extractItemTimestampMs(item) || normalizeTimestampMs(run.startedAt || run.started_at) || null;
+      return {
+        key,
+        kind: 'hookEvent',
+        phase: item.phase || '',
+        status: item.status || run.status || '',
+        eventName: run.eventName || run.event_name || '',
+        handlerType: run.handlerType || run.handler_type || '',
+        executionMode: run.executionMode || run.execution_mode || '',
+        scope: run.scope || '',
+        sourcePath: run.sourcePath || run.source_path || '',
+        statusMessage: run.statusMessage || run.status_message || '',
+        entries,
+        timestampMs,
+        signature: JSON.stringify([
+          'hookEvent',
+          key,
+          renderVersion,
+          item.phase || '',
+          item.status || run.status || '',
+          run.eventName || run.event_name || '',
+          run.handlerType || run.handler_type || '',
+          run.executionMode || run.execution_mode || '',
+          run.scope || '',
+          run.sourcePath || run.source_path || '',
+          run.statusMessage || run.status_message || '',
+          JSON.stringify(entries),
+          timestampMs || 0,
+        ]),
+      };
+    }
+
+    if (item.type === 'guardianReview') {
+      const renderVersion = ensureItemRenderVersion(item);
+      const review = item.review && typeof item.review === 'object' ? item.review : {};
+      const action = item.action && typeof item.action === 'object' ? item.action : null;
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'guardianReview',
+        phase: item.phase || '',
+        status: item.status || review.status || '',
+        targetItemId: item.targetItemId || '',
+        decisionSource: item.decisionSource || '',
+        riskLevel: review.riskLevel || review.risk_level || '',
+        userAuthorization: review.userAuthorization || review.user_authorization || '',
+        rationale: review.rationale || '',
+        action,
+        timestampMs,
+        signature: JSON.stringify([
+          'guardianReview',
+          key,
+          renderVersion,
+          item.phase || '',
+          item.status || review.status || '',
+          item.targetItemId || '',
+          item.decisionSource || '',
+          review.riskLevel || review.risk_level || '',
+          review.userAuthorization || review.user_authorization || '',
+          review.rationale || '',
+          JSON.stringify(action),
           timestampMs || 0,
         ]),
       };

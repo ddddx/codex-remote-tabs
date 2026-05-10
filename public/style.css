@@ -1464,6 +1464,46 @@ body {
   color: var(--muted);
 }
 
+.timeline-card-hook-prompt .timeline-inline-title,
+.timeline-card-hook-event .timeline-inline-title {
+  color: var(--timeline-text);
+}
+
+.hook-output-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.hook-output-entry {
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-ghost);
+  border: 1px solid var(--panel-border-soft);
+}
+
+.hook-output-entry.kind-warning {
+  color: var(--warning-ink);
+  background: rgba(232, 184, 47, 0.12);
+  border-color: rgba(232, 184, 47, 0.28);
+}
+
+.hook-output-entry.kind-stop,
+.hook-output-entry.kind-error {
+  color: var(--danger-ink);
+  background: rgba(224, 49, 49, 0.1);
+  border-color: rgba(224, 49, 49, 0.24);
+}
+
+.hook-output-entry.kind-context {
+  color: var(--timeline-muted);
+}
+
 .approval-link {
   display: inline-block;
   margin-top: 8px;

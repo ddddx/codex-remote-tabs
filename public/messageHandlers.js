@@ -21,6 +21,7 @@ export function createMessageHandler(deps) {
     setActiveTab,
     setThreadTokenUsage,
     syncThreadTurnMeta,
+    syncSupplementalItems,
     syncTurns,
     rememberTurnStartedAt,
     clearTurnStartedAt,
@@ -35,6 +36,9 @@ export function createMessageHandler(deps) {
     appendReasoningSummaryText,
     appendReasoningSummaryPart,
     appendReasoningContentText,
+    appendMcpToolProgress,
+    upsertGuardianReviewEvent,
+    upsertHookEvent,
     rollbackPendingUserMessage,
     setComposerAttachments,
     currentTurnIdByThread,
@@ -45,13 +49,81 @@ export function createMessageHandler(deps) {
   } = deps;
 
   return function handleMessage(msg) {
+    function setTurnActive(threadId, turnId = null, startedAt = null, options = {}) {
+      const { assignPendingUserMessage = false } = options;
+      state.turnActiveByThread.set(threadId, true);
+      if (startedAt != null) {
+        rememberTurnStartedAt(threadId, startedAt);
+      }
+      if (turnId) {
+        state.currentTurnIdByThread.set(threadId, turnId);
+        if (assignPendingUserMessage) {
+          assignPendingUserMessageToTurn(threadId, turnId);
+        }
+      }
+    }
+
+    function rerenderActiveThread(threadId, options = {}) {
+      if (threadId !== state.activeThreadId) {
+        return;
+      }
+      scheduleRender({
+        header: !!options.header,
+        messages: options.messages !== false,
+      });
+    }
+
+    function upsertGlobalNotice(kind, payload) {
+      const noticeId = payload?.noticeId || createLocalId(kind === '_error' ? 'global-err' : 'global-warn');
+      const nextNotice = {
+        type: kind,
+        id: noticeId,
+        text: payload?.message || '',
+        createdAt: payload?.createdAt || Date.now(),
+        noticeKind: payload?.noticeKind || '',
+      };
+      const index = state.globalNotices.findIndex((item) => item?.id === noticeId);
+      if (index >= 0) {
+        state.globalNotices[index] = {
+          ...state.globalNotices[index],
+          ...nextNotice,
+        };
+      } else {
+        state.globalNotices.push(nextNotice);
+      }
+    }
+
+    function upsertThreadNotice(threadId, kind, payload) {
+      const items = ensureItems(threadId);
+      const noticeId = payload?.noticeId || createLocalId(kind === '_error' ? 'err' : 'warn');
+      const nextItem = {
+        type: kind,
+        id: noticeId,
+        text: payload?.message || '',
+        createdAt: payload?.createdAt || Date.now(),
+        noticeKind: payload?.noticeKind || '',
+        _turnId: state.currentTurnIdByThread.get(threadId) || null,
+      };
+      const index = items.findIndex((item) => item?.id === noticeId);
+      if (index >= 0) {
+        items[index] = {
+          ...items[index],
+          ...nextItem,
+        };
+      } else {
+        items.push(nextItem);
+      }
+    }
+
     if (msg.type === 'state') {
       state.tabs = [];
       for (const tab of msg.tabs || []) {
         upsertTab(tab);
       }
       state.serverRequests = [];
-      state.globalNotices = [];
+      state.globalNotices = Array.isArray(msg.globalSupplementalItems)
+        ? msg.globalSupplementalItems.map((item) => ({ ...item }))
+        : [];
       for (const request of msg.serverRequests || []) {
         upsertServerRequest(request);
       }
@@ -140,20 +212,17 @@ export function createMessageHandler(deps) {
       setThreadTokenUsage(msg.threadId, msg.tokenUsage || null);
       syncThreadTurnMeta(msg.threadId, msg.turnPlans || [], msg.turnDiffs || []);
       syncTurns(msg.threadId, msg.turns || []);
+      syncSupplementalItems(msg.threadId, msg.supplementalItems || []);
+      if (Array.isArray(msg.globalSupplementalItems)) {
+        state.globalNotices = msg.globalSupplementalItems.map((item) => ({ ...item }));
+      }
       render();
       return;
     }
 
     if (msg.type === 'turn_started') {
-      state.turnActiveByThread.set(msg.threadId, true);
-      rememberTurnStartedAt(msg.threadId, msg.startedAt);
-      if (msg.turnId) {
-        state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-        assignPendingUserMessageToTurn(msg.threadId, msg.turnId);
-      }
-      if (msg.threadId === state.activeThreadId) {
-        scheduleRender({ header: true, messages: true });
-      }
+      setTurnActive(msg.threadId, msg.turnId, msg.startedAt, { assignPendingUserMessage: true });
+      rerenderActiveThread(msg.threadId, { header: true, messages: true });
       return;
     }
 
@@ -174,64 +243,80 @@ export function createMessageHandler(deps) {
         explanation: msg.explanation,
         plan: msg.plan,
       });
-      if (msg.threadId === state.activeThreadId) {
-        scheduleRender({ messages: true });
-      }
+      rerenderActiveThread(msg.threadId, { messages: true });
       return;
     }
 
     if (msg.type === 'turn_diff_updated') {
       setThreadTurnDiff(msg.threadId, msg.turnId, msg.diff);
-      if (msg.threadId === state.activeThreadId) {
-        scheduleRender({ messages: true });
-      }
+      rerenderActiveThread(msg.threadId, { messages: true });
+      return;
+    }
+
+    if (msg.type === 'hook_started') {
+      setTurnActive(msg.threadId, msg.turnId);
+      upsertHookEvent(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg.run, 'started');
+      rerenderActiveThread(msg.threadId, { messages: true });
+      return;
+    }
+
+    if (msg.type === 'hook_completed') {
+      upsertHookEvent(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg.run, 'completed');
+      rerenderActiveThread(msg.threadId, { messages: true });
+      return;
+    }
+
+    if (msg.type === 'guardian_review_started') {
+      setTurnActive(msg.threadId, msg.turnId);
+      upsertGuardianReviewEvent(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg, 'started');
+      rerenderActiveThread(msg.threadId, { messages: true });
+      return;
+    }
+
+    if (msg.type === 'guardian_review_completed') {
+      upsertGuardianReviewEvent(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg, 'completed');
+      rerenderActiveThread(msg.threadId, { messages: true });
       return;
     }
 
     if (msg.type === 'plan_delta') {
-      state.turnActiveByThread.set(msg.threadId, true);
-      rememberTurnStartedAt(msg.threadId, msg.startedAt);
-      if (msg.turnId) {
-        state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-      }
+      setTurnActive(msg.threadId, msg.turnId, msg.startedAt);
       upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'plan', (item) => {
         const delta = typeof msg.delta === 'string' ? msg.delta : '';
         item.text = `${item.text || ''}${delta}`;
       });
-      if (msg.threadId === state.activeThreadId) {
-        scheduleRender({ header: true, messages: true });
-      }
+      rerenderActiveThread(msg.threadId, { header: true, messages: true });
       return;
     }
 
     if (msg.type === 'agent_delta') {
-      state.turnActiveByThread.set(msg.threadId, true);
-      rememberTurnStartedAt(msg.threadId, msg.startedAt);
-      if (msg.turnId) {
-        state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-      }
+      setTurnActive(msg.threadId, msg.turnId, msg.startedAt);
       upsertStreamingItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg.itemId, msg.delta || '');
-      if (msg.threadId === state.activeThreadId) {
-        scheduleRender({ header: true, messages: true });
-      }
+      rerenderActiveThread(msg.threadId, { header: true, messages: true });
+      return;
+    }
+
+    if (msg.type === 'mcp_tool_progress') {
+      setTurnActive(msg.threadId, msg.turnId, msg.startedAt);
+      appendMcpToolProgress(
+        msg.threadId,
+        msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null,
+        msg.itemId,
+        msg.message || ''
+      );
+      rerenderActiveThread(msg.threadId, { header: true, messages: true });
       return;
     }
 
     if (msg.type === 'item_started') {
-      state.turnActiveByThread.set(msg.threadId, true);
-      rememberTurnStartedAt(msg.threadId, msg.startedAt);
-      if (msg.turnId) {
-        state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-      }
+      setTurnActive(msg.threadId, msg.turnId, msg.startedAt);
       const items = ensureItems(msg.threadId);
       const item = cloneItemForTurn(msg.item, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null);
       reconcilePendingUserMessage(msg.threadId, item);
       if (item && item.id && !items.find((entry) => entry.id === item.id)) {
         items.push({ ...item, _partial: true, _renderVersion: 1 });
       }
-      if (msg.threadId === state.activeThreadId) {
-        scheduleRender({ header: true, messages: true });
-      }
+      rerenderActiveThread(msg.threadId, { header: true, messages: true });
       return;
     }
 
@@ -249,11 +334,7 @@ export function createMessageHandler(deps) {
     }
 
     if (msg.type === 'item_delta') {
-      state.turnActiveByThread.set(msg.threadId, true);
-      rememberTurnStartedAt(msg.threadId, msg.startedAt);
-      if (msg.turnId) {
-        state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-      }
+      setTurnActive(msg.threadId, msg.turnId, msg.startedAt);
 
       if (msg.method === 'item/commandExecution/outputDelta') {
         upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'commandExecution', (item) => {
@@ -288,9 +369,7 @@ export function createMessageHandler(deps) {
         });
       }
 
-      if (msg.threadId === state.activeThreadId) {
-        scheduleRender({ header: true, messages: true });
-      }
+      rerenderActiveThread(msg.threadId, { header: true, messages: true });
       return;
     }
 
@@ -392,22 +471,25 @@ export function createMessageHandler(deps) {
     if (msg.type === 'warning') {
       const threadId = msg.threadId || state.activeThreadId;
       if (!threadId) {
-        state.globalNotices.push({
-          type: '_warning',
-          id: createLocalId('global-warn'),
-          text: msg.message,
-          createdAt: Date.now(),
-        });
+        upsertGlobalNotice('_warning', msg);
         renderMessages();
         return;
       }
-      const items = ensureItems(threadId);
-      items.push({
-        type: '_warning',
-        id: createLocalId('warn'),
-        text: msg.message,
-        _turnId: state.currentTurnIdByThread.get(threadId) || null,
-      });
+      upsertThreadNotice(threadId, '_warning', msg);
+      if (threadId === state.activeThreadId) {
+        renderMessages();
+      }
+      return;
+    }
+
+    if (msg.type === 'error_notice') {
+      const threadId = msg.threadId || state.activeThreadId;
+      if (!threadId) {
+        upsertGlobalNotice('_error', msg);
+        renderMessages();
+        return;
+      }
+      upsertThreadNotice(threadId, '_error', msg);
       if (threadId === state.activeThreadId) {
         renderMessages();
       }
