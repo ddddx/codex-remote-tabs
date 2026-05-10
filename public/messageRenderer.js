@@ -294,7 +294,7 @@ export function createMessageRenderer(deps) {
 
     const details = document.createElement('details');
     details.className = 'timeline-inline-detail-row';
-    applyDetailOpenState(details, preservedState, entry.status === 'running' || entry.status === 'pendingApproval' || entry.status === 'failed', detailStateKey);
+    applyDetailOpenState(details, preservedState, isExecutionStatusActive(entry.status) || entry.status === 'pendingApproval' || entry.status === 'failed', detailStateKey);
 
     const summary = document.createElement('summary');
     summary.appendChild(createTimelineTitle(`${commandStatusIcon(entry.status)} ${compactText(entry.command, 110) || '命令执行'}`));
@@ -311,7 +311,7 @@ export function createMessageRenderer(deps) {
     body.appendChild(createTimelinePre(entry.command || '', 'timeline-inline-pre-shell'));
     if (entry.output) {
       body.appendChild(createTimelinePre(entry.output, 'timeline-inline-pre-output'));
-    } else if (entry.status === 'running' || entry.status === 'pendingApproval') {
+    } else if (isExecutionStatusActive(entry.status) || entry.status === 'pendingApproval') {
       body.appendChild(createTimelinePlaceholder(entry.status === 'pendingApproval' ? '等待批准后继续执行…' : '命令正在执行…'));
     }
     details.appendChild(body);
@@ -326,7 +326,7 @@ export function createMessageRenderer(deps) {
 
     const details = document.createElement('details');
     details.className = 'timeline-inline-detail-row';
-    applyDetailOpenState(details, preservedState, entry.status === 'pendingApproval' || entry.status === 'running', detailStateKey);
+    applyDetailOpenState(details, preservedState, entry.status === 'pendingApproval' || isExecutionStatusActive(entry.status), detailStateKey);
 
     const summaryText = summarizeFileChanges(entry.changes) || '文件修改';
     const preview = entry.changes.slice(0, 3).map((change) => basenamePath(change.path) || change.path).filter(Boolean);
@@ -1434,6 +1434,58 @@ export function createMessageRenderer(deps) {
       return { key, node: wrapper, read: () => select.value };
     }
 
+    if (spec?.type === 'array' && Array.isArray(spec?.items?.enum) && spec.items.enum.length) {
+      const optionList = document.createElement('div');
+      optionList.className = 'approval-options approval-options-stacked';
+      const selectedDefaults = new Set(Array.isArray(spec?.default) ? spec.default : []);
+      const checkboxes = spec.items.enum.map((value) => {
+        const label = document.createElement('label');
+        label.className = 'approval-option';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = value;
+        checkbox.checked = selectedDefaults.has(value);
+        label.appendChild(checkbox);
+        const text = document.createElement('span');
+        text.textContent = value;
+        label.appendChild(text);
+        optionList.appendChild(label);
+        return checkbox;
+      });
+      wrapper.appendChild(optionList);
+      return {
+        key,
+        node: wrapper,
+        read: () => checkboxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value),
+      };
+    }
+
+    if (spec?.type === 'array' && Array.isArray(spec?.items?.anyOf) && spec.items.anyOf.length) {
+      const optionList = document.createElement('div');
+      optionList.className = 'approval-options approval-options-stacked';
+      const selectedDefaults = new Set(Array.isArray(spec?.default) ? spec.default : []);
+      const checkboxes = spec.items.anyOf.map((value) => {
+        const label = document.createElement('label');
+        label.className = 'approval-option';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = value.const;
+        checkbox.checked = selectedDefaults.has(value.const);
+        label.appendChild(checkbox);
+        const text = document.createElement('span');
+        text.textContent = value.title || value.const;
+        label.appendChild(text);
+        optionList.appendChild(label);
+        return checkbox;
+      });
+      wrapper.appendChild(optionList);
+      return {
+        key,
+        node: wrapper,
+        read: () => checkboxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value),
+      };
+    }
+
     if (spec?.type === 'boolean') {
       const checkboxLabel = document.createElement('label');
       checkboxLabel.className = 'approval-option';
@@ -1607,10 +1659,16 @@ export function createMessageRenderer(deps) {
     if (status === 'pendingApproval') {
       return '待批准';
     }
-    if (status === 'in_progress' || status === 'running') {
+    if (isExecutionStatusActive(status)) {
       return '进行中';
     }
     return '执行中';
+  }
+
+  function isExecutionStatusActive(status) {
+    const raw = typeof status === 'string' ? status : '';
+    const compact = raw.replace(/[\s_-]/g, '').toLowerCase();
+    return compact === 'running' || compact === 'inprogress';
   }
 
   function refreshLiveWorkingLabels() {

@@ -369,7 +369,7 @@ export function createMessageEntryBuilder(deps) {
       const pendingRequest = findPendingRequestForItem(threadId, item.id);
       const status = pendingRequest ? 'pendingApproval' : (item.status || '');
       const output = getCommandOutput(item);
-      const activeThreadId = isItemInActiveTurn(threadId, item) && (status === 'running' || status === 'in_progress' || status === 'pendingApproval')
+      const activeThreadId = isItemInActiveTurn(threadId, item) && (isActiveExecutionStatus(status) || status === 'pendingApproval')
         ? threadId
         : '';
       const timestampMs = extractItemTimestampMs(item);
@@ -392,7 +392,7 @@ export function createMessageEntryBuilder(deps) {
       const output = getFileChangeOutput(item);
       const patch = getFileChangePatch(item);
       const changes = normalizeFileChanges(item.changes, patch);
-      const activeThreadId = isItemInActiveTurn(threadId, item) && (status === 'running' || status === 'in_progress' || status === 'pendingApproval')
+      const activeThreadId = isItemInActiveTurn(threadId, item) && (isActiveExecutionStatus(status) || status === 'pendingApproval')
         ? threadId
         : '';
       const timestampMs = extractItemTimestampMs(item);
@@ -604,6 +604,12 @@ export function createMessageEntryBuilder(deps) {
       timestampMs: normalizeTimestampMs(diffState.updatedAt) || null,
       signature: JSON.stringify(['turnDiff', turnId, diff, normalizeTimestampMs(diffState.updatedAt) || 0]),
     };
+  }
+
+  function isActiveExecutionStatus(status) {
+    const raw = typeof status === 'string' ? status : '';
+    const compact = raw.replace(/[\s_-]/g, '').toLowerCase();
+    return compact === 'running' || compact === 'inprogress';
   }
 
   return {
