@@ -2012,6 +2012,20 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.file-change-line-stats {
+  color: var(--muted);
+}
+
+.file-change-line-stats-add {
+  color: var(--file-add);
+  font-weight: 700;
+}
+
+.file-change-line-stats-delete {
+  color: var(--file-delete);
+  font-weight: 700;
+}
+
 .file-change-entry.muted {
   color: var(--muted);
 }

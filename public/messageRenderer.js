@@ -29,6 +29,7 @@ export function createMessageRenderer(deps) {
   } = deps;
 
   const messageDomByThread = new Map();
+  const detailOpenStateByKey = new Map();
   let lastRenderedMessagesThreadKey = emptyThreadKey;
   let unreadMessagesBelowFold = false;
 
@@ -72,6 +73,23 @@ export function createMessageRenderer(deps) {
     return messageDomByThread.get(threadKey);
   }
 
+  function captureDetailOpenStates(container) {
+    if (!(container instanceof HTMLElement)) {
+      return;
+    }
+    const detailsList = container.querySelectorAll('details.timeline-inline-detail-row[data-detail-state-key]');
+    detailsList.forEach((details) => {
+      if (!(details instanceof HTMLDetailsElement)) {
+        return;
+      }
+      const key = details.dataset.detailStateKey || '';
+      if (!key) {
+        return;
+      }
+      detailOpenStateByKey.set(key, { open: details.open });
+    });
+  }
+
   function renderMessages() {
     const threadKey = state.activeThreadId || emptyThreadKey;
     const entries = buildMessageEntries(state.activeThreadId);
@@ -95,6 +113,7 @@ export function createMessageRenderer(deps) {
       }
 
       if (record.signature !== entry.signature) {
+        captureDetailOpenStates(record.node);
         populateMessageNode(record.node, entry);
         record.signature = entry.signature;
       }
@@ -244,23 +263,38 @@ export function createMessageRenderer(deps) {
     if (!(existing instanceof HTMLDetailsElement)) {
       return null;
     }
+    const key = existing.dataset.detailStateKey || '';
+    if (key) {
+      detailOpenStateByKey.set(key, { open: existing.open });
+    }
     return { open: existing.open };
   }
 
-  function applyDetailOpenState(details, preservedState, fallbackOpen) {
+  function applyDetailOpenState(details, preservedState, fallbackOpen, detailStateKey = '') {
     if (!(details instanceof HTMLDetailsElement)) {
       return;
     }
-    details.open = preservedState ? preservedState.open : !!fallbackOpen;
+    if (detailStateKey) {
+      details.dataset.detailStateKey = detailStateKey;
+    }
+    const rememberedState = detailStateKey ? detailOpenStateByKey.get(detailStateKey) : null;
+    details.open = preservedState ? preservedState.open : (rememberedState ? rememberedState.open : !!fallbackOpen);
+    if (detailStateKey) {
+      detailOpenStateByKey.set(detailStateKey, { open: details.open });
+      details.addEventListener('toggle', () => {
+        detailOpenStateByKey.set(detailStateKey, { open: details.open });
+      });
+    }
   }
 
   function populateCommandEntry(node, entry) {
     node.className = 'timeline-card timeline-card-command';
-    const preservedState = preserveDetailOpenState(node, getDetailStateKey(entry, 'command'));
+    const detailStateKey = getDetailStateKey(entry, 'command');
+    const preservedState = preserveDetailOpenState(node);
 
     const details = document.createElement('details');
     details.className = 'timeline-inline-detail-row';
-    applyDetailOpenState(details, preservedState, entry.status === 'running' || entry.status === 'pendingApproval' || entry.status === 'failed');
+    applyDetailOpenState(details, preservedState, entry.status === 'running' || entry.status === 'pendingApproval' || entry.status === 'failed', detailStateKey);
 
     const summary = document.createElement('summary');
     summary.appendChild(createTimelineTitle(`${commandStatusIcon(entry.status)} ${compactText(entry.command, 110) || '命令执行'}`));
@@ -287,11 +321,12 @@ export function createMessageRenderer(deps) {
 
   function populateFileChangeEntry(node, entry) {
     node.className = 'timeline-card timeline-card-file-change';
-    const preservedState = preserveDetailOpenState(node, getDetailStateKey(entry, 'fileChange'));
+    const detailStateKey = getDetailStateKey(entry, 'fileChange');
+    const preservedState = preserveDetailOpenState(node);
 
     const details = document.createElement('details');
     details.className = 'timeline-inline-detail-row';
-    applyDetailOpenState(details, preservedState, entry.status === 'pendingApproval' || entry.status === 'running');
+    applyDetailOpenState(details, preservedState, entry.status === 'pendingApproval' || entry.status === 'running', detailStateKey);
 
     const summaryText = summarizeFileChanges(entry.changes) || '文件修改';
     const preview = entry.changes.slice(0, 3).map((change) => basenamePath(change.path) || change.path).filter(Boolean);
@@ -317,7 +352,11 @@ export function createMessageRenderer(deps) {
     for (const change of entry.changes) {
       const line = document.createElement('div');
       line.className = `file-change-entry kind-${getNormalizedFileChangeKind(change.kind)}`;
-      line.textContent = `${formatFileChangePrefix(change.kind)} ${change.path}${formatFileChangeLineStats(change)}`;
+      line.appendChild(document.createTextNode(`${formatFileChangePrefix(change.kind)} ${change.path}`));
+      const statsNode = createFileChangeLineStatsNode(change);
+      if (statsNode) {
+        line.appendChild(statsNode);
+      }
       changes.appendChild(line);
     }
     body.appendChild(changes);
@@ -634,6 +673,33 @@ export function createMessageRenderer(deps) {
     return ` (+${addedLines} / -${deletedLines})`;
   }
 
+  function createFileChangeLineStatsNode(change) {
+    const addedLines = Math.max(0, Number.parseInt(change?.addedLines, 10) || 0);
+    const deletedLines = Math.max(0, Number.parseInt(change?.deletedLines, 10) || 0);
+    if (!addedLines && !deletedLines) {
+      return null;
+    }
+
+    const stats = document.createElement('span');
+    stats.className = 'file-change-line-stats';
+    stats.appendChild(document.createTextNode(' ('));
+
+    const add = document.createElement('span');
+    add.className = 'file-change-line-stats-add';
+    add.textContent = `+${addedLines}`;
+    stats.appendChild(add);
+
+    stats.appendChild(document.createTextNode(' / '));
+
+    const remove = document.createElement('span');
+    remove.className = 'file-change-line-stats-delete';
+    remove.textContent = `-${deletedLines}`;
+    stats.appendChild(remove);
+
+    stats.appendChild(document.createTextNode(')'));
+    return stats;
+  }
+
   function populateServerRequestNode(node, request) {
     const title = document.createElement('div');
     title.className = 'item-label';
@@ -703,7 +769,11 @@ export function createMessageRenderer(deps) {
         normalizedChanges.forEach((change) => {
           const line = document.createElement('div');
           line.className = `file-change-entry kind-${getNormalizedFileChangeKind(change.kind)}`;
-          line.textContent = `${formatFileChangePrefix(change.kind)} ${change.path}${formatFileChangeLineStats(change)}`;
+          line.appendChild(document.createTextNode(`${formatFileChangePrefix(change.kind)} ${change.path}`));
+          const statsNode = createFileChangeLineStatsNode(change);
+          if (statsNode) {
+            line.appendChild(statsNode);
+          }
           changes.appendChild(line);
         });
         node.appendChild(changes);
