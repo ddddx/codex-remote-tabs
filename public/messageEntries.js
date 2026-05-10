@@ -499,7 +499,7 @@ export function createMessageEntryBuilder(deps) {
       };
     }
 
-    if (item.type === 'collabToolCall') {
+    if (item.type === 'collabToolCall' || item.type === 'collabAgentToolCall') {
       const renderVersion = ensureItemRenderVersion(item);
       const timestampMs = extractItemTimestampMs(item);
       const receiverThreadIds = Array.isArray(item.receiverThreadIds)

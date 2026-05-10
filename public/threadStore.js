@@ -211,6 +211,24 @@ export function createThreadStore(deps) {
       }
     }
 
+    if (nextItem.type === 'mcpToolCall') {
+      if (!Array.isArray(nextItem.progressMessages) || !nextItem.progressMessages.length) {
+        if (Array.isArray(existingItem.progressMessages) && existingItem.progressMessages.length) {
+          merged.progressMessages = existingItem.progressMessages.slice();
+        }
+      } else if (Array.isArray(existingItem.progressMessages) && existingItem.progressMessages.length) {
+        const mergedProgress = [];
+        for (const entry of existingItem.progressMessages.concat(nextItem.progressMessages)) {
+          const text = typeof entry === 'string' ? entry.trim() : '';
+          if (!text || mergedProgress[mergedProgress.length - 1] === text) {
+            continue;
+          }
+          mergedProgress.push(text);
+        }
+        merged.progressMessages = mergedProgress.slice(-6);
+      }
+    }
+
     return merged;
   }
 
@@ -988,10 +1006,23 @@ export function createThreadStore(deps) {
   }
 
   function syncTurns(threadId, turns) {
+    const existingById = new Map((state.itemsByThread.get(threadId) || []).map((item) => [item?.id, item]));
     const syncedItems = [];
     for (const turn of turns || []) {
       for (const item of turn.items || []) {
-        syncedItems.push(cloneItemForTurn(item, turn.id || null));
+        const cloned = cloneItemForTurn(item, turn.id || null);
+        const existing = cloned?.id ? existingById.get(cloned.id) : null;
+        if (existing) {
+          const merged = mergeCompletedItem(existing, cloned);
+          syncedItems.push({
+            ...merged,
+            _turnId: cloned._turnId || merged._turnId || null,
+            _partial: false,
+            _renderVersion: ensureItemRenderVersion(existing) + 1,
+          });
+          continue;
+        }
+        syncedItems.push(cloned);
       }
     }
 
