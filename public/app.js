@@ -1,5 +1,6 @@
 import {
   compareTabs,
+  getSessionName,
   getWorkspacePath,
   getWorkspaceFolder,
 } from './tabs.js';

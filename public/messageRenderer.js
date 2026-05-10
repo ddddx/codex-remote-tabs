@@ -294,7 +294,7 @@ export function createMessageRenderer(deps) {
 
     const details = document.createElement('details');
     details.className = 'timeline-inline-detail-row';
-    applyDetailOpenState(details, preservedState, isExecutionStatusActive(entry.status) || entry.status === 'pendingApproval' || entry.status === 'failed', detailStateKey);
+    applyDetailOpenState(details, preservedState, false, detailStateKey);
 
     const summary = document.createElement('summary');
     summary.appendChild(createTimelineTitle(`${commandStatusIcon(entry.status)} ${compactText(entry.command, 110) || '命令执行'}`));
@@ -326,7 +326,7 @@ export function createMessageRenderer(deps) {
 
     const details = document.createElement('details');
     details.className = 'timeline-inline-detail-row';
-    applyDetailOpenState(details, preservedState, entry.status === 'pendingApproval' || isExecutionStatusActive(entry.status), detailStateKey);
+    applyDetailOpenState(details, preservedState, false, detailStateKey);
 
     const summaryText = summarizeFileChanges(entry.changes) || '文件修改';
     const preview = entry.changes.slice(0, 3).map((change) => basenamePath(change.path) || change.path).filter(Boolean);
