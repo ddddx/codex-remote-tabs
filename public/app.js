@@ -735,6 +735,19 @@ const socketController = createSocketController({
 });
 
 const {
+  getWebSocketToken,
+  isSocketConnected,
+  promptForWebSocketToken,
+  reconnectNow,
+  send,
+  withAuthTokenQuery,
+  markAuthFailed,
+} = socketController;
+
+const apiFetchJson = createApiFetchJson(getWebSocketToken);
+const buildUploadPreviewUrl = createBuildUploadPreviewUrl(withAuthTokenQuery);
+
+const {
   browseWorkspacePath,
   closeSessionModal,
   createWorkspaceOnHost,
@@ -773,19 +786,6 @@ const {
   normalizeComposerApprovalPolicy,
   normalizeComposerSandboxMode,
 });
-
-const {
-  getWebSocketToken,
-  isSocketConnected,
-  promptForWebSocketToken,
-  reconnectNow,
-  send,
-  withAuthTokenQuery,
-  markAuthFailed,
-} = socketController;
-
-const apiFetchJson = createApiFetchJson(getWebSocketToken);
-const buildUploadPreviewUrl = createBuildUploadPreviewUrl(withAuthTokenQuery);
 
 const {
   basenamePath,
