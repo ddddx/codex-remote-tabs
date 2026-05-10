@@ -1,3 +1,9 @@
+import {
+  closeContextUsagePopover,
+  renderContextUsage,
+  renderHeaderStatus,
+} from './header.js';
+
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 
@@ -9,7 +15,6 @@ const DEFAULT_SESSION_NAME = '未命名会话';
 const DEFAULT_PROMPT_PLACEHOLDER = '给当前会话发送指令...';
 const COMPOSER_PREFS_STORAGE_KEY = 'codex-remote-composer-prefs';
 const THEME_STORAGE_KEY = 'codex-remote-theme';
-const CONTEXT_BASELINE_TOKENS = 12000;
 const REASONING_EFFORT_OPTIONS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 const APPROVAL_POLICY_OPTIONS = ['untrusted', 'on-request', 'never', 'on-failure'];
 const SANDBOX_MODE_OPTIONS = ['read-only', 'workspace-write', 'danger-full-access'];
@@ -339,7 +344,7 @@ document.addEventListener('click', (event) => {
   if (!(target instanceof Node)) {
     closeActiveCustomSelect();
     closeSlashMenu();
-    closeContextUsagePopover();
+    closeContextUsagePopover(contextUsage);
     return;
   }
   if (activeCustomSelect && !activeCustomSelect.wrapper.contains(target)) {
@@ -349,7 +354,7 @@ document.addEventListener('click', (event) => {
     closeSlashMenu();
   }
   if (contextUsage && !contextUsage.contains(target)) {
-    closeContextUsagePopover();
+    closeContextUsagePopover(contextUsage);
   }
 });
 
@@ -2283,94 +2288,6 @@ function getTurnWorkingLabel(threadId) {
   return `Working ${formatShortElapsed(Date.now() - startedAt)}`;
 }
 
-function formatTokenCountCompact(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return '0';
-  }
-  const absolute = Math.abs(numeric);
-  if (absolute >= 1_000_000) {
-    const scaled = absolute / 1_000_000;
-    const precision = scaled >= 10 ? 1 : 2;
-    return `${scaled.toFixed(Number.isInteger(scaled) ? 0 : precision).replace(/\.?0+$/, '')}M`;
-  }
-  if (absolute >= 1_000) {
-    const scaled = absolute / 1_000;
-    const precision = scaled >= 10 ? 1 : 2;
-    return `${scaled.toFixed(Number.isInteger(scaled) ? 0 : precision).replace(/\.?0+$/, '')}K`;
-  }
-  return Math.round(absolute).toLocaleString();
-}
-
-function formatTokenCountFull(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return '0';
-  }
-  return Math.round(numeric).toLocaleString();
-}
-
-function getUsageBucket(usage, bucket) {
-  if (!usage || typeof usage !== 'object') {
-    return null;
-  }
-  return usage[bucket] || usage[bucket.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)] || null;
-}
-
-function getUsageValue(usage, bucket, field) {
-  const source = getUsageBucket(usage, bucket);
-  if (!source || typeof source !== 'object') {
-    return 0;
-  }
-  const snakeField = field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
-  const value = Number(source[field] ?? source[snakeField] ?? 0);
-  return Number.isFinite(value) ? value : 0;
-}
-
-function getTokenUsageInput(usage) {
-  return getUsageValue(usage, 'total', 'inputTokens');
-}
-
-function getTokenUsageCachedInput(usage) {
-  return getUsageValue(usage, 'total', 'cachedInputTokens');
-}
-
-function getTokenUsageOutput(usage) {
-  return getUsageValue(usage, 'total', 'outputTokens');
-}
-
-function getTokenUsageReasoning(usage) {
-  return getUsageValue(usage, 'total', 'reasoningOutputTokens');
-}
-
-function getTokenUsageContextTokens(usage) {
-  return getUsageValue(usage, 'last', 'totalTokens');
-}
-
-function getTokenUsageContextWindow(usage) {
-  const value = Number(usage?.modelContextWindow ?? usage?.model_context_window ?? 0);
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function getTokenUsageNonCachedInput(usage) {
-  return Math.max(0, getTokenUsageInput(usage) - getTokenUsageCachedInput(usage));
-}
-
-function getTokenUsageBlendedTotal(usage) {
-  return Math.max(0, getTokenUsageNonCachedInput(usage) + Math.max(0, getTokenUsageOutput(usage)));
-}
-
-function getContextPercentRemaining(usage) {
-  const contextWindow = getTokenUsageContextWindow(usage);
-  if (contextWindow <= CONTEXT_BASELINE_TOKENS) {
-    return null;
-  }
-  const effectiveWindow = contextWindow - CONTEXT_BASELINE_TOKENS;
-  const used = Math.max(0, getTokenUsageContextTokens(usage) - CONTEXT_BASELINE_TOKENS);
-  const remaining = Math.max(0, effectiveWindow - used);
-  return Math.round(Math.min(100, Math.max(0, (remaining / effectiveWindow) * 100)));
-}
-
 function setThreadTokenUsage(threadId, usage) {
   if (!threadId) {
     return false;
@@ -2381,89 +2298,6 @@ function setThreadTokenUsage(threadId, usage) {
   }
   state.tokenUsageByThread.set(threadId, usage);
   return true;
-}
-
-function closeContextUsagePopover() {
-  if (!contextUsage) {
-    return;
-  }
-  contextUsage.classList.remove('is-open');
-  const button = contextUsage.querySelector('.context-usage-btn');
-  if (button) {
-    button.setAttribute('aria-expanded', 'false');
-  }
-}
-
-function renderContextUsage() {
-  if (!contextUsage) {
-    return;
-  }
-
-  const threadId = state.activeThreadId;
-  const usage = threadId ? state.tokenUsageByThread.get(threadId) : null;
-  const contextWindow = getTokenUsageContextWindow(usage);
-  const percentRemaining = getContextPercentRemaining(usage);
-  if (!threadId || !usage || !contextWindow || percentRemaining === null) {
-    closeContextUsagePopover();
-    contextUsage.hidden = true;
-    contextUsage.innerHTML = '';
-    return;
-  }
-
-  const contextTokens = getTokenUsageContextTokens(usage);
-  const blendedTotal = getTokenUsageBlendedTotal(usage);
-  const nonCachedInput = getTokenUsageNonCachedInput(usage);
-  const cachedInput = getTokenUsageCachedInput(usage);
-  const outputTokens = getTokenUsageOutput(usage);
-  const reasoningTokens = getTokenUsageReasoning(usage);
-  const isOpen = contextUsage.classList.contains('is-open');
-
-  contextUsage.hidden = false;
-  contextUsage.innerHTML = `
-    <button class="context-usage-btn" type="button" aria-expanded="${isOpen ? 'true' : 'false'}" aria-label="查看上下文使用情况">
-      <span class="context-usage-ring" style="--context-percent:${percentRemaining}"></span>
-      <span class="context-usage-copy">
-        <span class="context-usage-value">${percentRemaining}%</span>
-        <span class="context-usage-label">上下文剩余</span>
-      </span>
-    </button>
-    <div class="context-usage-popover">
-      <p class="context-usage-title">上下文剩余 ${percentRemaining}%</p>
-      <p class="context-usage-subtitle">${formatTokenCountCompact(contextTokens)} used / ${formatTokenCountCompact(contextWindow)}</p>
-      <div class="context-usage-grid">
-        <div class="context-usage-stat">
-          <span class="context-usage-stat-label">当前上下文</span>
-          <span class="context-usage-stat-value">${formatTokenCountFull(contextTokens)}</span>
-        </div>
-        <div class="context-usage-stat">
-          <span class="context-usage-stat-label">窗口上限</span>
-          <span class="context-usage-stat-value">${formatTokenCountFull(contextWindow)}</span>
-        </div>
-        <div class="context-usage-stat">
-          <span class="context-usage-stat-label">累计总量</span>
-          <span class="context-usage-stat-value">${formatTokenCountFull(blendedTotal)}</span>
-        </div>
-        <div class="context-usage-stat">
-          <span class="context-usage-stat-label">输入 / 输出</span>
-          <span class="context-usage-stat-value">${formatTokenCountFull(nonCachedInput)} / ${formatTokenCountFull(outputTokens)}</span>
-        </div>
-      </div>
-      <p class="context-usage-note">与 Codex 一致：按当前上下文 token 和模型 context window 估算剩余比例，不直接用累计总 token。${cachedInput > 0 ? ` 已缓存输入 ${formatTokenCountFull(cachedInput)}。` : ''}${reasoningTokens > 0 ? ` 推理输出 ${formatTokenCountFull(reasoningTokens)}。` : ''}</p>
-    </div>
-  `;
-
-  const button = contextUsage.querySelector('.context-usage-btn');
-  if (!button) {
-    return;
-  }
-  button.addEventListener('click', (event) => {
-    if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
-      return;
-    }
-    event.preventDefault();
-    contextUsage.classList.toggle('is-open');
-    button.setAttribute('aria-expanded', contextUsage.classList.contains('is-open') ? 'true' : 'false');
-  });
 }
 
 function ensureItemRenderVersion(item) {
@@ -3303,46 +3137,13 @@ function renderHeader() {
   fillSelectOptions(themeSelect, THEME_OPTIONS, state.currentTheme);
   themeSelect.disabled = false;
   syncCustomSelect(themeSelect);
-  renderContextUsage();
+  renderContextUsage(contextUsage, state);
   tokenBtn.textContent = state.authFailed ? '设置 Token' : 'Token';
   tokenBtn.classList.toggle('btn-alert', state.authFailed);
-
-  if (state.authFailed) {
-    activeStatus.textContent = '鉴权失败';
-    activeStatus.className = 'status-badge failed';
-    return;
-  }
-
-  if (state.creatingTab) {
-    activeStatus.textContent = '创建中';
-    activeStatus.className = 'status-badge running';
-    return;
-  }
-
-  if (tab && hasPendingServerRequest(tab.threadId)) {
-    activeStatus.textContent = '待批准';
-    activeStatus.className = 'status-badge waiting';
-    return;
-  }
-
-  const status = tab ? normalizeTabStatus(tab.status) : '';
-  if (tab?.windowStatus === 'closed') {
-    activeStatus.textContent = '窗口已关闭';
-  } else if (status === 'running' || status === 'active') {
-    activeStatus.textContent = '进行中';
-  } else {
-    activeStatus.textContent = status || '在线';
-  }
-  activeStatus.className = 'status-badge';
-  if (status === 'running' || status === 'active') {
-    activeStatus.classList.add('running');
-  }
-  if (status === 'failed' || status === 'systemError') {
-    activeStatus.classList.add('failed');
-  }
-  if (tab?.windowStatus === 'closed') {
-    activeStatus.classList.add('closed');
-  }
+  renderHeaderStatus(activeStatus, tab, state, {
+    hasPendingServerRequest,
+    normalizeTabStatus,
+  });
 }
 
 function renderComposer() {
