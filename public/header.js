@@ -181,6 +181,13 @@ export function renderHeaderStatus(activeStatusEl, tab, state, helpers) {
     return;
   }
 
+  if (state.connectionError) {
+    activeStatusEl.hidden = false;
+    activeStatusEl.textContent = '连接断开';
+    activeStatusEl.className = 'status-badge waiting';
+    return;
+  }
+
   if (state.creatingTab) {
     activeStatusEl.hidden = false;
     activeStatusEl.textContent = '创建中';

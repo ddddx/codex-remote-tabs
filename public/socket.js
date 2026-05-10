@@ -95,6 +95,15 @@ export function createSocketController(deps) {
     render();
   }
 
+  function setConnectionError(message) {
+    const normalized = typeof message === 'string' ? message.trim() : '';
+    if (state.authFailed || state.connectionError === normalized) {
+      return;
+    }
+    state.connectionError = normalized;
+    render();
+  }
+
   function isAuthFailureClose(event) {
     return event.code === 4401 || event.reason === 'Unauthorized';
   }
@@ -151,9 +160,11 @@ export function createSocketController(deps) {
 
     const delay = getReconnectDelayMs(reconnectAttempt);
     reconnectAttempt += 1;
+    setConnectionError(`连接已断开，${Math.max(1, Math.round(delay / 1000))} 秒后重连…`);
     console.log(`ws closed, reconnecting in ${Math.round(delay / 1000)}s...`);
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null;
+      setConnectionError('连接已断开，正在重连…');
       connect();
     }, delay);
   }
@@ -205,6 +216,7 @@ export function createSocketController(deps) {
         markAuthFailed('WebSocket 鉴权失败，请检查 token 是否正确，然后刷新页面重试。');
         return;
       }
+      setConnectionError('连接已断开');
       scheduleReconnect();
     };
 
@@ -213,6 +225,7 @@ export function createSocketController(deps) {
         return;
       }
       console.error('ws error', error);
+      setConnectionError('连接异常，正在重连…');
       socket.close();
     };
 
