@@ -14,14 +14,11 @@ import {
   renderComposer as renderComposerView,
   renderComposerAttachmentList as renderComposerAttachmentListView,
 } from './composer.js';
+import { createSocketController } from './socket.js';
+import { createSessionModalController } from './sessionModal.js';
+import { createMessageHandler } from './messageHandlers.js';
 
-let reconnectTimer = null;
-let reconnectAttempt = 0;
-
-const WEBSOCKET_TOKEN_STORAGE_KEY = 'codex-remote-ws-token';
 const EMPTY_THREAD_KEY = '__empty__';
-const RECONNECT_BASE_DELAY_MS = 1000;
-const RECONNECT_MAX_DELAY_MS = 30000;
 const DEFAULT_PROMPT_PLACEHOLDER = '给当前会话发送指令...';
 const COMPOSER_PREFS_STORAGE_KEY = 'codex-remote-composer-prefs';
 const THEME_STORAGE_KEY = 'codex-remote-theme';
@@ -33,217 +30,6 @@ const THEME_OPTIONS = [
   { value: 'bay', label: '海湾' },
   { value: 'night', label: '夜航' },
 ];
-
-function getReconnectDelayMs(attempt) {
-  const baseDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** attempt));
-  const jitter = 0.85 + (Math.random() * 0.3);
-  return Math.round(baseDelay * jitter);
-}
-
-function clearReconnectTimer() {
-  if (!reconnectTimer) {
-    return;
-  }
-  clearTimeout(reconnectTimer);
-  reconnectTimer = null;
-}
-
-function markAuthFailed(message) {
-  clearReconnectTimer();
-  reconnectAttempt = 0;
-  const changed = !state.authFailed || state.connectionError !== message;
-  state.authFailed = true;
-  state.connectionError = message;
-  if (changed) {
-    render();
-  }
-  if (!modalState.resolve) {
-    void promptForWebSocketToken({
-      title: 'WebSocket 鉴权失败',
-      label: '访问 Token',
-      placeholder: '请输入服务端配置的 WS_TOKEN',
-      defaultValue: getWebSocketToken(),
-      confirmText: '保存并重连',
-      inputType: 'password',
-    });
-  }
-}
-
-function clearConnectionError() {
-  if (!state.authFailed && !state.connectionError) {
-    return;
-  }
-  state.authFailed = false;
-  state.connectionError = '';
-  render();
-}
-
-function isAuthFailureClose(event) {
-  return event.code === 4401 || event.reason === 'Unauthorized';
-}
-
-function stripTokenFromLocation() {
-  try {
-    const nextUrl = new URL(window.location.href);
-    if (!nextUrl.searchParams.has('token')) {
-      return;
-    }
-    nextUrl.searchParams.delete('token');
-    window.history.replaceState(null, '', nextUrl);
-  } catch (_error) {
-    // Ignore URL rewrite failures.
-  }
-}
-
-function getWebSocketToken() {
-  const queryToken = new URLSearchParams(window.location.search).get('token');
-  try {
-    if (queryToken) {
-      window.localStorage.setItem(WEBSOCKET_TOKEN_STORAGE_KEY, queryToken);
-      stripTokenFromLocation();
-      return queryToken;
-    }
-    return window.localStorage.getItem(WEBSOCKET_TOKEN_STORAGE_KEY) || '';
-  } catch (_error) {
-    return queryToken || '';
-  }
-}
-
-function withAuthTokenQuery(url) {
-  const token = getWebSocketToken();
-  if (!token) {
-    return url;
-  }
-  const resolved = new URL(url, window.location.origin);
-  resolved.searchParams.set('token', token);
-  return `${resolved.pathname}${resolved.search}`;
-}
-
-function setWebSocketToken(token) {
-  const normalized = typeof token === 'string' ? token.trim() : '';
-  try {
-    if (normalized) {
-      window.localStorage.setItem(WEBSOCKET_TOKEN_STORAGE_KEY, normalized);
-    } else {
-      window.localStorage.removeItem(WEBSOCKET_TOKEN_STORAGE_KEY);
-    }
-  } catch (_error) {
-    // Ignore storage failures.
-  } finally {
-    stripTokenFromLocation();
-  }
-
-  return normalized;
-}
-
-function disconnectSocket() {
-  const socket = window._ws;
-  window._ws = null;
-  if (!socket) {
-    return;
-  }
-
-  socket.onopen = null;
-  socket.onmessage = null;
-  socket.onclose = null;
-  socket.onerror = null;
-  if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-    socket.close();
-  }
-}
-
-function reconnectNow() {
-  clearReconnectTimer();
-  reconnectAttempt = 0;
-  disconnectSocket();
-  connect();
-}
-
-async function promptForWebSocketToken(options = {}) {
-  const token = await openTextModal({
-    title: options.title || '设置 WebSocket Token',
-    label: options.label || '访问 Token',
-    placeholder: options.placeholder || '请输入服务端配置的 WS_TOKEN',
-    defaultValue: options.defaultValue ?? getWebSocketToken(),
-    confirmText: options.confirmText || '保存并重连',
-    inputType: options.inputType || 'password',
-  });
-
-  if (token === null) {
-    return false;
-  }
-
-  setWebSocketToken(token);
-  clearConnectionError();
-  reconnectNow();
-  return true;
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer || state.authFailed) {
-    return;
-  }
-
-  const delay = getReconnectDelayMs(reconnectAttempt);
-  reconnectAttempt += 1;
-  console.log(`ws closed, reconnecting in ${Math.round(delay / 1000)}s...`);
-  reconnectTimer = window.setTimeout(() => {
-    reconnectTimer = null;
-    connect();
-  }, delay);
-}
-
-function connect() {
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const wsUrl = new URL(`${wsProtocol}://${window.location.host}/ws`);
-  const token = getWebSocketToken();
-  if (token) {
-    wsUrl.searchParams.set('token', token);
-  }
-
-  const socket = new WebSocket(wsUrl);
-
-  socket.onopen = () => {
-    console.log('ws connected');
-    reconnectAttempt = 0;
-    clearReconnectTimer();
-    clearConnectionError();
-    const cleared = clearTransientConnectionNotices();
-    void loadComposerOptions({ render: false });
-    if (state.activeThreadId) {
-      send({ type: 'thread_sync', threadId: state.activeThreadId });
-    }
-    if (cleared) {
-      renderMessages();
-    }
-  };
-
-  socket.onmessage = (event) => {
-    try {
-      handleMessage(JSON.parse(event.data));
-    } catch (error) {
-      console.error('ws parse error', error);
-    }
-  };
-
-  socket.onclose = (event) => {
-    if (isAuthFailureClose(event)) {
-      markAuthFailed('WebSocket 鉴权失败，请检查 token 是否正确，然后刷新页面重试。');
-      return;
-    }
-    scheduleReconnect();
-  };
-
-  socket.onerror = (error) => {
-    console.error('ws error', error);
-    socket.close();
-  };
-
-  window._ws = socket;
-}
-
-connect();
-void loadComposerOptions({ render: false });
 
 // DOM
 const sidebar = document.getElementById('sidebar');
@@ -445,14 +231,6 @@ const sessionModalState = {
 
 loadComposerGlobalPrefs();
 loadThemePreference();
-
-function send(payload) {
-  if (window._ws && window._ws.readyState === WebSocket.OPEN) {
-    window._ws.send(JSON.stringify(payload));
-    return true;
-  }
-  return false;
-}
 
 function isMessagesNearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 24;
@@ -2862,11 +2640,6 @@ function getDefaultWorkspacePath(shortcuts) {
   return shortcuts?.lastUsedPath || shortcuts?.projectRoot || shortcuts?.desktopPath || '';
 }
 
-function updateSessionWorkspacePath(path) {
-  const normalized = typeof path === 'string' ? path.trim() : '';
-  sessionWorkspaceInput.value = normalized;
-}
-
 function syncTurns(threadId, turns) {
   const syncedItems = [];
   for (const turn of turns || []) {
@@ -3136,102 +2909,6 @@ function renderCreatingOverlay() {
   sessionCreatingOverlay.setAttribute('aria-hidden', state.creatingTab ? 'false' : 'true');
 }
 
-function setSessionModalHint(text, isError = false) {
-  sessionModalHint.textContent = text;
-  sessionModalHint.classList.toggle('error', isError);
-}
-
-function renderSessionModal() {
-  const shortcuts = sessionModalState.shortcuts || {};
-  workspaceShortcutList.replaceChildren();
-
-  const shortcutItems = [
-    { label: '项目目录', path: shortcuts.projectRoot },
-    { label: '桌面', path: shortcuts.desktopPath },
-    { label: '上次使用', path: shortcuts.lastUsedPath },
-    ...(Array.isArray(shortcuts.roots) ? shortcuts.roots.map((rootPath) => ({
-      label: `磁盘 ${rootPath.replace(/[\\/]+$/, '')}`,
-      path: rootPath,
-    })) : []),
-  ];
-
-  shortcutItems.forEach((shortcut) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'btn btn-secondary workspace-shortcut';
-    button.disabled = !shortcut.path || sessionModalState.loadingShortcuts || sessionModalState.browserLoading || sessionModalState.creatingWorkspace;
-
-    const label = document.createElement('span');
-    label.className = 'workspace-shortcut-label';
-    label.textContent = `${shortcut.label}: ${shortcut.path || '不可用'}`;
-    button.appendChild(label);
-
-    button.addEventListener('click', async () => {
-      if (!shortcut.path) {
-        return;
-      }
-      updateSessionWorkspacePath(shortcut.path);
-      await browseWorkspacePath(shortcut.path);
-    });
-    workspaceShortcutList.appendChild(button);
-  });
-
-  const busy = sessionModalState.loadingShortcuts || sessionModalState.browserLoading || sessionModalState.creatingWorkspace;
-  sessionNameInput.disabled = busy;
-  sessionWorkspaceInput.disabled = busy;
-  browseWorkspaceBtn.disabled = busy;
-  workspaceUpBtn.disabled = busy || !sessionModalState.browserParentPath;
-  workspaceRefreshBtn.disabled = busy || !sessionModalState.browserPath;
-  createWorkspaceBtn.disabled = busy;
-  useCurrentWorkspaceBtn.disabled = busy || !sessionModalState.browserPath;
-  sessionModalCancelBtn.disabled = busy;
-  sessionModalConfirmBtn.disabled = busy;
-  browseWorkspaceBtn.textContent = sessionModalState.browserLoading ? '加载中...' : '进入路径';
-  createWorkspaceBtn.textContent = sessionModalState.creatingWorkspace ? '正在创建...' : '新建文件夹';
-
-  workspaceBrowserPath.textContent = sessionModalState.browserPath || '尚未加载目录';
-  workspaceBrowserList.replaceChildren();
-
-  if (sessionModalState.browserLoading) {
-    const loading = document.createElement('div');
-    loading.className = 'workspace-browser-item empty';
-    loading.textContent = '正在加载目录...';
-    workspaceBrowserList.appendChild(loading);
-    return;
-  }
-
-  if (!sessionModalState.browserEntries.length) {
-    const empty = document.createElement('div');
-    empty.className = 'workspace-browser-item empty';
-    empty.textContent = sessionModalState.browserPath ? '当前目录下没有子文件夹。' : '请选择一个工作区目录。';
-    workspaceBrowserList.appendChild(empty);
-    return;
-  }
-
-  sessionModalState.browserEntries.forEach((entry) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'workspace-browser-item';
-    button.title = entry.path;
-
-    const icon = document.createElement('span');
-    icon.className = 'workspace-browser-item-icon';
-    icon.textContent = '📁';
-    button.appendChild(icon);
-
-    const label = document.createElement('span');
-    label.className = 'workspace-browser-item-label';
-    label.textContent = entry.name;
-    button.appendChild(label);
-
-    button.addEventListener('click', async () => {
-      updateSessionWorkspacePath(entry.path);
-      await browseWorkspacePath(entry.path);
-    });
-    workspaceBrowserList.appendChild(button);
-  });
-}
-
 async function uploadComposerImageFiles(fileList) {
   const threadId = state.activeThreadId;
   if (!threadId) {
@@ -3280,115 +2957,6 @@ async function uploadComposerImageFiles(fileList) {
     setComposerAttachments(threadId, getComposerAttachments(threadId).concat(uploaded));
   }
   renderComposer();
-}
-
-async function loadWorkspaceShortcuts() {
-  sessionModalState.loadingShortcuts = true;
-  renderSessionModal();
-  setSessionModalHint('正在读取常用工作区...');
-
-  try {
-    const shortcuts = await apiFetchJson('/api/workspace/shortcuts');
-    sessionModalState.shortcuts = shortcuts;
-    if (!sessionWorkspaceInput.value.trim()) {
-      updateSessionWorkspacePath(getDefaultWorkspacePath(shortcuts));
-    }
-    setSessionModalHint('支持直接输入主机路径，也可以用下面的快捷路径。');
-  } catch (error) {
-    setSessionModalHint(`读取工作区失败：${error.message}`, true);
-  } finally {
-    sessionModalState.loadingShortcuts = false;
-    renderSessionModal();
-  }
-}
-
-function openSessionModal(options = {}) {
-  if (sessionModalState.resolve) {
-    closeSessionModal(null);
-  }
-
-  sessionModalState.previousFocus = document.activeElement;
-  sessionModalState.shortcuts = null;
-  sessionModalState.loadingShortcuts = false;
-  sessionModalState.creatingWorkspace = false;
-  sessionModalState.browserLoading = false;
-  sessionModalState.browserPath = '';
-  sessionModalState.browserParentPath = '';
-  sessionModalState.browserEntries = [];
-  sessionNameInput.value = '';
-  updateSessionWorkspacePath('');
-  setSessionModalHint('支持直接输入主机路径，也可以用下面的快捷路径。');
-  renderSessionModal();
-  sessionModal.classList.add('open');
-  sessionModal.setAttribute('aria-hidden', 'false');
-
-  const promise = new Promise((resolve) => {
-    sessionModalState.resolve = resolve;
-  });
-
-  void (async () => {
-    await loadWorkspaceShortcuts();
-    const defaultPath = sessionWorkspaceInput.value.trim() || getDefaultWorkspacePath(sessionModalState.shortcuts);
-    if (defaultPath) {
-      await browseWorkspacePath(defaultPath);
-    }
-  })();
-  window.setTimeout(() => {
-    if (options.focusField === 'workspace') {
-      sessionWorkspaceInput.focus();
-      return;
-    }
-    sessionNameInput.focus();
-  }, 0);
-  return promise;
-}
-
-async function startNewSessionFlow(options = {}) {
-  if (state.creatingTab) {
-    return false;
-  }
-
-  const draft = await openSessionModal(options);
-  if (draft === null) {
-    return false;
-  }
-
-  state.creatingTab = true;
-  render();
-  const createPrefs = getActiveComposerPrefs();
-  if (!send({
-    type: 'tab_create',
-    name: draft.name,
-    cwd: draft.cwd,
-    model: normalizeComposerModel(createPrefs?.model) || state.composerModelDefault || '',
-    approvalPolicy: normalizeComposerApprovalPolicy(createPrefs?.approvalPolicy),
-    sandboxMode: normalizeComposerSandboxMode(createPrefs?.sandboxMode),
-  })) {
-    state.creatingTab = false;
-    render();
-    return false;
-  }
-  if (window.innerWidth <= 680) {
-    sidebar.classList.add('hidden');
-    mainArea.classList.add('full');
-  }
-  return true;
-}
-
-function closeSessionModal(value) {
-  if (!sessionModalState.resolve) {
-    return;
-  }
-
-  const resolve = sessionModalState.resolve;
-  sessionModalState.resolve = null;
-  sessionModal.classList.remove('open');
-  sessionModal.setAttribute('aria-hidden', 'true');
-  resolve(value);
-
-  if (sessionModalState.previousFocus && typeof sessionModalState.previousFocus.focus === 'function') {
-    sessionModalState.previousFocus.focus();
-  }
 }
 
 function renderMessages() {
@@ -4818,85 +4386,109 @@ function closeTextModal(value) {
   }
 }
 
-async function browseWorkspacePath(targetPath = '') {
-  sessionModalState.browserLoading = true;
-  renderSessionModal();
-  setSessionModalHint('正在加载目录...');
+const socketController = createSocketController({
+  state,
+  modalState,
+  render,
+  renderMessages,
+  clearTransientConnectionNotices,
+  loadComposerOptions,
+  openTextModal,
+  handleMessage: (msg) => handleMessage(msg),
+});
 
-  try {
-    const url = new URL('/api/workspace/list', window.location.origin);
-    if (targetPath) {
-      url.searchParams.set('path', targetPath);
-    }
-    const result = await apiFetchJson(url);
-    sessionModalState.browserPath = result.path || '';
-    sessionModalState.browserParentPath = result.parentPath || '';
-    sessionModalState.browserEntries = Array.isArray(result.entries) ? result.entries : [];
-    updateSessionWorkspacePath(sessionModalState.browserPath);
-    setSessionModalHint('已同步目录列表，可继续进入子目录或直接使用当前目录。');
-  } catch (error) {
-    setSessionModalHint(`读取目录失败：${error.message}`, true);
-  } finally {
-    sessionModalState.browserLoading = false;
-    renderSessionModal();
-  }
-}
+const {
+  browseWorkspacePath,
+  closeSessionModal,
+  createWorkspaceOnHost,
+  renderSessionModal,
+  setSessionModalHint,
+  startNewSessionFlow,
+  updateSessionWorkspacePath,
+} = createSessionModalController({
+  state,
+  sessionModalState,
+  elements: {
+    sidebar,
+    mainArea,
+    sessionModal,
+    sessionNameInput,
+    sessionWorkspaceInput,
+    browseWorkspaceBtn,
+    workspaceUpBtn,
+    workspaceRefreshBtn,
+    createWorkspaceBtn,
+    useCurrentWorkspaceBtn,
+    workspaceShortcutList,
+    workspaceBrowserPath,
+    workspaceBrowserList,
+    sessionModalHint,
+    sessionModalCancelBtn,
+    sessionModalConfirmBtn,
+  },
+  apiFetchJson,
+  render,
+  send: (payload) => socketController.send(payload),
+  openTextModal,
+  getDefaultWorkspacePath,
+  getActiveComposerPrefs,
+  normalizeComposerModel,
+  normalizeComposerApprovalPolicy,
+  normalizeComposerSandboxMode,
+});
 
-async function createWorkspaceOnHost() {
-  if (sessionModalState.creatingWorkspace) {
-    return;
-  }
+const {
+  getWebSocketToken,
+  promptForWebSocketToken,
+  reconnectNow,
+  send,
+  withAuthTokenQuery,
+  markAuthFailed,
+} = socketController;
 
-  const parentPath = sessionModalState.browserPath || sessionWorkspaceInput.value.trim() || getDefaultWorkspacePath(sessionModalState.shortcuts);
-  if (!parentPath) {
-    setSessionModalHint('请先输入或选择父目录，再新建文件夹。', true);
-    sessionWorkspaceInput.focus();
-    return;
-  }
+const handleMessage = createMessageHandler({
+  state,
+  promptInput,
+  render,
+  renderTabs,
+  renderHeader,
+  renderMessages,
+  autoResizePromptInput,
+  send,
+  markAuthFailed,
+  scheduleRender,
+  ensureItems,
+  upsertTab,
+  removeTab,
+  upsertServerRequest,
+  removeServerRequest,
+  markThreadUnread,
+  pruneUnreadThreads,
+  setActiveTab,
+  setThreadTokenUsage,
+  syncTurns,
+  rememberTurnStartedAt,
+  clearTurnStartedAt,
+  assignPendingUserMessageToTurn,
+  upsertStreamingItem,
+  cloneItemForTurn,
+  reconcilePendingUserMessage,
+  finalizeItem,
+  upsertLiveItem,
+  appendReasoningSummaryText,
+  appendReasoningSummaryPart,
+  appendReasoningContentText,
+  rollbackPendingUserMessage,
+  setComposerAttachments,
+  currentTurnIdByThread: state.currentTurnIdByThread,
+  getComposerUploadCount,
+  createLocalId,
+  markTabClosedLocally,
+  getComposerAttachments,
+});
 
-  const folderName = await openTextModal({
-    title: '新建文件夹',
-    label: '文件夹名称',
-    placeholder: '请输入新文件夹名称',
-    confirmText: '创建',
-    inputType: 'text',
-  });
-
-  if (folderName === null) {
-    return;
-  }
-
-  sessionModalState.creatingWorkspace = true;
-  renderSessionModal();
-  setSessionModalHint('正在主机上创建新文件夹...');
-
-  try {
-    const result = await apiFetchJson('/api/workspace/create-directory', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        parentPath,
-        folderName,
-      }),
-    });
-
-    if (result.path) {
-      updateSessionWorkspacePath(result.path);
-      if (sessionModalState.shortcuts) {
-        sessionModalState.shortcuts.lastUsedPath = result.path;
-      }
-      setSessionModalHint('新工作区文件夹已创建。');
-      await browseWorkspacePath(result.path);
-    }
-  } catch (error) {
-    setSessionModalHint(`创建文件夹失败：${error.message}`, true);
-  } finally {
-    sessionModalState.creatingWorkspace = false;
-    renderSessionModal();
-  }
-}
+socketController.connect();
+void loadComposerOptions({ render: false });
 
 function toggleSidebar(event) {
   if (event) {
@@ -5157,331 +4749,6 @@ composer.addEventListener('submit', (event) => {
 
   submitTurnMessage(state.activeThreadId, text, attachments);
 });
-
-function handleMessage(msg) {
-  if (msg.type === 'state') {
-    state.tabs = [];
-    for (const tab of msg.tabs || []) {
-      upsertTab(tab);
-    }
-    state.serverRequests = [];
-    for (const request of msg.serverRequests || []) {
-      upsertServerRequest(request);
-    }
-    pruneUnreadThreads();
-    if (state.activeThreadId && !state.tabs.some((tab) => tab.threadId === state.activeThreadId)) {
-      state.activeThreadId = null;
-    }
-    if (state.activeThreadId) {
-      state.unreadThreadIds.delete(state.activeThreadId);
-    }
-    if (state.activeThreadId) {
-      send({ type: 'thread_sync', threadId: state.activeThreadId });
-    }
-    render();
-    return;
-  }
-
-  if (msg.type === 'server_request_required') {
-    upsertServerRequest(msg.request);
-    if (markThreadUnread(msg.request?.threadId)) {
-      renderTabs();
-    }
-    if (msg.request?.threadId === state.activeThreadId) {
-      render();
-    } else {
-      renderTabs();
-    }
-    return;
-  }
-
-  if (msg.type === 'server_request_updated') {
-    upsertServerRequest(msg.request);
-    if (msg.request?.threadId === state.activeThreadId) {
-      render();
-    } else {
-      renderTabs();
-    }
-    return;
-  }
-
-  if (msg.type === 'server_request_resolved') {
-    removeServerRequest(msg.requestId);
-    if (msg.threadId === state.activeThreadId) {
-      render();
-    } else {
-      renderTabs();
-    }
-    return;
-  }
-
-  if (msg.type === 'tab_updated') {
-    upsertTab(msg.tab);
-    render();
-    return;
-  }
-
-  if (msg.type === 'tab_created') {
-    state.creatingTab = false;
-    if (msg.tab) {
-      upsertTab(msg.tab);
-    }
-    setActiveTab(msg.threadId || msg.tab?.threadId || null, { skipSync: true });
-    return;
-  }
-
-  if (msg.type === 'tab_removed') {
-    removeTab(msg.threadId);
-    return;
-  }
-
-  if (msg.type === 'unread') {
-    if (markThreadUnread(msg.threadId)) {
-      renderTabs();
-    }
-    return;
-  }
-
-  if (msg.type === 'thread_sync') {
-    setThreadTokenUsage(msg.threadId, msg.tokenUsage || null);
-    syncTurns(msg.threadId, msg.turns || []);
-    render();
-    return;
-  }
-
-  if (msg.type === 'turn_started') {
-    state.turnActiveByThread.set(msg.threadId, true);
-    rememberTurnStartedAt(msg.threadId, msg.startedAt);
-    if (msg.turnId) {
-      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-      assignPendingUserMessageToTurn(msg.threadId, msg.turnId);
-    }
-    if (msg.threadId === state.activeThreadId) {
-      scheduleRender({ header: true, messages: true });
-    }
-    return;
-  }
-
-  if (msg.type === 'turn_completed') {
-    state.turnActiveByThread.set(msg.threadId, false);
-    clearTurnStartedAt(msg.threadId);
-    if (!msg.turnId || state.currentTurnIdByThread.get(msg.threadId) === msg.turnId) {
-      state.currentTurnIdByThread.delete(msg.threadId);
-    }
-    if (msg.threadId === state.activeThreadId) {
-      scheduleRender({ header: true, messages: true });
-    }
-    return;
-  }
-
-  if (msg.type === 'agent_delta') {
-    state.turnActiveByThread.set(msg.threadId, true);
-    rememberTurnStartedAt(msg.threadId, msg.startedAt);
-    if (msg.turnId) {
-      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-    }
-    upsertStreamingItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, msg.itemId, msg.delta || '');
-    if (msg.threadId === state.activeThreadId) {
-      scheduleRender({ header: true, messages: true });
-    }
-    return;
-  }
-
-  if (msg.type === 'item_started') {
-    state.turnActiveByThread.set(msg.threadId, true);
-    rememberTurnStartedAt(msg.threadId, msg.startedAt);
-    if (msg.turnId) {
-      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-    }
-    const items = ensureItems(msg.threadId);
-    const item = cloneItemForTurn(msg.item, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null);
-    reconcilePendingUserMessage(msg.threadId, item);
-    if (item && item.id && !items.find((entry) => entry.id === item.id)) {
-      items.push({ ...item, _partial: true, _renderVersion: 1 });
-    }
-    if (msg.threadId === state.activeThreadId) {
-      scheduleRender({ header: true, messages: true });
-    }
-    return;
-  }
-
-  if (msg.type === 'item_completed') {
-    if (msg.turnId) {
-      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-    }
-    const item = cloneItemForTurn(msg.item, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null);
-    reconcilePendingUserMessage(msg.threadId, item);
-    finalizeItem(msg.threadId, msg.turnId || state.currentTurnIdByThread.get(msg.threadId) || null, item);
-    if (msg.threadId === state.activeThreadId) {
-      scheduleRender({ messages: true });
-    }
-    return;
-  }
-
-  if (msg.type === 'item_delta') {
-    state.turnActiveByThread.set(msg.threadId, true);
-    rememberTurnStartedAt(msg.threadId, msg.startedAt);
-    if (msg.turnId) {
-      state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
-    }
-
-    if (msg.method === 'item/commandExecution/outputDelta') {
-      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'commandExecution', (item) => {
-        const delta = typeof msg.delta === 'string' ? msg.delta : '';
-        item.aggregatedOutput = `${item.aggregatedOutput || item.output || ''}${delta}`;
-      });
-    } else if (msg.method === 'item/fileChange/outputDelta') {
-      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'fileChange', (item) => {
-        const delta = typeof msg.delta === 'string' ? msg.delta : '';
-        item.aggregatedOutput = `${item.aggregatedOutput || item.output || ''}${delta}`;
-      });
-    } else if (msg.method === 'item/fileChange/patchUpdated') {
-      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'fileChange', (item) => {
-        if (typeof msg.patch === 'string') {
-          item.patch = msg.patch;
-        }
-        if (Array.isArray(msg.changes)) {
-          item.changes = msg.changes;
-        }
-      });
-    } else if (msg.method === 'item/reasoning/summaryTextDelta') {
-      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'reasoning', (item) => {
-        appendReasoningSummaryText(item, typeof msg.delta === 'string' ? msg.delta : '');
-      });
-    } else if (msg.method === 'item/reasoning/summaryPartAdded') {
-      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'reasoning', (item) => {
-        appendReasoningSummaryPart(item, msg.part);
-      });
-    } else if (msg.method === 'item/reasoning/textDelta') {
-      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'reasoning', (item) => {
-        appendReasoningContentText(item, typeof msg.delta === 'string' ? msg.delta : '');
-      });
-    }
-
-    if (msg.threadId === state.activeThreadId) {
-      scheduleRender({ header: true, messages: true });
-    }
-    return;
-  }
-
-  if (msg.type === 'codex_error') {
-    const threadId = msg.threadId || state.activeThreadId;
-    const items = ensureItems(threadId);
-    const error = msg.error || {};
-    items.push({
-      type: '_error',
-      id: createLocalId('err'),
-      text: error.message || JSON.stringify(error),
-      _turnId: state.currentTurnIdByThread.get(threadId) || null,
-    });
-    if (threadId === state.activeThreadId) {
-      scheduleRender({ messages: true });
-    }
-    return;
-  }
-
-  if (msg.type === 'backend_error') {
-    if (!state.activeThreadId) {
-      return;
-    }
-    const items = ensureItems(state.activeThreadId);
-    items.push({
-      type: '_error',
-      id: createLocalId('backend'),
-      text: msg.message,
-      _turnId: state.currentTurnIdByThread.get(state.activeThreadId) || null,
-    });
-    renderMessages();
-    return;
-  }
-
-  if (msg.type === 'error') {
-    if (state.creatingTab && !msg.threadId && !msg.op) {
-      state.creatingTab = false;
-    }
-    if (msg.code === 'AUTH_FAILED') {
-      markAuthFailed(msg.message || 'WebSocket 鉴权失败，请检查 token 是否正确。');
-      return;
-    }
-
-    const threadId = msg.threadId || state.activeThreadId;
-    if (!threadId) {
-      return;
-    }
-
-    if (msg.op === 'turn_start' && msg.clientMessageId) {
-      const pending = rollbackPendingUserMessage(msg.clientMessageId);
-      state.turnActiveByThread.set(threadId, false);
-      if (threadId === state.activeThreadId && pending?.content?.length) {
-        const restoredText = pending.content
-          .filter((entry) => entry.type === 'text')
-          .map((entry) => entry.text)
-          .join('\n');
-        const restoredAttachments = pending.content
-          .filter((entry) => entry.type === 'localImage')
-          .map((entry) => ({ ...entry }));
-        promptInput.value = restoredText;
-        setComposerAttachments(threadId, restoredAttachments);
-        autoResizePromptInput();
-      }
-    }
-
-    if (msg.code === 'THREAD_NOT_FOUND' && msg.op === 'turn_start') {
-      const marked = markTabClosedLocally(threadId);
-      const items = ensureItems(threadId);
-      items.push({
-        type: '_error',
-        id: createLocalId('thread-missing'),
-        text: msg.message || '该会话在 Codex 中不存在，已从列表移除。',
-        _turnId: state.currentTurnIdByThread.get(threadId) || null,
-      });
-      if (threadId === state.activeThreadId) {
-        render();
-      } else if (marked) {
-        renderTabs();
-      }
-      return;
-    }
-
-    const items = ensureItems(threadId);
-    items.push({
-      type: '_error',
-      id: createLocalId('api'),
-      text: msg.message || '服务端请求失败',
-      _turnId: state.currentTurnIdByThread.get(threadId) || null,
-    });
-    if (threadId === state.activeThreadId) {
-      render();
-    }
-    return;
-  }
-
-  if (msg.type === 'token_usage') {
-    const changed = setThreadTokenUsage(msg.threadId, msg.usage);
-    if (changed && msg.threadId === state.activeThreadId) {
-      renderHeader();
-    }
-    return;
-  }
-
-  if (msg.type === 'warning') {
-    const threadId = msg.threadId || state.activeThreadId;
-    const items = ensureItems(threadId);
-    items.push({
-      type: '_warning',
-      id: createLocalId('warn'),
-      text: msg.message,
-      _turnId: state.currentTurnIdByThread.get(threadId) || null,
-    });
-    if (threadId === state.activeThreadId) {
-      renderMessages();
-    }
-    return;
-  }
-
-  console.log('Unhandled message:', msg.type, msg);
-}
-
 window.setInterval(() => {
   if (state.creatingTab || Array.from(state.turnActiveByThread.values()).some(Boolean)) {
     renderHeader();
