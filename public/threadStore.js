@@ -920,7 +920,22 @@ export function createThreadStore(deps) {
   }
 
   function markTabClosedLocally(threadId) {
-    removeTab(threadId);
+    if (!threadId) {
+      return false;
+    }
+    const tab = state.tabs.find((entry) => entry.threadId === threadId);
+    if (!tab) {
+      return false;
+    }
+
+    tab.windowStatus = 'closed';
+    tab.windowPid = null;
+    tab.updatedAt = Math.floor(Date.now() / 1000);
+    state.turnActiveByThread.set(threadId, false);
+    state.currentTurnIdByThread.delete(threadId);
+
+    state.tabs.sort(compareTabs);
+    render();
     return true;
   }
 

@@ -51,6 +51,7 @@ export function createAppShell(options) {
       hasUnreadInInactiveTabs,
       hasPendingServerRequest,
       normalizeTabStatus,
+      requestRenderTabs: renderTabs,
       setActiveTab,
       send,
     });
