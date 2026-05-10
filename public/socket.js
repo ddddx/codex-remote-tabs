@@ -11,17 +11,18 @@ function getReconnectDelayMs(attempt) {
 export function createSocketController(deps) {
   const {
     state,
-    modalState,
     render,
     renderMessages,
     clearTransientConnectionNotices,
     loadComposerOptions,
     openTextModal,
+    isTextModalOpen,
     handleMessage,
   } = deps;
 
   let reconnectTimer = null;
   let reconnectAttempt = 0;
+  let currentSocket = null;
 
   function clearReconnectTimer() {
     if (!reconnectTimer) {
@@ -107,7 +108,7 @@ export function createSocketController(deps) {
     if (changed) {
       render();
     }
-    if (!modalState.resolve) {
+    if (!isTextModalOpen()) {
       void promptForWebSocketToken({
         title: 'WebSocket 鉴权失败',
         label: '访问 Token',
@@ -120,8 +121,8 @@ export function createSocketController(deps) {
   }
 
   function disconnectSocket() {
-    const socket = window._ws;
-    window._ws = null;
+    const socket = currentSocket;
+    currentSocket = null;
     if (!socket) {
       return;
     }
@@ -136,8 +137,8 @@ export function createSocketController(deps) {
   }
 
   function send(payload) {
-    if (window._ws && window._ws.readyState === WebSocket.OPEN) {
-      window._ws.send(JSON.stringify(payload));
+    if (currentSocket && currentSocket.readyState === WebSocket.OPEN) {
+      currentSocket.send(JSON.stringify(payload));
       return true;
     }
     return false;
@@ -203,7 +204,7 @@ export function createSocketController(deps) {
       socket.close();
     };
 
-    window._ws = socket;
+    currentSocket = socket;
   }
 
   function reconnectNow() {
@@ -237,7 +238,7 @@ export function createSocketController(deps) {
     connect,
     disconnectSocket,
     getWebSocketToken,
-    isSocketConnected: () => !!(window._ws && window._ws.readyState === WebSocket.OPEN),
+    isSocketConnected: () => !!(currentSocket && currentSocket.readyState === WebSocket.OPEN),
     markAuthFailed,
     promptForWebSocketToken,
     reconnectNow,

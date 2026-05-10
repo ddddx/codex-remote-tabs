@@ -14,12 +14,21 @@ import {
   renderComposer as renderComposerView,
   renderComposerAttachmentList as renderComposerAttachmentListView,
 } from './composer.js';
+import {
+  buildComposerMessageContent,
+  createBuildUploadPreviewUrl,
+  createUserMessageFingerprint,
+  getAttachmentFileName,
+  normalizeUserMessageContent,
+  renderMarkdown,
+} from './messageContent.js';
 import { createSocketController } from './socket.js';
 import { createSessionModalController } from './sessionModal.js';
 import { createMessageHandler } from './messageHandlers.js';
 import { createMessageEntryBuilder } from './messageEntries.js';
 import { createMessageRenderer } from './messageRenderer.js';
 import { createSlashController } from './slashController.js';
+import { createTextModalController } from './textModal.js';
 import { createThreadStore } from './threadStore.js';
 import { createComposerSettingsController } from './composerSettings.js';
 
@@ -150,10 +159,6 @@ const state = {
   connectionError: '',
 };
 
-const modalState = {
-  resolve: null,
-  previousFocus: null,
-};
 const sessionModalState = {
   resolve: null,
   previousFocus: null,
@@ -182,139 +187,6 @@ async function apiFetchJson(url, options = {}) {
     throw new Error(data.message || `HTTP ${response.status}`);
   }
   return data;
-}
-
-function getAttachmentFileName(value) {
-  const normalized = String(value || '').replace(/[\\/]+$/, '');
-  if (!normalized) {
-    return '';
-  }
-  const parts = normalized.split(/[\\/]+/).filter(Boolean);
-  return parts[parts.length - 1] || normalized;
-}
-
-function buildUploadPreviewUrl(fileName) {
-  const normalized = getAttachmentFileName(fileName);
-  if (!normalized) {
-    return '';
-  }
-  return withAuthTokenQuery(`/api/uploads/${encodeURIComponent(normalized)}`);
-}
-
-function normalizeUserMessageContent(item) {
-  const normalized = [];
-  const seen = new Set();
-
-  function pushText(text) {
-    if (typeof text !== 'string') {
-      return;
-    }
-    const value = text.trim();
-    if (!value) {
-      return;
-    }
-    const key = `text:${value}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    normalized.push({ type: 'text', text: value });
-  }
-
-  function pushLocalImage(entry) {
-    const rawPath = typeof entry === 'string'
-      ? entry
-      : (entry?.path || entry?.filePath || entry?.filepath || entry?.local_path || entry?.localPath || '');
-    const path = String(rawPath || '').trim();
-    if (!path) {
-      return;
-    }
-    const name = String(
-      (typeof entry === 'object' && entry)
-        ? (entry.name || entry.fileName || getAttachmentFileName(path))
-        : getAttachmentFileName(path)
-    ).trim();
-    const previewUrl = typeof entry === 'object' && entry
-      ? (entry.previewUrl || entry.url || buildUploadPreviewUrl(path))
-      : buildUploadPreviewUrl(path);
-    const key = `localImage:${path}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    normalized.push({
-      type: 'localImage',
-      path,
-      name,
-      previewUrl,
-    });
-  }
-
-  function pushRemoteImage(entry) {
-    const url = String(
-      (typeof entry === 'string' ? entry : (entry?.url || entry?.uri || entry?.src || ''))
-    ).trim();
-    if (!url) {
-      return;
-    }
-    const name = String(
-      (typeof entry === 'object' && entry)
-        ? (entry.name || entry.fileName || getAttachmentFileName(url))
-        : getAttachmentFileName(url)
-    ).trim();
-    const key = `image:${url}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    normalized.push({
-      type: 'image',
-      url,
-      name,
-    });
-  }
-
-  for (const entry of Array.isArray(item?.content) ? item.content : []) {
-    if (entry?.type === 'text') {
-      pushText(entry.text);
-      continue;
-    }
-    if (entry?.type === 'localImage' || entry?.type === 'local_image') {
-      pushLocalImage(entry);
-      continue;
-    }
-    if (entry?.type === 'image') {
-      pushRemoteImage(entry);
-    }
-  }
-
-  for (const entry of Array.isArray(item?.local_images) ? item.local_images : []) {
-    pushLocalImage(entry);
-  }
-  for (const entry of Array.isArray(item?.localImages) ? item.localImages : []) {
-    pushLocalImage(entry);
-  }
-  for (const entry of Array.isArray(item?.images) ? item.images : []) {
-    pushRemoteImage(entry);
-  }
-
-  return normalized;
-}
-
-function createUserMessageFingerprint(content) {
-  const normalized = Array.isArray(content) ? content : [];
-  return JSON.stringify(normalized.map((entry) => {
-    if (entry.type === 'text') {
-      return { type: 'text', text: entry.text || '' };
-    }
-    if (entry.type === 'localImage') {
-      return { type: 'localImage', path: entry.path || '' };
-    }
-    if (entry.type === 'image') {
-      return { type: 'image', url: entry.url || '' };
-    }
-    return { type: entry.type || 'unknown' };
-  }));
 }
 
 function getComposerAttachments(threadId = state.activeThreadId) {
@@ -363,57 +235,6 @@ function createLocalId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function renderMarkdown(text) {
-  if (!text) {
-    return '';
-  }
-
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="lang-$1">$2</code></pre>');
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-  html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
-  html = html.replace(/\n/g, '<br>');
-
-  if (window.DOMPurify) {
-    return window.DOMPurify.sanitize(html);
-  }
-  return html;
-}
-
-function buildComposerMessageContent(text, attachments) {
-  const content = [];
-  if (text) {
-    content.push({ type: 'text', text });
-  }
-  for (const attachment of attachments) {
-    content.push({
-      type: 'localImage',
-      path: attachment.path,
-      name: attachment.name || getAttachmentFileName(attachment.path),
-      previewUrl: attachment.previewUrl || buildUploadPreviewUrl(attachment.path),
-    });
-  }
-  return content;
-}
-
 function submitTurnMessage(threadId, text, attachments, options = {}) {
   if (!threadId || (!text && !attachments.length) || getComposerUploadCount() > 0) {
     return false;
@@ -422,7 +243,7 @@ function submitTurnMessage(threadId, text, attachments, options = {}) {
   clearTransientConnectionNotices(threadId);
   const clientMessageId = createLocalId('turn');
   const localMessageId = createLocalId('local');
-  const content = buildComposerMessageContent(text, attachments);
+  const content = buildComposerMessageContent(text, attachments, { buildUploadPreviewUrl });
   const items = ensureItems(threadId);
   items.push({
     type: 'userMessage',
@@ -841,6 +662,23 @@ function render() {
   renderCreatingOverlay();
 }
 
+const textModalController = createTextModalController({
+  textModal,
+  modalTitle,
+  modalLabel,
+  modalInput,
+  modalConfirmBtn,
+});
+
+const {
+  closeTextModal,
+  handleBackdropClick: handleTextModalBackdropClick,
+  handleEscapeKey: handleTextModalEscapeKey,
+  handleFormSubmit: handleTextModalFormSubmit,
+  isOpen: isTextModalOpen,
+  openTextModal,
+} = textModalController;
+
 const composerSettings = createComposerSettingsController({
   state,
   composer,
@@ -925,6 +763,7 @@ const {
   isItemInActiveTurn,
   markTabClosedLocally,
   markThreadUnread,
+  normalizeFileChanges,
   normalizeServerRequestStatus,
   pruneUnreadThreads,
   reconcilePendingUserMessage,
@@ -933,6 +772,7 @@ const {
   rollbackPendingUserMessage,
   setActiveTab,
   setThreadTokenUsage,
+  summarizeFileChanges,
   syncTurns,
   upsertLiveItem,
   upsertServerRequest,
@@ -947,54 +787,14 @@ function renderNewTabButton() {
   newTabBtn.textContent = state.creatingTab ? '正在创建会话...' : '+ 新建会话';
 }
 
-function openTextModal(options = {}) {
-  if (modalState.resolve) {
-    closeTextModal(null);
-  }
-
-  modalState.previousFocus = document.activeElement;
-  modalTitle.textContent = options.title || '输入';
-  modalLabel.textContent = options.label || '输入内容';
-  modalInput.value = options.defaultValue || '';
-  modalInput.placeholder = options.placeholder || '';
-  modalInput.type = options.inputType || 'text';
-  modalConfirmBtn.textContent = options.confirmText || '确定';
-  textModal.classList.add('open');
-  textModal.setAttribute('aria-hidden', 'false');
-
-  return new Promise((resolve) => {
-    modalState.resolve = resolve;
-    window.setTimeout(() => {
-      modalInput.focus();
-      modalInput.select();
-    }, 0);
-  });
-}
-
-function closeTextModal(value) {
-  if (!modalState.resolve) {
-    return;
-  }
-
-  const resolve = modalState.resolve;
-  modalState.resolve = null;
-  textModal.classList.remove('open');
-  textModal.setAttribute('aria-hidden', 'true');
-  resolve(value);
-
-  if (modalState.previousFocus && typeof modalState.previousFocus.focus === 'function') {
-    modalState.previousFocus.focus();
-  }
-}
-
 const socketController = createSocketController({
   state,
-  modalState,
   render,
   renderMessages,
   clearTransientConnectionNotices,
   loadComposerOptions,
   openTextModal,
+  isTextModalOpen,
   handleMessage: (msg) => handleMessage(msg),
 });
 
@@ -1048,6 +848,8 @@ const {
   markAuthFailed,
 } = socketController;
 
+const buildUploadPreviewUrl = createBuildUploadPreviewUrl(withAuthTokenQuery);
+
 const {
   basenamePath,
   buildMessageEntries,
@@ -1060,7 +862,7 @@ const {
   ensureItems,
   getServerRequestsForThread,
   createLocalId,
-  normalizeUserMessageContent,
+  normalizeUserMessageContent: (item) => normalizeUserMessageContent(item, { buildUploadPreviewUrl }),
   extractItemTimestampMs,
   createUserMessageFingerprint,
   ensureItemRenderVersion,
@@ -1246,8 +1048,7 @@ tokenBtn.addEventListener('click', async () => {
 });
 
 textModalForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  closeTextModal(modalInput.value.trim());
+  handleTextModalFormSubmit(event);
 });
 
 modalCancelBtn.addEventListener('click', () => {
@@ -1308,9 +1109,7 @@ sessionModalForm.addEventListener('submit', (event) => {
 });
 
 textModal.addEventListener('click', (event) => {
-  if (event.target instanceof HTMLElement && event.target.dataset.modalClose === 'true') {
-    closeTextModal(null);
-  }
+  handleTextModalBackdropClick(event);
 });
 
 sessionModal.addEventListener('click', (event) => {
@@ -1320,8 +1119,7 @@ sessionModal.addEventListener('click', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && modalState.resolve) {
-    closeTextModal(null);
+  if (handleTextModalEscapeKey(event)) {
     return;
   }
   if (event.key === 'Escape' && sessionModalState.resolve) {
