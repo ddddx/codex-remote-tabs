@@ -1405,10 +1405,11 @@ export function createMessageRenderer(deps) {
     if (Array.isArray(spec?.enum) && spec.enum.length) {
       const select = document.createElement('select');
       select.className = 'approval-text-input';
-      spec.enum.forEach((value) => {
+      const enumNames = Array.isArray(spec?.enumNames) ? spec.enumNames : [];
+      spec.enum.forEach((value, index) => {
         const option = document.createElement('option');
         option.value = value;
-        option.textContent = value;
+        option.textContent = enumNames[index] || value;
         if (value === spec.default) {
           option.selected = true;
         }
@@ -1438,7 +1439,8 @@ export function createMessageRenderer(deps) {
       const optionList = document.createElement('div');
       optionList.className = 'approval-options approval-options-stacked';
       const selectedDefaults = new Set(Array.isArray(spec?.default) ? spec.default : []);
-      const checkboxes = spec.items.enum.map((value) => {
+      const enumNames = Array.isArray(spec?.items?.enumNames) ? spec.items.enumNames : [];
+      const checkboxes = spec.items.enum.map((value, index) => {
         const label = document.createElement('label');
         label.className = 'approval-option';
         const checkbox = document.createElement('input');
@@ -1447,7 +1449,7 @@ export function createMessageRenderer(deps) {
         checkbox.checked = selectedDefaults.has(value);
         label.appendChild(checkbox);
         const text = document.createElement('span');
-        text.textContent = value;
+        text.textContent = enumNames[index] || value;
         label.appendChild(text);
         optionList.appendChild(label);
         return checkbox;
@@ -1460,11 +1462,14 @@ export function createMessageRenderer(deps) {
       };
     }
 
-    if (spec?.type === 'array' && Array.isArray(spec?.items?.anyOf) && spec.items.anyOf.length) {
+    const titledArrayOptions = Array.isArray(spec?.items?.anyOf)
+      ? spec.items.anyOf
+      : (Array.isArray(spec?.items?.oneOf) ? spec.items.oneOf : []);
+    if (spec?.type === 'array' && titledArrayOptions.length) {
       const optionList = document.createElement('div');
       optionList.className = 'approval-options approval-options-stacked';
       const selectedDefaults = new Set(Array.isArray(spec?.default) ? spec.default : []);
-      const checkboxes = spec.items.anyOf.map((value) => {
+      const checkboxes = titledArrayOptions.map((value) => {
         const label = document.createElement('label');
         label.className = 'approval-option';
         const checkbox = document.createElement('input');
@@ -1522,10 +1527,12 @@ export function createMessageRenderer(deps) {
             : '';
         }
         if (spec?.type === 'number') {
-          return Number(raw);
+          const numberValue = Number(raw);
+          return Number.isFinite(numberValue) ? numberValue : null;
         }
         if (spec?.type === 'integer') {
-          return Number.parseInt(raw, 10);
+          const integerValue = Number.parseInt(raw, 10);
+          return Number.isFinite(integerValue) ? integerValue : null;
         }
         return raw;
       },
