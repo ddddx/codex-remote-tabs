@@ -102,7 +102,11 @@ npm run remote:restart
 ```
 cc-workspace/
 ├── public/           # 前端静态文件
-│   ├── app.js                 # 前端组装 / 事件绑定
+│   ├── app.js                 # 前端启动入口与事件装配
+│   ├── appDom.js              # 顶层 DOM 查询与必需节点校验
+│   ├── appRuntime.js          # 时间戳 / 渲染调度 / textarea 自适应
+│   ├── appShell.js            # 顶层页壳渲染（header / tabs / composer）
+│   ├── appState.js            # 应用状态与 composer 草稿/附件辅助
 │   ├── apiClient.js           # 带鉴权 token 的 HTTP 请求封装
 │   ├── composer.js            # 输入区渲染
 │   ├── composerSettings.js    # 模型 / 权限 / 主题设置
@@ -124,6 +128,7 @@ cc-workspace/
 │   ├── server.js     # Web 服务器 + WebSocket
 │   ├── codexAppServerClient.js  # Codex 服务端客户端
 │   ├── localConfig.js           # 本地配置读取
+│   ├── windowAttachment.js      # 会话线程与本地窗口状态同步
 │   ├── workspaceManager.js      # 工作区目录浏览与状态管理
 │   └── windowManager.js         # 窗口管理
 ├── restart-codex-remote.js # 统一启动脚本：start/restart/stop/appserver/web
@@ -136,3 +141,4 @@ cc-workspace/
 
 - 左侧“关闭”只关闭本地 Codex 窗口，不会归档或删除线程；线程仍可继续同步和恢复窗口。
 - “本地窗口映射”依赖 Windows `Start-Process`；若权限策略限制，仍可远程控制会话线程，但不会自动弹出本地窗口。
+- 工作区浏览默认允许选择本机任意目录，因此这个项目的安全边界前提是“受信局域网/受信设备”；如果要对外暴露，必须额外加反向代理、强鉴权和更严格的路径策略。

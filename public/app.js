@@ -1,19 +1,8 @@
 import {
-  closeContextUsagePopover,
-  renderContextUsage,
-  renderHeaderStatus,
-} from './header.js';
-import {
   compareTabs,
-  getSessionName,
   getWorkspacePath,
   getWorkspaceFolder,
-  renderTabs as renderTabsView,
 } from './tabs.js';
-import {
-  renderComposer as renderComposerView,
-  renderComposerAttachmentList as renderComposerAttachmentListView,
-} from './composer.js';
 import {
   buildComposerMessageContent,
   createBuildUploadPreviewUrl,
@@ -24,6 +13,20 @@ import {
 } from './messageContent.js';
 import { createApiFetchJson, isUnauthorizedApiError } from './apiClient.js';
 import { createSocketController } from './socket.js';
+import { getAppDom } from './appDom.js';
+import { createAppShell } from './appShell.js';
+import { createAppState, createComposerStateHelpers, createSessionModalState } from './appState.js';
+import {
+  autoResizeTextarea,
+  createLocalId,
+  createRenderScheduler,
+  createTimestampNode,
+  createTurnTimingHelpers,
+  extractItemTimestampMs,
+  getDefaultWorkspacePath,
+  getTurnStartedAtFromTurn,
+  normalizeTimestampMs,
+} from './appRuntime.js';
 import { createSessionModalController } from './sessionModal.js';
 import { createMessageHandler } from './messageHandlers.js';
 import { createMessageEntryBuilder } from './messageEntries.js';
@@ -39,62 +42,60 @@ const DEFAULT_PROMPT_PLACEHOLDER = '给当前会话发送指令...';
 const COMPOSER_PREFS_STORAGE_KEY = 'codex-remote-composer-prefs';
 const THEME_STORAGE_KEY = 'codex-remote-theme';
 
-// DOM
-const sidebar = document.getElementById('sidebar');
-const sidebarClose = document.getElementById('sidebarClose');
-const menuBtn = document.getElementById('menuBtn');
-const tabList = document.getElementById('tabList');
-const newTabBtn = document.getElementById('newTabBtn');
-const messagesEl = document.getElementById('messages');
-const jumpToBottomBtn = document.getElementById('jumpToBottomBtn');
-const sessionCreatingOverlay = document.getElementById('sessionCreatingOverlay');
-const composer = document.getElementById('composer');
-const composerControlsToggle = document.getElementById('composerControlsToggle');
-const composerControlsSummary = document.getElementById('composerControlsSummary');
-const modelSelect = document.getElementById('modelSelect');
-const reasoningEffortSelect = document.getElementById('reasoningEffortSelect');
-const permissionPresetSelect = document.getElementById('permissionPresetSelect');
-const approvalPolicySelect = document.getElementById('approvalPolicySelect');
-const sandboxModeSelect = document.getElementById('sandboxModeSelect');
-const promptInput = document.getElementById('promptInput');
-const attachImageBtn = document.getElementById('attachImageBtn');
-const imageInput = document.getElementById('imageInput');
-const composerAttachmentList = document.getElementById('composerAttachmentList');
-const slashMenu = document.getElementById('slashMenu');
-const composerSubmitBtn = composer.querySelector('button[type="submit"]');
-const activeTitle = document.getElementById('activeTitle');
-const themeSelect = document.getElementById('themeSelect');
-const contextUsage = document.getElementById('contextUsage');
-const tokenBtn = document.getElementById('tokenBtn');
-const activeStatus = document.getElementById('activeStatus');
-const mainArea = document.querySelector('.main-area');
-const tabTpl = document.getElementById('tabTpl');
-const textModal = document.getElementById('textModal');
-const textModalForm = document.getElementById('textModalForm');
-const modalTitle = document.getElementById('modalTitle');
-const modalLabel = document.getElementById('modalLabel');
-const modalInput = document.getElementById('modalInput');
-const modalCancelBtn = document.getElementById('modalCancelBtn');
-const modalConfirmBtn = document.getElementById('modalConfirmBtn');
-const sessionModal = document.getElementById('sessionModal');
-const sessionModalForm = document.getElementById('sessionModalForm');
-const sessionNameInput = document.getElementById('sessionNameInput');
-const sessionWorkspaceInput = document.getElementById('sessionWorkspaceInput');
-const browseWorkspaceBtn = document.getElementById('browseWorkspaceBtn');
-const workspaceUpBtn = document.getElementById('workspaceUpBtn');
-const workspaceRefreshBtn = document.getElementById('workspaceRefreshBtn');
-const createWorkspaceBtn = document.getElementById('createWorkspaceBtn');
-const useCurrentWorkspaceBtn = document.getElementById('useCurrentWorkspaceBtn');
-const workspaceShortcutSelect = document.getElementById('workspaceShortcutSelect');
-const workspaceBrowserPath = document.getElementById('workspaceBrowserPath');
-const workspaceBrowserList = document.getElementById('workspaceBrowserList');
-const sessionModalHint = document.getElementById('sessionModalHint');
-const sessionModalTopCloseBtn = document.getElementById('sessionModalTopCloseBtn');
-const sessionModalCancelBtn = document.getElementById('sessionModalCancelBtn');
-const sessionModalConfirmBtn = document.getElementById('sessionModalConfirmBtn');
-let scheduledRenderFrame = 0;
-let scheduledRenderHeader = false;
-let scheduledRenderMessages = false;
+const {
+  sidebar,
+  sidebarClose,
+  menuBtn,
+  tabList,
+  newTabBtn,
+  messagesEl,
+  jumpToBottomBtn,
+  sessionCreatingOverlay,
+  composer,
+  composerControlsToggle,
+  composerControlsSummary,
+  modelSelect,
+  reasoningEffortSelect,
+  permissionPresetSelect,
+  approvalPolicySelect,
+  sandboxModeSelect,
+  promptInput,
+  attachImageBtn,
+  imageInput,
+  composerAttachmentList,
+  slashMenu,
+  composerSubmitBtn,
+  activeTitle,
+  themeSelect,
+  contextUsage,
+  tokenBtn,
+  activeStatus,
+  mainArea,
+  tabTpl,
+  textModal,
+  textModalForm,
+  modalTitle,
+  modalLabel,
+  modalInput,
+  modalCancelBtn,
+  modalConfirmBtn,
+  sessionModal,
+  sessionModalForm,
+  sessionNameInput,
+  sessionWorkspaceInput,
+  browseWorkspaceBtn,
+  workspaceUpBtn,
+  workspaceRefreshBtn,
+  createWorkspaceBtn,
+  useCurrentWorkspaceBtn,
+  workspaceShortcutSelect,
+  workspaceBrowserPath,
+  workspaceBrowserList,
+  sessionModalHint,
+  sessionModalTopCloseBtn,
+  sessionModalCancelBtn,
+  sessionModalConfirmBtn,
+} = getAppDom(document);
 
 document.addEventListener('click', (event) => {
   const target = event.target;
@@ -132,49 +133,8 @@ jumpToBottomBtn.addEventListener('click', () => {
   messageRenderer.jumpToBottom();
 });
 
-const state = {
-  tabs: [],
-  activeThreadId: null,
-  itemsByThread: new Map(),
-  partialByThread: new Map(),
-  turnActiveByThread: new Map(),
-  currentTurnIdByThread: new Map(),
-  turnStartedAtByThread: new Map(),
-  tokenUsageByThread: new Map(),
-  turnPlansByThread: new Map(),
-  turnDiffsByThread: new Map(),
-  composerAttachmentsByThread: new Map(),
-  composerDraftByThread: new Map(),
-  composerUploadsInFlightByThread: new Map(),
-  unreadThreadIds: new Set(),
-  pendingUserMessages: new Map(),
-  serverRequests: [],
-  availableModels: [],
-  composerOptionsLoading: false,
-  composerOptionsLoaded: false,
-  composerModelDefault: '',
-  composerEffortDefault: '',
-  composerApprovalPolicyDefault: '',
-  composerSandboxModeDefault: '',
-  composerPrefsByThread: new Map(),
-  composerGlobalPrefs: { model: '', effort: '', approvalPolicy: '', sandboxMode: '' },
-  currentTheme: 'paper',
-  creatingTab: false,
-  authFailed: false,
-  connectionError: '',
-};
-
-const sessionModalState = {
-  resolve: null,
-  previousFocus: null,
-  shortcuts: null,
-  loadingShortcuts: false,
-  creatingWorkspace: false,
-  browserLoading: false,
-  browserPath: '',
-  browserParentPath: '',
-  browserEntries: [],
-};
+const state = createAppState();
+const sessionModalState = createSessionModalState();
 
 let renderMessages = () => {};
 let forgetThread = () => {};
@@ -182,83 +142,28 @@ let handleMessage = () => {};
 let focusServerRequestCard = () => false;
 let refreshLiveWorkingLabels = () => {};
 let submitServerRequestResponse = () => {};
-
-function getComposerAttachments(threadId = state.activeThreadId) {
-  if (!threadId) {
-    return [];
-  }
-  if (!state.composerAttachmentsByThread.has(threadId)) {
-    state.composerAttachmentsByThread.set(threadId, []);
-  }
-  return state.composerAttachmentsByThread.get(threadId);
-}
-
-function setComposerAttachments(threadId, attachments) {
-  if (!threadId) {
-    return;
-  }
-  state.composerAttachmentsByThread.set(threadId, Array.isArray(attachments) ? attachments : []);
-}
-
-function getComposerDraft(threadId = state.activeThreadId) {
-  if (!threadId) {
-    return '';
-  }
-  return state.composerDraftByThread.get(threadId) || '';
-}
-
-function setComposerDraft(threadId, text) {
-  if (!threadId) {
-    return;
-  }
-  const normalized = typeof text === 'string' ? text : '';
-  if (normalized) {
-    state.composerDraftByThread.set(threadId, normalized);
-  } else {
-    state.composerDraftByThread.delete(threadId);
-  }
-}
-
-function persistActiveComposerDraft() {
-  if (!state.activeThreadId) {
-    return;
-  }
-  setComposerDraft(state.activeThreadId, promptInput.value);
-}
-
-function restoreComposerDraft(threadId) {
-  promptInput.value = getComposerDraft(threadId);
-  autoResizePromptInput();
-}
-
-function clearComposerAttachments(threadId = state.activeThreadId) {
-  if (!threadId) {
-    return;
-  }
-  state.composerAttachmentsByThread.set(threadId, []);
-}
-
-function getComposerUploadCount(threadId = state.activeThreadId) {
-  if (!threadId) {
-    return 0;
-  }
-  return state.composerUploadsInFlightByThread.get(threadId) || 0;
-}
-
-function setComposerUploadCount(threadId, count) {
-  if (!threadId) {
-    return;
-  }
-  if (count > 0) {
-    state.composerUploadsInFlightByThread.set(threadId, count);
-  } else {
-    state.composerUploadsInFlightByThread.delete(threadId);
-  }
-}
-
-function createLocalId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
+const autoResizePromptInput = () => autoResizeTextarea(promptInput);
+const {
+  clearComposerAttachments,
+  getComposerAttachments,
+  persistActiveComposerDraft,
+  restoreComposerDraft,
+  setComposerAttachments,
+  setComposerDraft,
+  getComposerUploadCount,
+  setComposerUploadCount,
+} = createComposerStateHelpers(state, {
+  readPromptValue: () => promptInput.value,
+  writePromptValue: (value) => {
+    promptInput.value = value;
+  },
+  autoResizePromptInput,
+});
+const {
+  clearTurnStartedAt,
+  getTurnWorkingLabel,
+  rememberTurnStartedAt,
+} = createTurnTimingHelpers(state);
 
 function submitTurnMessage(threadId, text, attachments, options = {}) {
   if (!threadId || (!text && !attachments.length) || getComposerUploadCount() > 0) {
@@ -379,171 +284,6 @@ async function loadComposerOptions(options = {}) {
   }
 }
 
-function normalizeTimestampMs(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value < 1e12 ? value * 1000 : value;
-  }
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-    if (/^\d+(\.\d+)?$/.test(trimmed)) {
-      return normalizeTimestampMs(Number(trimmed));
-    }
-    const parsed = Date.parse(trimmed);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  return null;
-}
-
-function extractItemTimestampMs(item) {
-  return normalizeTimestampMs(item?.createdAt)
-    || normalizeTimestampMs(item?.startedAt)
-    || normalizeTimestampMs(item?.completedAt)
-    || normalizeTimestampMs(item?.updatedAt)
-    || normalizeTimestampMs(item?._localCreatedAt)
-    || null;
-}
-
-function formatEntryTimestamp(timestampMs) {
-  const normalized = normalizeTimestampMs(timestampMs);
-  if (!normalized) {
-    return '';
-  }
-  const date = new Date(normalized);
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  const ss = String(date.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
-}
-
-function createTimestampNode(timestampMs, extraClass = '') {
-  const label = formatEntryTimestamp(timestampMs);
-  if (!label) {
-    return null;
-  }
-  const node = document.createElement('div');
-  node.className = extraClass ? `entry-timestamp ${extraClass}` : 'entry-timestamp';
-  node.textContent = label;
-  node.title = new Date(normalizeTimestampMs(timestampMs)).toLocaleString();
-  return node;
-}
-
-function getTurnStartedAtFromTurn(turn) {
-  return normalizeTimestampMs(turn?.startedAt)
-    || normalizeTimestampMs(turn?.createdAt)
-    || normalizeTimestampMs(turn?.updatedAt)
-    || null;
-}
-
-function rememberTurnStartedAt(threadId, timestamp) {
-  if (!threadId) {
-    return;
-  }
-
-  const normalized = normalizeTimestampMs(timestamp) || Date.now();
-  const existing = state.turnStartedAtByThread.get(threadId);
-  if (!existing || normalized < existing) {
-    state.turnStartedAtByThread.set(threadId, normalized);
-  }
-}
-
-function clearTurnStartedAt(threadId) {
-  state.turnStartedAtByThread.delete(threadId);
-}
-
-function formatElapsed(ms) {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}小时${minutes}分`;
-  }
-  if (minutes > 0) {
-    return `${minutes}分${seconds}秒`;
-  }
-  return `${seconds}秒`;
-}
-
-function formatShortElapsed(ms) {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
-  }
-  return `${seconds}s`;
-}
-
-function getTurnElapsedLabel(threadId) {
-  const startedAt = state.turnStartedAtByThread.get(threadId);
-  if (!startedAt) {
-    return '';
-  }
-  return `已执行 ${formatElapsed(Date.now() - startedAt)}`;
-}
-
-function getTurnWorkingLabel(threadId) {
-  const startedAt = state.turnStartedAtByThread.get(threadId);
-  if (!startedAt) {
-    return '';
-  }
-  return `Working ${formatShortElapsed(Date.now() - startedAt)}`;
-}
-
-function scheduleRender(options = {}) {
-  if (options.header) {
-    scheduledRenderHeader = true;
-  }
-  if (options.messages) {
-    scheduledRenderMessages = true;
-  }
-  if (scheduledRenderFrame) {
-    return;
-  }
-  scheduledRenderFrame = window.requestAnimationFrame(() => {
-    scheduledRenderFrame = 0;
-    const shouldRenderHeader = scheduledRenderHeader;
-    const shouldRenderMessages = scheduledRenderMessages;
-    scheduledRenderHeader = false;
-    scheduledRenderMessages = false;
-    if (shouldRenderHeader) {
-      renderHeader();
-    }
-    if (shouldRenderMessages) {
-      renderMessages();
-    }
-  });
-}
-
-function autoResizePromptInput() {
-  promptInput.style.height = '0px';
-  const nextHeight = Math.min(promptInput.scrollHeight, 162);
-  promptInput.style.height = `${Math.max(45, nextHeight)}px`;
-}
-function getDefaultWorkspacePath(shortcuts) {
-  return shortcuts?.lastUsedPath || shortcuts?.projectRoot || shortcuts?.desktopPath || '';
-}
-function renderTabs() {
-  renderTabsView(tabList, menuBtn, tabTpl, state, {
-    hasUnreadInInactiveTabs,
-    hasPendingServerRequest,
-    normalizeTabStatus,
-    setActiveTab,
-    send,
-  });
-}
-
 function normalizeTabStatus(status) {
   const raw = typeof status === 'object' && status ? status.type : status;
   if (typeof raw !== 'string') {
@@ -568,85 +308,10 @@ function normalizeTabStatus(status) {
   return trimmed;
 }
 
-function renderHeader() {
-  const tab = state.tabs.find((entry) => entry.threadId === state.activeThreadId);
-  activeTitle.textContent = tab ? getSessionName(tab) : 'Codex Remote Control';
-  fillSelectOptions(themeSelect, THEME_OPTIONS, state.currentTheme);
-  themeSelect.disabled = false;
-  syncCustomSelect(themeSelect);
-  renderContextUsage(contextUsage, state);
-  tokenBtn.textContent = state.authFailed ? '设置 Token' : 'Token';
-  tokenBtn.classList.toggle('btn-alert', state.authFailed);
-  renderHeaderStatus(activeStatus, tab, state, {
-    hasPendingServerRequest,
-    normalizeTabStatus,
-  });
-}
-
-function renderComposer() {
-  renderComposerView(state, {
-    composer,
-    composerControlsToggle,
-    composerControlsSummary,
-    promptInput,
-    attachImageBtn,
-    composerSubmitBtn,
-    modelSelect,
-    reasoningEffortSelect,
-    permissionPresetSelect,
-    approvalPolicySelect,
-    sandboxModeSelect,
-    fillSelectOptions,
-    syncCustomSelect,
-    autoResizePromptInput,
-    getComposerAttachments,
-    getComposerUploadCount,
-    getActiveComposerPrefs,
-    normalizeComposerModel,
-    normalizeComposerEffort,
-    normalizeComposerApprovalPolicy,
-    normalizeComposerSandboxMode,
-    formatMobileComposerSummary,
-    buildModelSelectOptions,
-    buildEffortSelectOptions,
-    buildPermissionPresetSelectOptions,
-    buildApprovalPolicySelectOptions,
-    buildSandboxModeSelectOptions,
-    inferPermissionPresetValue,
-    formatPermissionPresetLabel,
-    formatApprovalPolicyLabel,
-    formatSandboxModeLabel,
-    formatReasoningEffortLabel,
-    renderComposerAttachmentList,
-    defaultPromptPlaceholder: DEFAULT_PROMPT_PLACEHOLDER,
-  });
-}
-
-function renderComposerAttachmentList(attachments = getComposerAttachments()) {
-  renderComposerAttachmentListView(attachments, {
-    composerAttachmentList,
-    state,
-    buildUploadPreviewUrl,
-    getAttachmentFileName,
-    setComposerAttachments,
-    getComposerAttachments,
-    renderComposer,
-  });
-}
-
-function renderCreatingOverlay() {
-  sessionCreatingOverlay.classList.toggle('visible', state.creatingTab);
-  sessionCreatingOverlay.setAttribute('aria-hidden', state.creatingTab ? 'false' : 'true');
-}
-
-function render() {
-  renderTabs();
-  renderHeader();
-  renderNewTabButton();
-  renderComposer();
-  renderMessages();
-  renderCreatingOverlay();
-}
+const scheduleRender = createRenderScheduler(
+  () => renderHeader(),
+  () => renderMessages()
+);
 
 const textModalController = createTextModalController({
   textModal,
@@ -707,6 +372,12 @@ const {
   themeOptions: THEME_OPTIONS,
 } = composerSettings;
 
+let renderTabs = () => {};
+let renderHeader = () => {};
+let renderComposer = () => {};
+let renderComposerAttachmentList = () => {};
+let render = () => {};
+
 const normalizeMessageContent = (item) => normalizeUserMessageContent(item, { buildUploadPreviewUrl });
 
 const threadStore = createThreadStore({
@@ -727,7 +398,7 @@ const threadStore = createThreadStore({
   restoreComposerDraft,
   send: (payload) => send(payload),
   forgetThread: (...args) => forgetThread(...args),
-  render,
+  render: () => render(),
 });
 
 const {
@@ -776,16 +447,10 @@ const {
   removeTab,
 } = threadStore;
 
-function renderNewTabButton() {
-  newTabBtn.disabled = state.creatingTab || state.authFailed;
-  newTabBtn.classList.toggle('is-loading', state.creatingTab);
-  newTabBtn.textContent = state.creatingTab ? '正在创建会话...' : '+ 新建会话';
-}
-
 const socketController = createSocketController({
   state,
-  render,
-  renderMessages,
+  render: () => render(),
+  renderMessages: () => renderMessages(),
   clearTransientConnectionNotices,
   loadComposerOptions,
   openTextModal,
@@ -805,6 +470,73 @@ const {
 
 const apiFetchJson = createApiFetchJson(getWebSocketToken);
 const buildUploadPreviewUrl = createBuildUploadPreviewUrl(withAuthTokenQuery);
+
+const appShell = createAppShell({
+  state,
+  elements: {
+    activeStatus,
+    activeTitle,
+    approvalPolicySelect,
+    attachImageBtn,
+    composer,
+    composerAttachmentList,
+    composerControlsSummary,
+    composerControlsToggle,
+    composerSubmitBtn,
+    contextUsage,
+    jumpToBottomBtn,
+    menuBtn,
+    modelSelect,
+    newTabBtn,
+    permissionPresetSelect,
+    promptInput,
+    reasoningEffortSelect,
+    sandboxModeSelect,
+    sessionCreatingOverlay,
+    tabList,
+    tabTpl,
+    themeSelect,
+    tokenBtn,
+  },
+  emptyThreadTitle: 'Codex Remote Control',
+  defaultPromptPlaceholder: DEFAULT_PROMPT_PLACEHOLDER,
+  themeOptions: THEME_OPTIONS,
+  fillSelectOptions,
+  syncCustomSelect,
+  hasUnreadInInactiveTabs,
+  hasPendingServerRequest,
+  normalizeTabStatus,
+  setActiveTab: (...args) => setActiveTab(...args),
+  send: (payload) => send(payload),
+  autoResizePromptInput,
+  getComposerAttachments,
+  getComposerUploadCount,
+  getActiveComposerPrefs,
+  normalizeComposerModel,
+  normalizeComposerEffort,
+  normalizeComposerApprovalPolicy,
+  normalizeComposerSandboxMode,
+  formatMobileComposerSummary,
+  buildModelSelectOptions,
+  buildEffortSelectOptions,
+  buildPermissionPresetSelectOptions,
+  buildApprovalPolicySelectOptions,
+  buildSandboxModeSelectOptions,
+  inferPermissionPresetValue,
+  formatPermissionPresetLabel,
+  formatApprovalPolicyLabel,
+  formatSandboxModeLabel,
+  formatReasoningEffortLabel,
+  buildUploadPreviewUrl,
+  getAttachmentFileName,
+  setComposerAttachments,
+});
+
+renderTabs = () => appShell.renderTabs();
+renderHeader = () => appShell.renderHeader();
+renderComposer = () => appShell.renderComposer();
+renderComposerAttachmentList = (attachments = getComposerAttachments()) => appShell.renderComposerAttachmentList(attachments);
+render = () => appShell.render(renderMessages);
 
 const {
   browseWorkspacePath,
