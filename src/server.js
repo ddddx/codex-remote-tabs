@@ -486,7 +486,7 @@ function clearClosedTabCleanup(threadId) {
 function pruneClosedTabTimers() {
   for (const [threadId, timer] of closedTabTimers.entries()) {
     const tab = tabs.get(threadId);
-    if (tab?.status === 'closed') {
+    if (tab?.windowStatus === 'closed') {
       continue;
     }
     clearTimeout(timer);

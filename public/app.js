@@ -5751,7 +5751,7 @@ function handleMessage(msg) {
       items.push({
         type: '_error',
         id: createLocalId('thread-missing'),
-        text: msg.message || '该会话在 Codex 中不存在，已标记为关闭。',
+        text: msg.message || '该会话在 Codex 中不存在，已从列表移除。',
         _turnId: state.currentTurnIdByThread.get(threadId) || null,
       });
       if (threadId === state.activeThreadId) {
