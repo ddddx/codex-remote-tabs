@@ -20,6 +20,7 @@ export function createMessageHandler(deps) {
     pruneUnreadThreads,
     setActiveTab,
     setThreadTokenUsage,
+    syncThreadTurnMeta,
     syncTurns,
     rememberTurnStartedAt,
     clearTurnStartedAt,
@@ -28,6 +29,8 @@ export function createMessageHandler(deps) {
     cloneItemForTurn,
     reconcilePendingUserMessage,
     finalizeItem,
+    setThreadTurnPlan,
+    setThreadTurnDiff,
     upsertLiveItem,
     appendReasoningSummaryText,
     appendReasoningSummaryPart,
@@ -134,6 +137,7 @@ export function createMessageHandler(deps) {
 
     if (msg.type === 'thread_sync') {
       setThreadTokenUsage(msg.threadId, msg.tokenUsage || null);
+      syncThreadTurnMeta(msg.threadId, msg.turnPlans || [], msg.turnDiffs || []);
       syncTurns(msg.threadId, msg.turns || []);
       render();
       return;
@@ -158,6 +162,41 @@ export function createMessageHandler(deps) {
       if (!msg.turnId || state.currentTurnIdByThread.get(msg.threadId) === msg.turnId) {
         state.currentTurnIdByThread.delete(msg.threadId);
       }
+      if (msg.threadId === state.activeThreadId) {
+        scheduleRender({ header: true, messages: true });
+      }
+      return;
+    }
+
+    if (msg.type === 'turn_plan_updated') {
+      setThreadTurnPlan(msg.threadId, msg.turnId, {
+        explanation: msg.explanation,
+        plan: msg.plan,
+      });
+      if (msg.threadId === state.activeThreadId) {
+        scheduleRender({ messages: true });
+      }
+      return;
+    }
+
+    if (msg.type === 'turn_diff_updated') {
+      setThreadTurnDiff(msg.threadId, msg.turnId, msg.diff);
+      if (msg.threadId === state.activeThreadId) {
+        scheduleRender({ messages: true });
+      }
+      return;
+    }
+
+    if (msg.type === 'plan_delta') {
+      state.turnActiveByThread.set(msg.threadId, true);
+      rememberTurnStartedAt(msg.threadId, msg.startedAt);
+      if (msg.turnId) {
+        state.currentTurnIdByThread.set(msg.threadId, msg.turnId);
+      }
+      upsertLiveItem(msg.threadId, msg.turnId, msg.itemId, 'plan', (item) => {
+        const delta = typeof msg.delta === 'string' ? msg.delta : '';
+        item.text = `${item.text || ''}${delta}`;
+      });
       if (msg.threadId === state.activeThreadId) {
         scheduleRender({ header: true, messages: true });
       }

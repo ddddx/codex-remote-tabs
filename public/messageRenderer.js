@@ -391,6 +391,183 @@ export function createMessageRenderer(deps) {
     }
   }
 
+  function populatePlanItemEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-plan';
+    node.appendChild(createTimelineMeta('计划草案'));
+    if (entry.text) {
+      node.appendChild(createMessageBody(renderMarkdown(entry.text)));
+    } else {
+      node.appendChild(createTimelinePlaceholder('正在生成计划…'));
+    }
+    if (entry.partial) {
+      const cursor = document.createElement('span');
+      cursor.className = 'cursor';
+      cursor.textContent = ' ▌';
+      node.appendChild(cursor);
+    }
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateTurnPlanEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-plan-summary';
+    node.appendChild(createTimelineTitle('执行计划'));
+    if (entry.explanation) {
+      node.appendChild(createTimelineMeta(entry.explanation));
+    }
+    const list = document.createElement('div');
+    list.className = 'plan-step-list';
+    for (const step of entry.plan || []) {
+      const row = document.createElement('div');
+      row.className = `plan-step status-${normalizePlanStepStatus(step?.status)}`;
+      const badge = document.createElement('span');
+      badge.className = 'plan-step-badge';
+      badge.textContent = formatPlanStepStatus(step?.status);
+      row.appendChild(badge);
+      const text = document.createElement('span');
+      text.className = 'plan-step-text';
+      text.textContent = step?.step || '';
+      row.appendChild(text);
+      list.appendChild(row);
+    }
+    node.appendChild(list);
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateTurnDiffEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-file-change turn-diff-card';
+    const detailStateKey = getDetailStateKey(entry, 'turnDiff');
+    const preservedState = preserveDetailOpenState(node);
+    const details = document.createElement('details');
+    details.className = 'timeline-inline-detail-row';
+    applyDetailOpenState(details, preservedState, false, detailStateKey);
+
+    const summary = document.createElement('summary');
+    summary.appendChild(createTimelineTitle(`🧩 ${compactText(summarizeFileChanges(entry.changes) || '本轮聚合变更', 120)}`));
+    summary.appendChild(createTimelineMeta('Turn Diff'));
+    if (entry.timestampMs) {
+      summary.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+    details.appendChild(summary);
+
+    const body = createDetailContent();
+    if (entry.changes?.length) {
+      const changes = document.createElement('div');
+      changes.className = 'file-change-list';
+      for (const change of entry.changes) {
+        const line = document.createElement('div');
+        line.className = `file-change-entry kind-${getNormalizedFileChangeKind(change.kind)}`;
+        line.appendChild(document.createTextNode(`${formatFileChangePrefix(change.kind)} ${change.path}`));
+        const statsNode = createFileChangeLineStatsNode(change);
+        if (statsNode) {
+          line.appendChild(statsNode);
+        }
+        changes.appendChild(line);
+      }
+      body.appendChild(changes);
+    }
+    body.appendChild(createDiffBlock(entry.diff));
+    details.appendChild(body);
+    node.appendChild(details);
+  }
+
+  function populateMcpToolCallEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-tool';
+    node.appendChild(createTimelineTitle(`MCP · ${entry.server}.${entry.tool}`));
+    node.appendChild(createTimelineMeta(`MCP 工具调用 · ${formatExecutionStatusText(entry.status)}`));
+    if (entry.arguments) {
+      node.appendChild(createTimelinePre(JSON.stringify(entry.arguments, null, 2), 'timeline-inline-pre-output'));
+    }
+    if (entry.result) {
+      node.appendChild(createTimelinePre(JSON.stringify(entry.result, null, 2), 'timeline-inline-pre-output'));
+    }
+    if (entry.error) {
+      node.appendChild(createTimelinePre(JSON.stringify(entry.error, null, 2), 'timeline-inline-pre-output'));
+    }
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateDynamicToolCallEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-tool timeline-card-dynamic-tool';
+    const title = entry.namespace ? `${entry.namespace}.${entry.tool}` : entry.tool;
+    node.appendChild(createTimelineTitle(`Dynamic Tool · ${title}`));
+    node.appendChild(createTimelineMeta(`${formatExecutionStatusText(entry.status)}${entry.success == null ? '' : (entry.success ? ' · success' : ' · failed')}`));
+    if (entry.arguments) {
+      node.appendChild(createTimelinePre(JSON.stringify(entry.arguments, null, 2), 'timeline-inline-pre-output'));
+    }
+    if (Array.isArray(entry.contentItems) && entry.contentItems.length) {
+      node.appendChild(createTimelinePre(JSON.stringify(entry.contentItems, null, 2), 'timeline-inline-pre-output'));
+    }
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateCollabToolCallEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-collab';
+    node.appendChild(createTimelineTitle(`协作代理 · ${entry.tool || 'tool'}`));
+    const metaParts = [formatExecutionStatusText(entry.status)];
+    if (entry.agentStatus) {
+      metaParts.push(`agent=${entry.agentStatus}`);
+    }
+    node.appendChild(createTimelineMeta(metaParts.join(' · ')));
+    const facts = [];
+    if (entry.senderThreadId) {
+      facts.push(`sender: ${entry.senderThreadId}`);
+    }
+    if (entry.receiverThreadId) {
+      facts.push(`receiver: ${entry.receiverThreadId}`);
+    }
+    if (entry.newThreadId) {
+      facts.push(`new: ${entry.newThreadId}`);
+    }
+    if (facts.length) {
+      node.appendChild(createTimelineMeta(facts.join(' · ')));
+    }
+    if (entry.prompt) {
+      node.appendChild(createTimelinePre(entry.prompt, 'timeline-inline-pre-output'));
+    }
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateReviewModeEntry(node, entry) {
+    node.className = `timeline-card timeline-card-review ${entry.phase === 'entered' ? 'is-entered' : 'is-exited'}`;
+    node.appendChild(createTimelineTitle(entry.phase === 'entered' ? '进入 Review 模式' : '退出 Review 模式'));
+    if (entry.phase === 'entered') {
+      node.appendChild(createTimelineMeta(entry.review || '正在审查当前变更'));
+    } else {
+      node.appendChild(createMessageBody(renderMarkdown(entry.review || '')));
+    }
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateContextCompactionEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-context';
+    node.appendChild(createTimelineTitle('上下文已压缩'));
+    node.appendChild(createTimelineMeta('Codex 自动压缩了当前会话上下文'));
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
+  function populateImageViewEntry(node, entry) {
+    node.className = 'timeline-card timeline-card-tool';
+    node.appendChild(createTimelineTitle('查看图片'));
+    node.appendChild(createTimelineMeta(entry.path || ''));
+    if (entry.timestampMs) {
+      node.appendChild(createTimestampNode(entry.timestampMs, 'timeline-entry-timestamp'));
+    }
+  }
+
   function populateThinkingEntry(node, entry) {
     node.className = 'timeline-card timeline-card-thinking';
     const title = createTimelineTitle('思考中…');
@@ -520,7 +697,7 @@ export function createMessageRenderer(deps) {
       }
       if (entry.isActive) {
         meta.appendChild(createTurnBadge('进行中', 'active'));
-      } else if (entry.assistantEntries.length) {
+      } else if ((entry.turnMetaEntries?.length || 0) + entry.assistantEntries.length > 0) {
         meta.appendChild(createTurnBadge('已完成', 'done'));
       }
       node.appendChild(meta);
@@ -531,11 +708,14 @@ export function createMessageRenderer(deps) {
         node.appendChild(userRow.row);
       }
 
-      const shouldRenderAssistantRow = entry.assistantEntries.length > 0 || entry.isActive;
+      const shouldRenderAssistantRow = (entry.turnMetaEntries?.length || 0) + entry.assistantEntries.length > 0 || entry.isActive;
       if (shouldRenderAssistantRow) {
         const assistantRow = createTranscriptRow('assistant');
         const stack = document.createElement('div');
         stack.className = 'assistant-main-stack';
+        for (const metaEntry of entry.turnMetaEntries || []) {
+          stack.appendChild(createTimelineEvent(metaEntry));
+        }
         for (const assistantEntry of entry.assistantEntries) {
           stack.appendChild(createTimelineEvent(assistantEntry));
         }
@@ -596,6 +776,21 @@ export function createMessageRenderer(deps) {
       return;
     }
 
+    if (entry.kind === 'planItem') {
+      populatePlanItemEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'turnPlan') {
+      populateTurnPlanEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'turnDiff') {
+      populateTurnDiffEntry(node, entry);
+      return;
+    }
+
     if (entry.kind === 'tool') {
       populateToolEntry(node, entry);
       return;
@@ -608,6 +803,36 @@ export function createMessageRenderer(deps) {
 
     if (entry.kind === 'fileChange') {
       populateFileChangeEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'mcpToolCall') {
+      populateMcpToolCallEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'dynamicToolCall') {
+      populateDynamicToolCallEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'collabToolCall') {
+      populateCollabToolCallEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'reviewMode') {
+      populateReviewModeEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'contextCompaction') {
+      populateContextCompactionEntry(node, entry);
+      return;
+    }
+
+    if (entry.kind === 'imageView') {
+      populateImageViewEntry(node, entry);
       return;
     }
 
@@ -717,6 +942,13 @@ export function createMessageRenderer(deps) {
       node.appendChild(reason);
     }
 
+    if (request.message && request.kind !== 'mcp_server_elicitation') {
+      const message = document.createElement('div');
+      message.className = 'approval-reason';
+      message.textContent = request.message;
+      node.appendChild(message);
+    }
+
     if (request.command) {
       const code = document.createElement('code');
       code.textContent = request.command;
@@ -788,6 +1020,16 @@ export function createMessageRenderer(deps) {
 
     if (request.kind === 'user_input') {
       renderUserInputRequest(node, request);
+      return;
+    }
+
+    if (request.kind === 'mcp_server_elicitation') {
+      renderMcpElicitationRequest(node, request);
+      return;
+    }
+
+    if (request.kind === 'dynamic_tool_call') {
+      renderDynamicToolCallRequest(node, request);
       return;
     }
 
@@ -937,6 +1179,164 @@ export function createMessageRenderer(deps) {
     node.appendChild(form);
   }
 
+  function renderDynamicToolCallRequest(node, request) {
+    const toolTitle = request.namespace ? `${request.namespace}.${request.tool}` : request.tool;
+    if (toolTitle) {
+      const meta = document.createElement('div');
+      meta.className = 'approval-meta';
+      meta.textContent = `工具: ${toolTitle}`;
+      node.appendChild(meta);
+    }
+    if (request.arguments && Object.keys(request.arguments).length) {
+      node.appendChild(createTimelinePre(JSON.stringify(request.arguments, null, 2), 'timeline-inline-pre-output'));
+    }
+
+    const form = document.createElement('form');
+    form.className = 'approval-form';
+    const resultInput = document.createElement('textarea');
+    resultInput.className = 'approval-text-input';
+    resultInput.name = 'dynamic-tool-result';
+    resultInput.rows = 6;
+    resultInput.placeholder = '填写返回给 dynamic tool 的 JSON 数组，例如 [{\"type\":\"inputText\",\"text\":\"...\"}]';
+    resultInput.disabled = request.status === 'submitting';
+    form.appendChild(resultInput);
+
+    const successLabel = document.createElement('label');
+    successLabel.className = 'approval-option';
+    const successInput = document.createElement('input');
+    successInput.type = 'checkbox';
+    successInput.name = 'dynamic-tool-success';
+    successInput.checked = true;
+    successInput.disabled = request.status === 'submitting';
+    successLabel.appendChild(successInput);
+    const successText = document.createElement('span');
+    successText.textContent = '标记为成功';
+    successLabel.appendChild(successText);
+    form.appendChild(successLabel);
+
+    const actions = document.createElement('div');
+    actions.className = 'approval-actions';
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'btn';
+    submitBtn.textContent = request.status === 'submitting' ? '提交中...' : '提交结果';
+    submitBtn.disabled = request.status === 'submitting';
+    actions.appendChild(submitBtn);
+    form.appendChild(actions);
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      let contentItems = [];
+      const raw = resultInput.value.trim();
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            contentItems = parsed;
+          } else {
+            throw new Error('内容必须是数组');
+          }
+        } catch (error) {
+          ensureItems(request.threadId || state.activeThreadId).push({
+            type: '_error',
+            id: createLocalId('dynamic-tool-parse'),
+            text: `Dynamic tool 返回内容不是合法 JSON 数组：${error.message}`,
+          });
+          render();
+          return;
+        }
+      }
+      submitServerRequestResponse(request, {
+        contentItems,
+        success: !!successInput.checked,
+      });
+    });
+
+    node.appendChild(form);
+  }
+
+  function renderMcpElicitationRequest(node, request) {
+    if (request.serverName) {
+      const serverMeta = document.createElement('div');
+      serverMeta.className = 'approval-meta';
+      serverMeta.textContent = `MCP 服务: ${request.serverName}`;
+      node.appendChild(serverMeta);
+    }
+    if (request.message) {
+      const desc = document.createElement('div');
+      desc.className = 'approval-reason';
+      desc.textContent = request.message;
+      node.appendChild(desc);
+    }
+
+    if (request.mode === 'url') {
+      if (request.url) {
+        const link = document.createElement('a');
+        link.href = request.url;
+        link.target = '_blank';
+        link.rel = 'noreferrer noopener';
+        link.className = 'approval-link';
+        link.textContent = request.url;
+        node.appendChild(link);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'approval-actions';
+      const submitting = request.status === 'submitting';
+      actions.appendChild(createActionButton('已完成，接受', submitting, () => {
+        submitServerRequestResponse(request, {
+          action: 'accept',
+          content: null,
+          _meta: request.meta,
+        });
+      }));
+      actions.appendChild(createActionButton('拒绝', submitting, () => {
+        submitServerRequestResponse(request, { action: 'decline', content: null });
+      }, 'btn-secondary'));
+      actions.appendChild(createActionButton('取消', submitting, () => {
+        submitServerRequestResponse(request, { action: 'cancel', content: null });
+      }, 'btn-secondary'));
+      node.appendChild(actions);
+      return;
+    }
+
+    const form = document.createElement('form');
+    form.className = 'approval-form';
+    const fields = buildMcpSchemaFields(request.requestedSchema);
+    for (const field of fields) {
+      form.appendChild(field.node);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'approval-actions';
+    const submitting = request.status === 'submitting';
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'btn';
+    submitBtn.textContent = submitting ? '提交中...' : '提交';
+    submitBtn.disabled = submitting;
+    actions.appendChild(submitBtn);
+    actions.appendChild(createActionButton('拒绝', submitting, () => {
+      submitServerRequestResponse(request, { action: 'decline', content: null });
+    }, 'btn-secondary'));
+    actions.appendChild(createActionButton('取消', submitting, () => {
+      submitServerRequestResponse(request, { action: 'cancel', content: null });
+    }, 'btn-secondary'));
+    form.appendChild(actions);
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const content = {};
+      for (const field of fields) {
+        content[field.key] = field.read();
+      }
+      submitServerRequestResponse(request, {
+        action: 'accept',
+        content,
+        _meta: request.meta,
+      });
+    });
+    node.appendChild(form);
+  }
+
   function describeServerRequestTitle(request) {
     if (request.kind === 'permissions_approval') {
       return '⏳ 额外权限请求';
@@ -947,7 +1347,137 @@ export function createMessageRenderer(deps) {
     if (request.kind === 'user_input') {
       return '⏳ 等待人工输入';
     }
+    if (request.kind === 'mcp_server_elicitation') {
+      return request.mode === 'url' ? '⏳ MCP 链接确认' : '⏳ MCP 表单输入';
+    }
+    if (request.kind === 'dynamic_tool_call') {
+      return '⏳ Dynamic Tool 调用';
+    }
     return '⏳ 命令执行待批准';
+  }
+
+  function normalizePlanStepStatus(status) {
+    const raw = typeof status === 'string' ? status : '';
+    const compact = raw.replace(/[\s_-]/g, '').toLowerCase();
+    if (compact === 'inprogress') {
+      return 'inProgress';
+    }
+    if (compact === 'completed') {
+      return 'completed';
+    }
+    return 'pending';
+  }
+
+  function formatPlanStepStatus(status) {
+    const normalized = normalizePlanStepStatus(status);
+    if (normalized === 'completed') {
+      return '已完成';
+    }
+    if (normalized === 'inProgress') {
+      return '进行中';
+    }
+    return '待处理';
+  }
+
+  function buildMcpSchemaFields(schema) {
+    const properties = schema && typeof schema === 'object' ? schema.properties : null;
+    const required = new Set(Array.isArray(schema?.required) ? schema.required : []);
+    if (!properties || typeof properties !== 'object') {
+      return [];
+    }
+    return Object.entries(properties).map(([key, spec]) => createMcpSchemaField(key, spec, required.has(key)));
+  }
+
+  function createMcpSchemaField(key, spec, isRequired) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'approval-question';
+    const label = document.createElement('div');
+    label.className = 'approval-question-header';
+    label.textContent = spec?.title || key;
+    wrapper.appendChild(label);
+    if (spec?.description) {
+      const desc = document.createElement('div');
+      desc.className = 'approval-meta';
+      desc.textContent = spec.description;
+      wrapper.appendChild(desc);
+    }
+
+    if (Array.isArray(spec?.enum) && spec.enum.length) {
+      const select = document.createElement('select');
+      select.className = 'approval-text-input';
+      spec.enum.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        if (value === spec.default) {
+          option.selected = true;
+        }
+        select.appendChild(option);
+      });
+      wrapper.appendChild(select);
+      return { key, node: wrapper, read: () => select.value };
+    }
+
+    if (Array.isArray(spec?.oneOf) && spec.oneOf.length) {
+      const select = document.createElement('select');
+      select.className = 'approval-text-input';
+      spec.oneOf.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value.const;
+        option.textContent = value.title || value.const;
+        if (value.const === spec.default) {
+          option.selected = true;
+        }
+        select.appendChild(option);
+      });
+      wrapper.appendChild(select);
+      return { key, node: wrapper, read: () => select.value };
+    }
+
+    if (spec?.type === 'boolean') {
+      const checkboxLabel = document.createElement('label');
+      checkboxLabel.className = 'approval-option';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = !!spec.default;
+      checkboxLabel.appendChild(checkbox);
+      const text = document.createElement('span');
+      text.textContent = isRequired ? '必填布尔值' : '布尔值';
+      checkboxLabel.appendChild(text);
+      wrapper.appendChild(checkboxLabel);
+      return { key, node: wrapper, read: () => !!checkbox.checked };
+    }
+
+    const input = document.createElement(spec?.format === 'uri' || spec?.format === 'email' ? 'input' : 'textarea');
+    input.className = 'approval-text-input';
+    if (input instanceof HTMLInputElement) {
+      input.type = spec?.format === 'email' ? 'email' : 'text';
+      input.value = spec?.default == null ? '' : String(spec.default);
+    } else {
+      input.rows = spec?.type === 'string' ? 3 : 2;
+      input.value = spec?.default == null ? '' : String(spec.default);
+    }
+    wrapper.appendChild(input);
+
+    return {
+      key,
+      node: wrapper,
+      read: () => {
+        const raw = String(input.value || '').trim();
+        if (!raw) {
+          return spec?.type === 'number' || spec?.type === 'integer'
+            ? null
+            : '';
+        }
+        if (spec?.type === 'number') {
+          return Number(raw);
+        }
+        if (spec?.type === 'integer') {
+          return Number.parseInt(raw, 10);
+        }
+        return raw;
+      },
+    };
   }
 
   function describePermissions(permissions) {

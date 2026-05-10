@@ -205,6 +205,120 @@ export function createThreadStore(deps) {
     return true;
   }
 
+  function ensureThreadTurnMetaMap(threadId, key) {
+    const map = state[key];
+    if (!(map instanceof Map)) {
+      return null;
+    }
+    if (!map.has(threadId)) {
+      map.set(threadId, new Map());
+    }
+    return map.get(threadId);
+  }
+
+  function setThreadTurnPlan(threadId, turnId, payload) {
+    if (!threadId || !turnId) {
+      return false;
+    }
+    const plans = ensureThreadTurnMetaMap(threadId, 'turnPlansByThread');
+    if (!plans) {
+      return false;
+    }
+    plans.set(turnId, {
+      turnId,
+      explanation: typeof payload?.explanation === 'string' ? payload.explanation : '',
+      plan: Array.isArray(payload?.plan) ? payload.plan.map((entry) => ({
+        step: typeof entry?.step === 'string' ? entry.step : '',
+        status: typeof entry?.status === 'string' ? entry.status : 'pending',
+      })) : [],
+      updatedAt: Date.now(),
+    });
+    return true;
+  }
+
+  function getThreadTurnPlan(threadId, turnId) {
+    if (!threadId || !turnId) {
+      return null;
+    }
+    return state.turnPlansByThread.get(threadId)?.get(turnId) || null;
+  }
+
+  function setThreadTurnDiff(threadId, turnId, diff) {
+    if (!threadId || !turnId) {
+      return false;
+    }
+    const diffs = ensureThreadTurnMetaMap(threadId, 'turnDiffsByThread');
+    if (!diffs) {
+      return false;
+    }
+    const text = typeof diff === 'string' ? diff : '';
+    if (text.trim()) {
+      diffs.set(turnId, {
+        turnId,
+        diff: text,
+        updatedAt: Date.now(),
+      });
+    } else {
+      diffs.delete(turnId);
+    }
+    return true;
+  }
+
+  function getThreadTurnDiff(threadId, turnId) {
+    if (!threadId || !turnId) {
+      return null;
+    }
+    return state.turnDiffsByThread.get(threadId)?.get(turnId) || null;
+  }
+
+  function syncThreadTurnMeta(threadId, turnPlans = [], turnDiffs = []) {
+    if (!threadId) {
+      return;
+    }
+
+    const planMap = new Map();
+    for (const entry of Array.isArray(turnPlans) ? turnPlans : []) {
+      if (!entry?.turnId) {
+        continue;
+      }
+      planMap.set(entry.turnId, {
+        turnId: entry.turnId,
+        explanation: typeof entry.explanation === 'string' ? entry.explanation : '',
+        plan: Array.isArray(entry.plan) ? entry.plan.map((step) => ({
+          step: typeof step?.step === 'string' ? step.step : '',
+          status: typeof step?.status === 'string' ? step.status : 'pending',
+        })) : [],
+        updatedAt: entry.updatedAt || Date.now(),
+      });
+    }
+    if (planMap.size) {
+      state.turnPlansByThread.set(threadId, planMap);
+    } else {
+      state.turnPlansByThread.delete(threadId);
+    }
+
+    const diffMap = new Map();
+    for (const entry of Array.isArray(turnDiffs) ? turnDiffs : []) {
+      if (!entry?.turnId) {
+        continue;
+      }
+      const diff = typeof entry.diff === 'string' ? entry.diff : '';
+      if (!diff.trim()) {
+        continue;
+      }
+      diffMap.set(entry.turnId, {
+        turnId: entry.turnId,
+        diff,
+        updatedAt: entry.updatedAt || Date.now(),
+      });
+    }
+    if (diffMap.size) {
+      state.turnDiffsByThread.set(threadId, diffMap);
+    } else {
+      state.turnDiffsByThread.delete(threadId);
+    }
+  }
+
   function ensureItemRenderVersion(item) {
     if (!item || typeof item !== 'object') {
       return 0;
@@ -750,6 +864,8 @@ export function createThreadStore(deps) {
     state.turnActiveByThread.delete(threadId);
     state.currentTurnIdByThread.delete(threadId);
     state.tokenUsageByThread.delete(threadId);
+    state.turnPlansByThread.delete(threadId);
+    state.turnDiffsByThread.delete(threadId);
     state.composerAttachmentsByThread.delete(threadId);
     state.composerDraftByThread.delete(threadId);
     state.composerUploadsInFlightByThread.delete(threadId);
@@ -989,6 +1105,9 @@ export function createThreadStore(deps) {
     getNormalizedFileChangeKind,
     getReasoningText,
     getServerRequestsForThread,
+    syncThreadTurnMeta,
+    getThreadTurnDiff,
+    getThreadTurnPlan,
     hasPendingServerRequest,
     hasUnreadInInactiveTabs,
     isItemInActiveTurn,
@@ -1001,6 +1120,8 @@ export function createThreadStore(deps) {
     removeServerRequest,
     rollbackPendingUserMessage,
     setActiveTab,
+    setThreadTurnDiff,
+    setThreadTurnPlan,
     setThreadTokenUsage,
     summarizeFileChanges,
     syncTurns,

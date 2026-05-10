@@ -1266,6 +1266,15 @@ body {
   background: transparent;
 }
 
+.timeline-card-plan,
+.timeline-card-plan-summary,
+.timeline-card-collab,
+.timeline-card-review,
+.timeline-card-context,
+.timeline-card-dynamic-tool {
+  background: transparent;
+}
+
 .timeline-card-thinking {
   background: transparent;
 }
@@ -1397,6 +1406,74 @@ body {
   font-size: 12px;
   color: var(--timeline-muted);
   padding: 2px 0 0;
+}
+
+.plan-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.plan-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plan-step-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--badge-border);
+  background: var(--badge-bg);
+  color: var(--badge-ink);
+}
+
+.plan-step.status-inProgress .plan-step-badge {
+  background: var(--badge-active-bg);
+  border-color: var(--badge-active-border);
+  color: var(--badge-active-ink);
+}
+
+.plan-step.status-completed .plan-step-badge {
+  background: var(--badge-done-bg);
+  border-color: var(--badge-done-border);
+  color: var(--badge-done-ink);
+}
+
+.plan-step-text {
+  min-width: 0;
+  color: var(--timeline-text);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.timeline-card-review.is-entered .timeline-inline-title {
+  color: var(--accent);
+}
+
+.timeline-card-review.is-exited .message-body {
+  margin-top: 6px;
+}
+
+.timeline-card-context .timeline-inline-title {
+  color: var(--muted);
+}
+
+.approval-link {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.approval-link:hover {
+  text-decoration: underline;
 }
 
 .thinking-inline {
@@ -1997,6 +2074,7 @@ body {
   font: inherit;
   resize: vertical;
   background: var(--option-input-bg);
+  color: var(--ink);
 }
 
 .file-change-list {

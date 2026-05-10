@@ -14,6 +14,8 @@ export function createMessageEntryBuilder(deps) {
     isItemInActiveTurn,
     getFileChangeOutput,
     getFileChangePatch,
+    getThreadTurnDiff,
+    getThreadTurnPlan,
     normalizeFileChanges,
     getEffectiveComposerSelection,
     inferPermissionPresetValue,
@@ -103,6 +105,7 @@ export function createMessageEntryBuilder(deps) {
         turnId,
         userEntry: null,
         assistantEntries: [],
+        turnMetaEntries: [],
         isActive: false,
         isPendingLocal: false,
       });
@@ -119,6 +122,7 @@ export function createMessageEntryBuilder(deps) {
         turnId: null,
         userEntry: null,
         assistantEntries: [],
+        turnMetaEntries: [],
         isActive: false,
         isPendingLocal: true,
       });
@@ -142,6 +146,20 @@ export function createMessageEntryBuilder(deps) {
 
       if (item?.id) {
         itemToGroupKey.set(item.id, group.key);
+      }
+    }
+
+    function appendTurnMetaEntries(group) {
+      if (!group?.turnId) {
+        return;
+      }
+      const planEntry = buildTurnPlanEntry(threadId, group.turnId);
+      if (planEntry) {
+        group.turnMetaEntries.push(planEntry);
+      }
+      const diffEntry = buildTurnDiffEntry(threadId, group.turnId);
+      if (diffEntry) {
+        group.turnMetaEntries.push(diffEntry);
       }
     }
 
@@ -206,12 +224,17 @@ export function createMessageEntryBuilder(deps) {
       activeGroup.isActive = true;
     }
 
+    groups.forEach((group) => {
+      appendTurnMetaEntries(group);
+    });
+
     const groupEntries = groups.map((group, index) => ({
       key: `timeline:${group.key}`,
       kind: 'turn',
       threadId,
       index: index + 1,
       userEntry: group.userEntry,
+      turnMetaEntries: group.turnMetaEntries,
       assistantEntries: group.assistantEntries,
       isActive: group.isActive,
       isPendingLocal: group.isPendingLocal,
@@ -219,6 +242,7 @@ export function createMessageEntryBuilder(deps) {
         'turn',
         group.key,
         group.userEntry?.signature || '',
+        group.turnMetaEntries.map((entry) => entry.signature),
         group.assistantEntries.map((entry) => entry.signature),
         group.isActive,
         group.isPendingLocal,
@@ -310,6 +334,23 @@ export function createMessageEntryBuilder(deps) {
       };
     }
 
+    if (item.type === 'plan') {
+      const renderVersion = ensureItemRenderVersion(item);
+      const text = String(item.text || '').trim();
+      if (!text && !item._partial) {
+        return null;
+      }
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'planItem',
+        text,
+        partial: !!item._partial,
+        timestampMs,
+        signature: JSON.stringify(['planItem', key, renderVersion, text, !!item._partial, timestampMs || 0]),
+      };
+    }
+
     if (item.type === 'webSearch') {
       const desc = describeWebSearch(item);
       const timestampMs = extractItemTimestampMs(item);
@@ -365,6 +406,103 @@ export function createMessageEntryBuilder(deps) {
         timestampMs,
         threadId: activeThreadId,
         signature: JSON.stringify(['fileChange', key, renderVersion, status, activeThreadId, timestampMs || 0]),
+      };
+    }
+
+    if (item.type === 'mcpToolCall') {
+      const renderVersion = ensureItemRenderVersion(item);
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'mcpToolCall',
+        server: item.server || '',
+        tool: item.tool || '',
+        status: item.status || '',
+        arguments: item.arguments,
+        result: item.result || null,
+        error: item.error || null,
+        timestampMs,
+        signature: JSON.stringify(['mcpToolCall', key, renderVersion, item.status || '', timestampMs || 0]),
+      };
+    }
+
+    if (item.type === 'collabToolCall') {
+      const renderVersion = ensureItemRenderVersion(item);
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'collabToolCall',
+        tool: item.tool || '',
+        status: item.status || '',
+        senderThreadId: item.senderThreadId || '',
+        receiverThreadId: item.receiverThreadId || '',
+        newThreadId: item.newThreadId || '',
+        prompt: item.prompt || '',
+        agentStatus: item.agentStatus || '',
+        timestampMs,
+        signature: JSON.stringify(['collabToolCall', key, renderVersion, item.status || '', item.tool || '', timestampMs || 0]),
+      };
+    }
+
+    if (item.type === 'dynamicToolCall') {
+      const renderVersion = ensureItemRenderVersion(item);
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'dynamicToolCall',
+        tool: item.tool || '',
+        namespace: item.namespace || '',
+        status: item.status || '',
+        arguments: item.arguments,
+        success: typeof item.success === 'boolean' ? item.success : null,
+        contentItems: Array.isArray(item.contentItems) ? item.contentItems : [],
+        timestampMs,
+        signature: JSON.stringify(['dynamicToolCall', key, renderVersion, item.status || '', item.tool || '', item.success, timestampMs || 0]),
+      };
+    }
+
+    if (item.type === 'imageView') {
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'imageView',
+        path: item.path || '',
+        timestampMs,
+        signature: JSON.stringify(['imageView', key, item.path || '', timestampMs || 0]),
+      };
+    }
+
+    if (item.type === 'enteredReviewMode') {
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'reviewMode',
+        phase: 'entered',
+        review: item.review || '',
+        timestampMs,
+        signature: JSON.stringify(['reviewMode', key, 'entered', item.review || '', timestampMs || 0]),
+      };
+    }
+
+    if (item.type === 'exitedReviewMode') {
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'reviewMode',
+        phase: 'exited',
+        review: item.review || '',
+        timestampMs,
+        signature: JSON.stringify(['reviewMode', key, 'exited', item.review || '', timestampMs || 0]),
+      };
+    }
+
+    if (item.type === 'contextCompaction') {
+      const timestampMs = extractItemTimestampMs(item);
+      return {
+        key,
+        kind: 'contextCompaction',
+        timestampMs,
+        signature: JSON.stringify(['contextCompaction', key, timestampMs || 0]),
       };
     }
 
@@ -434,6 +572,38 @@ export function createMessageEntryBuilder(deps) {
       return `打开 ${action.url || ''}`;
     }
     return item.query || JSON.stringify(action);
+  }
+
+  function buildTurnPlanEntry(threadId, turnId) {
+    const planState = getThreadTurnPlan(threadId, turnId);
+    if (!planState || !Array.isArray(planState.plan) || !planState.plan.length) {
+      return null;
+    }
+    const explanation = String(planState.explanation || '').trim();
+    return {
+      key: `turn-plan:${turnId}`,
+      kind: 'turnPlan',
+      explanation,
+      plan: planState.plan,
+      timestampMs: normalizeTimestampMs(planState.updatedAt) || null,
+      signature: JSON.stringify(['turnPlan', turnId, explanation, JSON.stringify(planState.plan), normalizeTimestampMs(planState.updatedAt) || 0]),
+    };
+  }
+
+  function buildTurnDiffEntry(threadId, turnId) {
+    const diffState = getThreadTurnDiff(threadId, turnId);
+    const diff = String(diffState?.diff || '').trim();
+    if (!diff) {
+      return null;
+    }
+    return {
+      key: `turn-diff:${turnId}`,
+      kind: 'turnDiff',
+      diff,
+      changes: normalizeFileChanges([], diff),
+      timestampMs: normalizeTimestampMs(diffState.updatedAt) || null,
+      signature: JSON.stringify(['turnDiff', turnId, diff, normalizeTimestampMs(diffState.updatedAt) || 0]),
+    };
   }
 
   return {

@@ -34,6 +34,7 @@ const STREAM_ITEM_DELTA_METHODS = new Set([
   'item/commandExecution/outputDelta',
   'item/fileChange/outputDelta',
   'item/fileChange/patchUpdated',
+  'item/plan/delta',
   'item/reasoning/summaryTextDelta',
   'item/reasoning/summaryPartAdded',
   'item/reasoning/textDelta',
@@ -78,6 +79,8 @@ const tabs = new Map();
 const closedTabTimers = new Map();
 const pendingWindowOpens = new Map();
 const pendingServerRequests = new Map();
+const turnPlansByThread = new Map();
+const turnDiffsByThread = new Map();
 let shuttingDown = false;
 let windowStatusTimer = null;
 let windowAttachments = null;
@@ -503,6 +506,8 @@ function markTabClosed(threadId) {
 function removeTab(threadId, options = {}) {
   const { broadcastRemoval = false } = options;
   tabs.delete(threadId);
+  turnPlansByThread.delete(threadId);
+  turnDiffsByThread.delete(threadId);
   clearClosedTabCleanup(threadId);
   if (broadcastRemoval) {
     broadcast({ type: 'tab_removed', threadId });
@@ -616,6 +621,82 @@ function broadcastUnreadIfNeeded(threadId) {
   broadcast({ type: 'unread', threadId });
 }
 
+function ensureTurnMetaMap(store, threadId) {
+  if (!threadId) {
+    return null;
+  }
+  if (!store.has(threadId)) {
+    store.set(threadId, new Map());
+  }
+  return store.get(threadId);
+}
+
+function setCachedTurnPlan(threadId, turnId, payload = {}) {
+  const plans = ensureTurnMetaMap(turnPlansByThread, threadId);
+  if (!plans || !turnId) {
+    return;
+  }
+  plans.set(turnId, {
+    turnId,
+    explanation: typeof payload.explanation === 'string' ? payload.explanation : '',
+    plan: Array.isArray(payload.plan) ? payload.plan : [],
+    updatedAt: Date.now(),
+  });
+}
+
+function setCachedTurnDiff(threadId, turnId, diff) {
+  const diffs = ensureTurnMetaMap(turnDiffsByThread, threadId);
+  if (!diffs || !turnId) {
+    return;
+  }
+  const text = typeof diff === 'string' ? diff : '';
+  if (text.trim()) {
+    diffs.set(turnId, { turnId, diff: text, updatedAt: Date.now() });
+  } else {
+    diffs.delete(turnId);
+  }
+}
+
+function buildTurnPlanSnapshots(threadId, turns) {
+  const merged = new Map();
+  for (const turn of turns || []) {
+    const plan = Array.isArray(turn?.plan) ? turn.plan : [];
+    const explanation = typeof turn?.explanation === 'string' ? turn.explanation : '';
+    if (!turn?.id || !plan.length) {
+      continue;
+    }
+    merged.set(turn.id, {
+      turnId: turn.id,
+      explanation,
+      plan,
+      updatedAt: Date.now(),
+    });
+  }
+  for (const [turnId, snapshot] of turnPlansByThread.get(threadId) || new Map()) {
+    merged.set(turnId, snapshot);
+  }
+  return Array.from(merged.values());
+}
+
+function buildTurnDiffSnapshots(threadId, turns) {
+  const merged = new Map();
+  for (const turn of turns || []) {
+    const diff = typeof turn?.diff === 'string' ? turn.diff : '';
+    if (!turn?.id || !diff.trim()) {
+      continue;
+    }
+    merged.set(turn.id, {
+      turnId: turn.id,
+      diff,
+      updatedAt: Date.now(),
+    });
+  }
+  for (const [turnId, snapshot] of turnDiffsByThread.get(threadId) || new Map()) {
+    merged.set(turnId, snapshot);
+  }
+  return Array.from(merged.values());
+}
+
 async function ensureWindowForThread(threadId) {
   assertThreadId(threadId);
   if (!windowAttachments) {
@@ -662,6 +743,8 @@ async function syncThreadToClients(ws, threadId) {
     type: 'thread_sync',
     threadId,
     turns: thread.turns || [],
+    turnPlans: buildTurnPlanSnapshots(threadId, thread.turns || []),
+    turnDiffs: buildTurnDiffSnapshots(threadId, thread.turns || []),
     tokenUsage: thread.tokenUsage || thread.token_usage || null,
   });
   return { thread, materialized };
@@ -1031,6 +1114,47 @@ function createServerRequestRecord(msg) {
     };
   }
 
+  if (method === 'item/tool/call') {
+    return {
+      requestId,
+      rawRequestId: msg.id,
+      method,
+      kind: 'dynamic_tool_call',
+      status: 'pending',
+      createdAt: Date.now(),
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      itemId: params.callId || null,
+      tool: params.tool || '',
+      namespace: params.namespace || '',
+      arguments: params.arguments && typeof params.arguments === 'object' ? params.arguments : {},
+    };
+  }
+
+  if (method === 'mcpServer/elicitation/request') {
+    const mode = params.mode === 'url' ? 'url' : 'form';
+    return {
+      requestId,
+      rawRequestId: msg.id,
+      method,
+      kind: 'mcp_server_elicitation',
+      status: 'pending',
+      createdAt: Date.now(),
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      itemId: null,
+      serverName: params.serverName || '',
+      mode,
+      message: params.message || '',
+      url: mode === 'url' ? (params.url || '') : '',
+      elicitationId: mode === 'url' ? (params.elicitationId || '') : '',
+      requestedSchema: mode === 'form' && params.requestedSchema && typeof params.requestedSchema === 'object'
+        ? params.requestedSchema
+        : null,
+      meta: Object.prototype.hasOwnProperty.call(params, '_meta') ? params._meta : null,
+    };
+  }
+
   if (method === 'execCommandApproval') {
     return {
       requestId,
@@ -1156,6 +1280,32 @@ codex.on('notification', (msg) => {
     return;
   }
 
+  if (method === 'turn/diff/updated') {
+    setCachedTurnDiff(params.threadId || null, params.turnId || null, params.diff);
+    broadcast({
+      type: 'turn_diff_updated',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      diff: typeof params.diff === 'string' ? params.diff : '',
+    });
+    return;
+  }
+
+  if (method === 'turn/plan/updated') {
+    setCachedTurnPlan(params.threadId || null, params.turnId || null, {
+      explanation: params.explanation,
+      plan: params.plan,
+    });
+    broadcast({
+      type: 'turn_plan_updated',
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      explanation: typeof params.explanation === 'string' ? params.explanation : '',
+      plan: Array.isArray(params.plan) ? params.plan : [],
+    });
+    return;
+  }
+
   if (method === 'item/started') {
     broadcast({
       type: 'item_started',
@@ -1189,6 +1339,18 @@ codex.on('notification', (msg) => {
   }
 
   if (STREAM_ITEM_DELTA_METHODS.has(method)) {
+    if (method === 'item/plan/delta') {
+      broadcast({
+        type: 'plan_delta',
+        threadId: params.threadId || null,
+        turnId: params.turnId || null,
+        itemId: params.itemId || null,
+        delta: typeof params.delta === 'string' ? params.delta : '',
+        startedAt: params.startedAt || Date.now(),
+      });
+      return;
+    }
+
     if (method === 'item/fileChange/patchUpdated') {
       const requestId = params.requestId != null ? String(params.requestId) : '';
       const request = requestId ? getPendingServerRequest(requestId) : null;
@@ -1405,7 +1567,25 @@ wss.on('connection', (ws, request) => {
         });
 
         try {
-          codex.respond(request.rawRequestId, message.response);
+          if (request.kind === 'dynamic_tool_call') {
+            const response = normalizeObject(message.response, 'response');
+            const contentItems = Array.isArray(response.contentItems) ? response.contentItems : [];
+            codex.respond(request.rawRequestId, {
+              contentItems,
+              success: response.success !== false,
+            });
+          } else if (request.kind === 'mcp_server_elicitation') {
+            const response = normalizeObject(message.response, 'response');
+            codex.respond(request.rawRequestId, {
+              action: normalizeRequiredString(response.action, 32, 'response.action'),
+              content: Object.prototype.hasOwnProperty.call(response, 'content') ? response.content : null,
+              _meta: Object.prototype.hasOwnProperty.call(response, '_meta')
+                ? response._meta
+                : (Object.prototype.hasOwnProperty.call(response, 'meta') ? response.meta : null),
+            });
+          } else {
+            codex.respond(request.rawRequestId, message.response);
+          }
         } catch (error) {
           updatePendingServerRequest(message.requestId, {
             status: 'pending',
