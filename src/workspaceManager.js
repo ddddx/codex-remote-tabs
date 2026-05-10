@@ -203,14 +203,15 @@ class WorkspaceManager {
       }
 
       return parsed;
-    } catch (_error) {
+    } catch (error) {
+      backupCorruptedJsonFile(this.stateFile, error, 'workspace');
       return {};
     }
   }
 
   saveState() {
     try {
-      fs.writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2), 'utf8');
+      writeJsonFileAtomic(this.stateFile, this.state);
     } catch (error) {
       console.log(`[workspace] failed to save state: ${error.message}`);
     }
@@ -234,6 +235,28 @@ function sanitizeFolderName(folderName) {
 function normalizeThreadId(threadId) {
   const value = typeof threadId === 'string' ? threadId.trim() : '';
   return value || '';
+}
+
+function writeJsonFileAtomic(targetPath, value) {
+  const directory = path.dirname(targetPath);
+  fs.mkdirSync(directory, { recursive: true });
+  const tempPath = `${targetPath}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  fs.renameSync(tempPath, targetPath);
+}
+
+function backupCorruptedJsonFile(filePath, error, scope) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return;
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${filePath}.broken-${stamp}`;
+    fs.renameSync(filePath, backupPath);
+    console.log(`[${scope}] corrupted state file moved to ${backupPath}: ${error.message}`);
+  } catch (backupError) {
+    console.log(`[${scope}] failed to back up corrupted state file: ${backupError.message}`);
+  }
 }
 
 module.exports = { WorkspaceManager };

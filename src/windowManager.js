@@ -112,8 +112,7 @@ class CodexWindowManager {
     }
 
     try {
-      fs.mkdirSync(path.dirname(this.mapFile), { recursive: true });
-      fs.writeFileSync(this.mapFile, JSON.stringify(payload, null, 2), 'utf8');
+      writeJsonFileAtomic(this.mapFile, payload);
     } catch (error) {
       console.log(`[window] failed to save map: ${error.message}`);
     }
@@ -141,6 +140,7 @@ class CodexWindowManager {
 
       this.map = nextMap;
     } catch (error) {
+      backupCorruptedJsonFile(this.mapFile, error, 'window');
       console.log(`[window] failed to load map: ${error.message}`);
       this.map = new Map();
     }
@@ -150,6 +150,28 @@ class CodexWindowManager {
 function assertThreadId(threadId) {
   if (!THREAD_ID_REGEX.test(threadId || '')) {
     throw new Error('invalid threadId: expected UUID');
+  }
+}
+
+function writeJsonFileAtomic(targetPath, value) {
+  const directory = path.dirname(targetPath);
+  fs.mkdirSync(directory, { recursive: true });
+  const tempPath = `${targetPath}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  fs.renameSync(tempPath, targetPath);
+}
+
+function backupCorruptedJsonFile(filePath, error, scope) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return;
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${filePath}.broken-${stamp}`;
+    fs.renameSync(filePath, backupPath);
+    console.log(`[${scope}] corrupted state file moved to ${backupPath}: ${error.message}`);
+  } catch (backupError) {
+    console.log(`[${scope}] failed to back up corrupted state file: ${backupError.message}`);
   }
 }
 
