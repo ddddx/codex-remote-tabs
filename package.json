@@ -1,20 +1,28 @@
 {
-  "name": "codex-remote-tabs",
-  "version": "0.1.0",
+  "name": "codex-remote-workspace",
   "private": true,
-  "description": "Remote tab controller for Codex on PC",
-  "main": "src/server.js",
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "remote": "node restart-codex-remote.js start",
-    "remote:restart": "node restart-codex-remote.js",
-    "remote:stop": "node restart-codex-remote.js stop",
-    "appserver": "node restart-codex-remote.js appserver",
-    "web": "node restart-codex-remote.js web"
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "dev:web": "npm run dev --workspace @codex-remote/web",
+    "dev:server": "npm run dev --workspace @codex-remote/server",
+    "remote:start": "npm run start --workspace @codex-remote/remote",
+    "remote:dev": "npm run dev --workspace @codex-remote/remote",
+    "remote": "npm run remote --workspace @codex-remote/remote",
+    "remote:restart": "npm run remote:restart --workspace @codex-remote/remote",
+    "remote:stop": "npm run remote:stop --workspace @codex-remote/remote",
+    "appserver": "npm run appserver --workspace @codex-remote/remote",
+    "web": "npm run web --workspace @codex-remote/remote"
   },
-  "dependencies": {
-    "express": "^4.21.2",
-    "ws": "^8.18.3"
+  "devDependencies": {
+    "@types/node": "^22.15.31",
+    "typescript": "^5.8.3"
   }
 }
