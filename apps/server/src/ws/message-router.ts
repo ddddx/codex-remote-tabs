@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import type { ClientMessage, ServerMessage } from '@codex-remote/protocol';
-import { bootstrapTabs, broadcastMessage, buildThreadSyncMessage, ensureCodexReady, resetServerRequestPending, setServerRequestSubmitting, upsertRuntimeTab } from './bridge.js';
+import { broadcastMessage, ensureCodexReady, resetServerRequestPending, setServerRequestSubmitting } from './bridge.js';
+import { buildThreadSyncMessage, bootstrapTabs } from '../application/services/thread-sync.js';
+import { upsertRuntimeTab } from '../application/services/session-tabs.js';
 
 type WsLike = {
   send: (payload: string) => void;

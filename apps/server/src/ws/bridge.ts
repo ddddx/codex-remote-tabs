@@ -1,12 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import type { ServerMessage } from '@codex-remote/protocol';
-import { createSessionRecord, createThreadPreferenceRecord } from '@codex-remote/domain';
 import {
   createServerRequestRecord,
   listServerRequests,
   persistServerRequest,
   type RuntimeServerRequest,
 } from '../application/services/server-requests.js';
+import {
+  listRuntimeTabs,
+  normalizeTab,
+  upsertRuntimeTab,
+  type RuntimeTab,
+} from '../application/services/session-tabs.js';
 import {
   listSupplementalItems,
   listTurnDiffs,
@@ -17,18 +22,6 @@ import {
   upsertSupplementalItem,
 } from '../application/services/runtime-cache.js';
 import type { GlobalNoticeSnapshot } from '../state/runtime-state.js';
-
-type RuntimeTab = {
-  threadId: string;
-  name: string;
-  cwd: string;
-  status: string;
-  updatedAt: number;
-  createdAt: number;
-  windowStatus: string;
-  approvalPolicy?: string;
-  sandboxMode?: string;
-};
 
 function nowUnix(): number {
   return Math.floor(Date.now() / 1000);
@@ -43,57 +36,6 @@ export function broadcastMessage(app: FastifyInstance, message: ServerMessage): 
     sendToClient(client, message);
   }
 }
-
-export function normalizeTab(source: Record<string, unknown>): RuntimeTab {
-  return {
-    threadId: String(source.threadId || source.id || ''),
-    name: typeof source.name === 'string' && source.name.trim() ? source.name : '未命名会话',
-    cwd: typeof source.cwd === 'string' ? source.cwd : '',
-    status: typeof source.status === 'string' && source.status.trim() ? source.status : 'idle',
-    updatedAt: typeof source.updatedAt === 'number' ? source.updatedAt : nowUnix(),
-    createdAt: typeof source.createdAt === 'number' ? source.createdAt : nowUnix(),
-    windowStatus: typeof source.windowStatus === 'string' && source.windowStatus.trim() ? source.windowStatus : 'detached',
-    approvalPolicy: typeof source.approvalPolicy === 'string' ? source.approvalPolicy : '',
-    sandboxMode: typeof source.sandboxMode === 'string' ? source.sandboxMode : '',
-  };
-}
-
-export function upsertRuntimeTab(app: FastifyInstance, source: Record<string, unknown>): RuntimeTab {
-  const normalized = normalizeTab(source);
-  const existing = app.runtimeState.tabsById.get(normalized.threadId);
-  const merged = existing ? { ...existing, ...normalized } : normalized;
-  app.runtimeState.tabsById.set(merged.threadId, merged);
-  app.repositories.sessions.upsertSession(createSessionRecord({
-    threadId: merged.threadId,
-    name: merged.name,
-    cwd: merged.cwd,
-    status: merged.status,
-    windowStatus: merged.windowStatus,
-    approvalPolicy: merged.approvalPolicy || '',
-    sandboxMode: merged.sandboxMode || '',
-    createdAt: merged.createdAt,
-    updatedAt: merged.updatedAt,
-  }));
-  if (merged.approvalPolicy || merged.sandboxMode) {
-    app.repositories.threadPreferences.upsertThreadPreference(createThreadPreferenceRecord({
-      threadId: merged.threadId,
-      approvalPolicy: merged.approvalPolicy || '',
-      sandboxMode: merged.sandboxMode || '',
-    }));
-  }
-  return merged;
-}
-
-function listRuntimeTabs(app: FastifyInstance): RuntimeTab[] {
-  return Array.from(app.runtimeState.tabsById.values()).sort((left, right) => {
-    const updatedDiff = right.updatedAt - left.updatedAt;
-    if (updatedDiff !== 0) {
-      return updatedDiff;
-    }
-    return left.threadId.localeCompare(right.threadId);
-  });
-}
-
 
 function handleNotification(app: FastifyInstance, msg: { method?: string; params?: Record<string, unknown> }): void {
   const method = msg.method || '';
@@ -469,55 +411,6 @@ export async function ensureCodexReady(app: FastifyInstance): Promise<void> {
   });
 
   app.runtimeState.codexBridgeRegistered = true;
-}
-
-export async function bootstrapTabs(app: FastifyInstance): Promise<RuntimeTab[]> {
-  if (!app.runtimeState.tabsById.size) {
-    for (const persisted of app.repositories.sessions.listSessions()) {
-      app.runtimeState.tabsById.set(persisted.threadId, persisted as any);
-    }
-  }
-  if (!app.runtimeState.serverRequestsById.size) {
-    for (const request of app.repositories.pendingRequests.listPendingRequests()) {
-      app.runtimeState.serverRequestsById.set(request.requestId, request as any);
-    }
-  }
-
-  await ensureCodexReady(app);
-  const threads = await app.codexClient.listThreads(100);
-  const nextTabs = Array.isArray(threads)
-    ? threads
-      .map((thread) => upsertRuntimeTab(app, thread))
-      .filter((tab) => tab.threadId)
-    : [];
-  return nextTabs.length ? nextTabs : listRuntimeTabs(app);
-}
-
-export function buildInitialState(app: FastifyInstance): Extract<ServerMessage, { type: 'state' }> {
-  return {
-    type: 'state',
-    tabs: listRuntimeTabs(app),
-    serverRequests: listServerRequests(app),
-    globalSupplementalItems: [...app.runtimeState.globalNotices],
-  };
-}
-
-export function buildThreadSyncMessage(
-  app: FastifyInstance,
-  threadId: string,
-  thread: Record<string, unknown>,
-): Extract<ServerMessage, { type: 'thread_sync' }> {
-  const turns = Array.isArray(thread.turns) ? thread.turns as Array<Record<string, unknown>> : [];
-  return {
-    type: 'thread_sync',
-    threadId,
-    turns,
-    supplementalItems: listSupplementalItems(app.runtimeState, threadId),
-    globalSupplementalItems: [...app.runtimeState.globalNotices],
-    tokenUsage: thread.tokenUsage ?? thread.token_usage ?? null,
-    turnPlans: listTurnPlans(app.runtimeState, threadId, turns),
-    turnDiffs: listTurnDiffs(app.runtimeState, threadId, turns),
-  };
 }
 
 export function setServerRequestSubmitting(app: FastifyInstance, requestId: string): void {

@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import type { ClientMessage, ServerMessage } from '@codex-remote/protocol';
 import { isAuthorizedWsToken } from './auth.js';
 import { routeClientMessage } from './message-router.js';
-import { bootstrapTabs, buildInitialState, ensureCodexReady } from './bridge.js';
+import { ensureCodexReady } from './bridge.js';
+import { bootstrapTabs, buildInitialState } from '../application/services/thread-sync.js';
 
 type WsLike = {
   send: (payload: string) => void;
