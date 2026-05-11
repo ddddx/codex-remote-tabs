@@ -89,9 +89,31 @@ body {
   padding: 18px 20px 20px;
 }
 
+.timeline-body,
+.inspector-body,
+.composer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .session-list,
 .timeline-list {
   display: grid;
+  gap: 12px;
+}
+
+.session-item-row,
+.approval-item-row,
+.timeline-entry-head,
+.composer-topline,
+.composer-actions,
+.timeline-toolbar,
+.section-head,
+.approval-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
 }
 
@@ -127,6 +149,30 @@ body {
   border-radius: 16px;
   background: #f4f7fa;
   border: 1px solid rgba(30, 41, 59, 0.06);
+}
+
+.timeline-entry {
+  gap: 10px;
+}
+
+.timeline-entry.user {
+  background: #edf7f8;
+  border-color: rgba(24, 126, 138, 0.16);
+}
+
+.timeline-entry.assistant {
+  background: #f7f4ff;
+  border-color: rgba(90, 74, 187, 0.14);
+}
+
+.timeline-entry.system {
+  background: #f6f7f9;
+}
+
+.timeline-entry-text {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  word-break: break-word;
 }
 
 .health-grid {
@@ -176,15 +222,218 @@ body {
 
 .token-input {
   width: 100%;
-  margin-bottom: 12px;
   border-radius: 12px;
   border: 1px solid rgba(30, 41, 59, 0.12);
   padding: 12px 14px;
   font: inherit;
 }
 
+.token-input,
+.composer-input,
+.primary-button,
+.session-item {
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.token-input:focus,
+.composer-input:focus {
+  outline: none;
+  border-color: rgba(28, 120, 133, 0.45);
+  box-shadow: 0 0 0 4px rgba(28, 120, 133, 0.12);
+}
+
+.session-item:hover,
+.primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.primary-button {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 18px;
+  font: inherit;
+  font-weight: 700;
+  color: #ffffff;
+  background: linear-gradient(135deg, #177c88 0%, #265b97 100%);
+  cursor: pointer;
+}
+
+.primary-button.small,
+.secondary-button {
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.primary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  border: 1px solid rgba(30, 41, 59, 0.12);
+  border-radius: 14px;
+  background: #ffffff;
+  color: #243243;
+  cursor: pointer;
+}
+
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #edf2f7;
+  color: #304256;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-chip.small {
+  min-width: 92px;
+}
+
+.status-chip.running {
+  background: #e7f7eb;
+  color: #17603b;
+}
+
+.status-chip.warning,
+.badge.warning {
+  background: #fff3df;
+  color: #9d5b00;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #edf2f7;
+  color: #304256;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.empty-state {
+  display: grid;
+  gap: 6px;
+  padding: 18px;
+  border-radius: 16px;
+  background: #f6f8fb;
+  border: 1px dashed rgba(30, 41, 59, 0.14);
+}
+
+.empty-state.compact {
+  padding: 14px;
+}
+
+.inspector-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.approval-section {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.approval-list {
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+}
+
+.approval-item {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fffaf0 0%, #fff4de 100%);
+  border: 1px solid rgba(210, 156, 60, 0.18);
+}
+
+.approval-summary {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #3a4552;
+  word-break: break-word;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.approval-meta {
+  color: #7b8794;
+  font-size: 12px;
+}
+
+.token-usage {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.composer-hint {
+  display: grid;
+  gap: 6px;
+}
+
+.composer-error {
+  color: #b42318;
+  font-size: 13px;
+}
+
 @media (max-width: 1100px) {
   .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inspector-card-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    padding: 14px;
+  }
+
+  .topbar {
+    padding: 16px 18px;
+  }
+
+  .topbar h1 {
+    font-size: 22px;
+  }
+
+  .composer-topline,
+  .composer-actions,
+  .timeline-toolbar,
+  .section-head,
+  .approval-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .inspector-card-grid,
+  .health-grid {
     grid-template-columns: 1fr;
   }
 }

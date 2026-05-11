@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ClientMessage, ServerMessage } from '@codex-remote/protocol';
 import { isAuthorizedWsToken } from './auth.js';
 import { routeClientMessage } from './message-router.js';
+import { bootstrapTabs, buildInitialState, ensureCodexReady } from './bridge.js';
 
 type WsLike = {
   send: (payload: string) => void;
@@ -15,18 +16,6 @@ function sendMessage(socket: WsLike, message: ServerMessage): void {
 
 function normalizeIncomingMessage(raw: string): ClientMessage {
   return JSON.parse(raw) as ClientMessage;
-}
-
-function normalizeTab(tab: Record<string, unknown>) {
-  return {
-    threadId: String(tab.id || tab.threadId || ''),
-    name: typeof tab.name === 'string' ? tab.name : '',
-    cwd: typeof tab.cwd === 'string' ? tab.cwd : '',
-    status: typeof tab.status === 'string' ? tab.status : '',
-    updatedAt: typeof tab.updatedAt === 'number' ? tab.updatedAt : 0,
-    createdAt: typeof tab.createdAt === 'number' ? tab.createdAt : 0,
-    windowStatus: 'detached',
-  };
 }
 
 export async function registerWsGateway(app: FastifyInstance): Promise<void> {
@@ -46,17 +35,13 @@ export async function registerWsGateway(app: FastifyInstance): Promise<void> {
     }
 
     app.runtimeState.websocketClientCount += 1;
+    app.runtimeState.clients.add(socket);
 
     void (async () => {
       try {
-        await app.codexClient.start();
-        const threads = await app.codexClient.listThreads(100);
-        sendMessage(socket, {
-          type: 'state',
-          tabs: Array.isArray(threads) ? threads.map((thread) => normalizeTab(thread)) : [],
-          serverRequests: [],
-          globalSupplementalItems: [],
-        });
+        await ensureCodexReady(app);
+        await bootstrapTabs(app);
+        sendMessage(socket, buildInitialState(app));
       } catch (error) {
         sendMessage(socket, {
           type: 'backend_error',
@@ -68,7 +53,7 @@ export async function registerWsGateway(app: FastifyInstance): Promise<void> {
     socket.on('message', async (raw: Buffer) => {
       try {
         const message = normalizeIncomingMessage(raw.toString());
-        await routeClientMessage(socket, message);
+        await routeClientMessage(app, socket, message);
       } catch (error) {
         sendMessage(socket, {
           type: 'error',
@@ -79,6 +64,7 @@ export async function registerWsGateway(app: FastifyInstance): Promise<void> {
 
     socket.on('close', () => {
       app.runtimeState.websocketClientCount = Math.max(0, app.runtimeState.websocketClientCount - 1);
+      app.runtimeState.clients.delete(socket);
     });
   });
 }

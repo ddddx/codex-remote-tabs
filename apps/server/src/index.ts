@@ -9,6 +9,9 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     app.runtimeState.isShuttingDown = true;
+    if (app.runtimeState.codexStarted) {
+      await app.codexClient.stop();
+    }
     await app.close();
     process.exit(0);
   };

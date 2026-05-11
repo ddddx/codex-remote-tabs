@@ -1,18 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import type { CodexOptionsResponse } from '@codex-remote/protocol';
+import { ensureCodexReady } from '../ws/bridge.js';
 
 function normalizeOptionalString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
 export async function registerCodexRoutes(app: FastifyInstance): Promise<void> {
-  let started = false;
-
   app.get('/api/codex/options', { preHandler: app.requireAuth }, async (request): Promise<CodexOptionsResponse> => {
-    if (!started) {
-      await app.codexClient.start();
-      started = true;
-    }
+    await ensureCodexReady(app);
 
     const query = request.query as { cwd?: string };
     const [models, configResponse] = await Promise.all([

@@ -21,9 +21,28 @@ type WorkspaceManagerLike = {
 
 type CodexClientLike = {
   start: () => Promise<void>;
+  stop: () => Promise<void>;
   listThreads: (limit?: number) => Promise<Array<Record<string, unknown>>>;
+  startThread: (options?: {
+    name?: string | null;
+    cwd?: string | null;
+    model?: string | null;
+    approvalPolicy?: string | null;
+    sandbox?: string | null;
+  }) => Promise<Record<string, unknown>>;
+  resumeThread: (threadId: string, options?: { excludeTurns?: boolean }) => Promise<Record<string, unknown>>;
+  startTurn: (threadId: string, text: string, options?: {
+    attachments?: Array<{ path: string; name?: string }>;
+    model?: string | null;
+    effort?: string | null;
+    approvalPolicy?: string | null;
+    sandboxPolicy?: { mode: string } | null;
+  }) => Promise<Record<string, unknown>>;
   listModels: (options?: { includeHidden?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>;
   readConfig: (options?: { cwd?: string }) => Promise<{ config?: Record<string, unknown> }>;
+  respond: (id: string | number, result?: unknown) => void;
+  respondError: (id: string | number, error: unknown) => void;
+  on: (event: string, listener: (...args: any[]) => void) => void;
 };
 
 declare module 'fastify' {
