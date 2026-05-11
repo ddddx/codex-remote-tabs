@@ -1,7 +1,9 @@
 import { createApp } from './app.js';
 import { loadConfig } from './config/env.js';
+import { ensureLegacyLocalConfig } from './legacy.js';
 
 async function main(): Promise<void> {
+  ensureLegacyLocalConfig();
   const config = loadConfig();
   const app = await createApp(config);
 

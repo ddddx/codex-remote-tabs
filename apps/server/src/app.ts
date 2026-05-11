@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import type { ServerConfig } from './config/env.js';
+import { createLegacyCodexClient, createLegacyWorkspaceManager } from './legacy.js';
 import { buildRequireAuth, buildTokenVerifier } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
 import { createRuntimeState } from './state/runtime-state.js';
@@ -13,6 +14,8 @@ export async function createApp(config: ServerConfig) {
 
   app.decorate('config', config);
   app.decorate('runtimeState', createRuntimeState());
+  app.decorate('workspaceManager', createLegacyWorkspaceManager());
+  app.decorate('codexClient', createLegacyCodexClient());
 
   await app.register(websocket);
 
