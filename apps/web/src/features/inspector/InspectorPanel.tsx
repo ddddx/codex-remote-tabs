@@ -1,0 +1,345 @@
+import { useMemo, useState } from 'react';
+import { buildApprovalSummary, buildUserInputResponse, getDecisionLabel, normalizeSchemaFieldValue } from '../../app/view-helpers.js';
+import { useAppStore, type ServerRequestItem } from '../../store/appStore.js';
+
+type InspectorPanelProps = {
+  onRespond: (request: ServerRequestItem, response: unknown) => void;
+};
+
+export function InspectorPanel({ onRespond }: InspectorPanelProps) {
+  const health = useAppStore((state) => state.health.data);
+  const connection = useAppStore((state) => state.connection);
+  const token = useAppStore((state) => state.auth.token);
+  const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
+  const approvals = useAppStore((state) => state.approvals.items);
+
+  const visibleApprovals = useMemo(
+    () => activeSessionId
+      ? approvals.filter((item) => item.threadId === activeSessionId)
+      : approvals,
+    [activeSessionId, approvals],
+  );
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
+  const [dynamicToolValues, setDynamicToolValues] = useState<Record<string, string>>({});
+  const [dynamicToolSuccess, setDynamicToolSuccess] = useState<Record<string, boolean>>({});
+  const [mcpFormValues, setMcpFormValues] = useState<Record<string, string>>({});
+
+  return (
+    <aside className="panel inspector-panel">
+      <div className="panel-title">Inspector</div>
+      <div className="panel-body inspector-body">
+        <div className="inspector-card-grid">
+          <div className="inspector-card">
+            <span className="label">HTTP</span>
+            <strong>{health?.status || 'unknown'}</strong>
+          </div>
+          <div className="inspector-card">
+            <span className="label">WS</span>
+            <strong>{connection.status}</strong>
+          </div>
+          <div className="inspector-card">
+            <span className="label">Token</span>
+            <strong>{token ? 'configured' : 'missing'}</strong>
+          </div>
+          <div className="inspector-card">
+            <span className="label">Approvals</span>
+            <strong>{visibleApprovals.length}</strong>
+          </div>
+        </div>
+        <div className="approval-section">
+          <div className="section-head">
+            <strong>Pending approvals</strong>
+            <span className="muted">{activeSessionId ? 'Current session' : 'All sessions'}</span>
+          </div>
+          {visibleApprovals.length ? (
+            <div className="approval-list">
+              {visibleApprovals.map((request) => (
+                <article key={request.requestId} className="approval-item">
+                  <div className="approval-item-row">
+                    <strong>{request.kind || 'request'}</strong>
+                    <span className={`badge${request.status === 'submitting' ? '' : ' warning'}`}>
+                      {request.status || 'pending'}
+                    </span>
+                  </div>
+                  <div className="approval-summary">{buildApprovalSummary(request)}</div>
+                  <div className="approval-meta">
+                    <span>{request.threadId || 'global'}</span>
+                    <span>{request.requestId}</span>
+                  </div>
+                  {request.kind === 'user_input' && request.questions?.length ? (
+                    <div className="approval-question-list">
+                      {request.questions.map((question) => {
+                        const questionId = question.id || '';
+                        const options = Array.isArray(question.options) ? question.options : [];
+                        const stateKey = `${request.requestId}:${questionId}`;
+                        const fallbackOption = options.find((option) => !(question.isOther || question.isSecret))?.label || '';
+                        const currentValue = questionAnswers[stateKey] || fallbackOption;
+                        return (
+                          <div key={stateKey} className="approval-question-card">
+                            <strong>{question.header || question.question || questionId}</strong>
+                            {question.question && question.header !== question.question ? <span className="muted">{question.question}</span> : null}
+                            {options.length ? (
+                              <div className="approval-option-list">
+                                {options.map((option) => {
+                                  const label = option.label || '';
+                                  return (
+                                    <label key={`${stateKey}:${label}`} className="approval-option-row">
+                                      <input
+                                        type="radio"
+                                        name={stateKey}
+                                        value={label}
+                                        checked={currentValue === label}
+                                        disabled={request.status === 'submitting'}
+                                        onChange={(event) => setQuestionAnswers((state) => ({
+                                          ...state,
+                                          [stateKey]: event.target.value,
+                                        }))}
+                                      />
+                                      <span>{label}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                            {(question.isOther || question.isSecret || !options.length) ? (
+                              question.isSecret ? (
+                                <input
+                                  type="password"
+                                  className="token-input"
+                                  placeholder="填写回答"
+                                  value={currentValue}
+                                  disabled={request.status === 'submitting'}
+                                  onChange={(event) => setQuestionAnswers((state) => ({
+                                    ...state,
+                                    [stateKey]: event.target.value,
+                                  }))}
+                                />
+                              ) : (
+                                <textarea
+                                  className="composer-input approval-textarea"
+                                  placeholder="填写回答"
+                                  value={currentValue}
+                                  disabled={request.status === 'submitting'}
+                                  onChange={(event) => setQuestionAnswers((state) => ({
+                                    ...state,
+                                    [stateKey]: event.target.value,
+                                  }))}
+                                />
+                              )
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {request.kind === 'dynamic_tool_call' ? (
+                    <div className="approval-question-list">
+                      <div className="approval-question-card">
+                        <strong>{request.namespace ? `${request.namespace}.${request.tool || ''}` : request.tool || 'Dynamic tool'}</strong>
+                        {request.arguments ? <pre className="timeline-entry-pre">{JSON.stringify(request.arguments, null, 2)}</pre> : null}
+                        <textarea
+                          className="composer-input approval-textarea"
+                          placeholder='填写 JSON 数组，例如 [{"type":"inputText","text":"ok"}]'
+                          value={dynamicToolValues[request.requestId] || ''}
+                          disabled={request.status === 'submitting'}
+                          onChange={(event) => setDynamicToolValues((state) => ({
+                            ...state,
+                            [request.requestId]: event.target.value,
+                          }))}
+                        />
+                        <label className="approval-option-row">
+                          <input
+                            type="checkbox"
+                            checked={dynamicToolSuccess[request.requestId] ?? true}
+                            disabled={request.status === 'submitting'}
+                            onChange={(event) => setDynamicToolSuccess((state) => ({
+                              ...state,
+                              [request.requestId]: event.target.checked,
+                            }))}
+                          />
+                          <span>Mark success</span>
+                        </label>
+                      </div>
+                    </div>
+                  ) : null}
+                  {request.kind === 'mcp_server_elicitation' ? (
+                    <div className="approval-question-list">
+                      <div className="approval-question-card">
+                        {request.serverName ? <strong>MCP: {request.serverName}</strong> : null}
+                        {request.message ? <span className="muted">{request.message}</span> : null}
+                        {request.mode === 'url' && request.url ? (
+                          <a href={request.url} target="_blank" rel="noreferrer" className="workspace-path">
+                            {request.url}
+                          </a>
+                        ) : null}
+                        {request.mode !== 'url' && request.responseSchema && typeof request.responseSchema === 'object' ? (
+                          <div className="approval-question-list">
+                            {Object.entries(((request.responseSchema as any)?.properties || {}) as Record<string, any>).map(([fieldKey, fieldSpec]) => {
+                              const stateKey = `${request.requestId}:${fieldKey}`;
+                              return (
+                                <label key={stateKey} className="approval-question-card">
+                                  <strong>{fieldSpec?.title || fieldKey}</strong>
+                                  {fieldSpec?.description ? <span className="muted">{fieldSpec.description}</span> : null}
+                                  <input
+                                    className="token-input"
+                                    value={mcpFormValues[stateKey] || ''}
+                                    disabled={request.status === 'submitting'}
+                                    onChange={(event) => setMcpFormValues((state) => ({
+                                      ...state,
+                                      [stateKey]: event.target.value,
+                                    }))}
+                                  />
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="approval-actions">
+                    {request.kind === 'user_input' && request.questions?.length ? (
+                      <button
+                        type="button"
+                        className="primary-button small"
+                        disabled={request.status === 'submitting'}
+                        onClick={() => {
+                          const stateForRequest = Object.fromEntries(
+                            Object.entries(questionAnswers)
+                              .filter(([key]) => key.startsWith(`${request.requestId}:`))
+                              .map(([key, value]) => [key.slice(request.requestId.length + 1), value]),
+                          );
+                          onRespond(request, buildUserInputResponse(request, stateForRequest));
+                        }}
+                      >
+                        Submit answers
+                      </button>
+                    ) : null}
+                    {request.kind === 'dynamic_tool_call' ? (
+                      <button
+                        type="button"
+                        className="primary-button small"
+                        disabled={request.status === 'submitting'}
+                        onClick={() => {
+                          let contentItems: unknown[] = [];
+                          const raw = (dynamicToolValues[request.requestId] || '').trim();
+                          if (raw) {
+                            try {
+                              const parsed = JSON.parse(raw);
+                              if (!Array.isArray(parsed)) {
+                                throw new Error('contentItems must be an array');
+                              }
+                              contentItems = parsed;
+                            } catch (error) {
+                              onRespond(request, { error: error instanceof Error ? error.message : 'Invalid JSON' });
+                              return;
+                            }
+                          }
+                          onRespond(request, {
+                            contentItems,
+                            success: dynamicToolSuccess[request.requestId] ?? true,
+                          });
+                        }}
+                      >
+                        Submit result
+                      </button>
+                    ) : null}
+                    {request.kind === 'mcp_server_elicitation' ? (
+                      request.mode === 'url' ? (
+                        <>
+                          <button
+                            type="button"
+                            className="primary-button small"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'accept', content: null, _meta: request.meta })}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'decline', content: null })}
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'cancel', content: null })}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="primary-button small"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => {
+                              const properties = (((request.responseSchema as any)?.properties || {}) as Record<string, Record<string, unknown>>);
+                              const content = Object.fromEntries(
+                                Object.entries(properties).map(([fieldKey, fieldSpec]) => {
+                                  const stateKey = `${request.requestId}:${fieldKey}`;
+                                  return [fieldKey, normalizeSchemaFieldValue(mcpFormValues[stateKey] || '', fieldSpec)];
+                                }),
+                              );
+                              onRespond(request, { action: 'accept', content, _meta: request.meta });
+                            }}
+                          >
+                            Submit
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'decline', content: null })}
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'cancel', content: null })}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      )
+                    ) : null}
+                    {request.kind !== 'user_input' && request.kind !== 'dynamic_tool_call' && request.kind !== 'mcp_server_elicitation' ? (request.availableDecisions?.length
+                      ? request.availableDecisions
+                      : ['accept', 'decline']).map((decision, index) => {
+                        const key = typeof decision === 'string' ? decision : JSON.stringify(decision);
+                        const isPrimary = index === 0;
+                        const response = typeof decision === 'string' ? { decision } : decision;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            className={isPrimary ? 'primary-button small' : 'secondary-button'}
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, response)}
+                          >
+                            {getDecisionLabel(decision)}
+                          </button>
+                        );
+                    }) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state compact">
+              <strong>No pending approvals</strong>
+              <span>Requests from the server will appear here.</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}

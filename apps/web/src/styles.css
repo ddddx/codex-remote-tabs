@@ -102,9 +102,48 @@ body {
 }
 
 .session-list,
-.timeline-list {
+.timeline-list,
+.timeline-group-list,
+.timeline-group-body {
   display: grid;
   gap: 12px;
+}
+
+.timeline-group {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(247, 249, 252, 0.92) 0%, rgba(239, 244, 248, 0.92) 100%);
+  border: 1px solid rgba(30, 41, 59, 0.08);
+}
+
+.timeline-group.status-running {
+  border-color: rgba(24, 126, 138, 0.28);
+  background: linear-gradient(180deg, rgba(237, 247, 248, 0.96) 0%, rgba(232, 244, 247, 0.96) 100%);
+}
+
+.timeline-group.status-pending {
+  border-color: rgba(210, 156, 60, 0.24);
+  background: linear-gradient(180deg, rgba(255, 248, 233, 0.98) 0%, rgba(255, 243, 219, 0.98) 100%);
+}
+
+.timeline-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.timeline-group-head strong {
+  display: block;
+}
+
+.timeline-group-id {
+  display: inline-block;
+  margin-top: 4px;
+  color: #6a7684;
+  font-size: 12px;
 }
 
 .session-item-row,
@@ -148,7 +187,8 @@ body {
 }
 
 .timeline-entry,
-.inspector-card {
+.inspector-card,
+.timeline-approval-card {
   padding: 14px;
   border-radius: 16px;
   background: #f4f7fa;
@@ -232,6 +272,11 @@ body {
 .timeline-entry.type-file_change {
   background: #fff8f2;
   border-color: rgba(191, 120, 55, 0.18);
+}
+
+.timeline-approval-card {
+  background: linear-gradient(180deg, #fffaf0 0%, #fff4de 100%);
+  border-color: rgba(210, 156, 60, 0.18);
 }
 
 .health-grid {

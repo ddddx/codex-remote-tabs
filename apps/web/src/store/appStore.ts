@@ -20,12 +20,15 @@ export type TimelineEntry = {
   id: string;
   type: string;
   role?: string;
+  turnId?: string;
+  itemId?: string;
   title?: string;
   text?: string;
   status?: string;
   meta?: string[];
   patch?: string;
   changes?: Array<{ path?: string; kind?: string }>;
+  createdAt?: number;
   details?: unknown;
 };
 
@@ -220,6 +223,32 @@ function compactText(value: unknown, max = 280): string {
   return `${normalized.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function normalizeTimelineEntry(entry: TimelineEntry): TimelineEntry {
+  return {
+    ...entry,
+    createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : Date.now(),
+  };
+}
+
+function extractReasoningDelta(message: Extract<ServerMessage, { type: 'item_delta' }>): string {
+  if (typeof message.delta === 'string' && message.delta) {
+    return message.delta;
+  }
+
+  if (!message.part || typeof message.part !== 'object') {
+    return '';
+  }
+
+  const part = message.part as Record<string, unknown>;
+  if (typeof part.text === 'string') {
+    return part.text;
+  }
+  if (typeof part.summary === 'string') {
+    return part.summary;
+  }
+  return '';
+}
+
 function createTimelineEntryFromItemEvent(
   kind: string,
   threadId: string,
@@ -245,10 +274,13 @@ function createTimelineEntryFromItemEvent(
       id: itemId,
       type: 'reasoning',
       role: 'assistant',
+      turnId,
+      itemId,
       title: 'Reasoning',
       text: compactText(item.text),
       status: kind === 'item_started' ? 'running' : 'completed',
       meta: [kind === 'item_started' ? 'streaming' : 'captured', new Date(startedAt).toLocaleTimeString()],
+      createdAt: startedAt,
       details: item,
     };
   }
@@ -258,10 +290,13 @@ function createTimelineEntryFromItemEvent(
       id: itemId,
       type: 'plan',
       role: 'assistant',
+      turnId,
+      itemId,
       title: 'Plan Draft',
       text: compactText(item.text) || 'Planning…',
       status: kind === 'item_started' ? 'running' : 'completed',
       meta: [new Date(startedAt).toLocaleTimeString()],
+      createdAt: startedAt,
       details: item,
     };
   }
@@ -281,6 +316,8 @@ function createTimelineEntryFromItemEvent(
       id: itemId,
       type: 'command',
       role: 'system',
+      turnId,
+      itemId,
       title: 'Command',
       text: compactText(command) || 'Command execution',
       status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
@@ -288,6 +325,7 @@ function createTimelineEntryFromItemEvent(
         typeof item.cwd === 'string' && item.cwd ? item.cwd : '',
         output ? `${output.length} chars output` : '',
       ].filter(Boolean),
+      createdAt: startedAt,
       details: item,
     };
   }
@@ -297,6 +335,8 @@ function createTimelineEntryFromItemEvent(
       id: itemId,
       type: 'file_change',
       role: 'system',
+      turnId,
+      itemId,
       title: 'File Change',
       text: compactText(typeof item.output === 'string' ? item.output : '') || 'Pending file changes',
       status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
@@ -307,6 +347,7 @@ function createTimelineEntryFromItemEvent(
           kind: typeof (change as any)?.kind === 'string' ? (change as any).kind : '',
         }))
         : undefined,
+      createdAt: startedAt,
       details: item,
     };
   }
@@ -316,10 +357,13 @@ function createTimelineEntryFromItemEvent(
       id: itemId,
       type: 'mcp_tool',
       role: 'system',
+      turnId,
+      itemId,
       title: 'MCP Tool',
       text: [item.server, item.tool].filter((value) => typeof value === 'string' && value).join('.'),
       status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
       meta: Array.isArray(item.progressMessages) ? item.progressMessages.filter((value): value is string => typeof value === 'string') : [],
+      createdAt: startedAt,
       details: item,
     };
   }
@@ -329,9 +373,12 @@ function createTimelineEntryFromItemEvent(
       id: itemId,
       type: 'dynamic_tool',
       role: 'system',
+      turnId,
+      itemId,
       title: 'Dynamic Tool',
       text: [item.namespace, item.tool].filter((value) => typeof value === 'string' && value).join('.'),
       status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
+      createdAt: startedAt,
       details: item,
     };
   }
@@ -340,9 +387,12 @@ function createTimelineEntryFromItemEvent(
     id: itemId,
     type: itemType || 'item',
     role: itemType === 'agentMessage' ? 'assistant' : 'system',
+    turnId,
+    itemId,
     title: itemType || 'Item',
     text: compactText(item.text) || compactText(item.output) || compactText(JSON.stringify(item)),
     status: kind === 'item_started' ? 'running' : 'completed',
+    createdAt: startedAt,
     details: item,
   };
 }
@@ -350,18 +400,21 @@ function createTimelineEntryFromItemEvent(
 function buildSystemTimelineEntry(
   threadId: string,
   type: string,
-  fields: Partial<TimelineEntry> & { id?: string; text?: string },
+  fields: Partial<TimelineEntry> & { id?: string; text?: string; turnId?: string },
 ): TimelineEntry {
   return {
     id: fields.id || `${threadId}:${type}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
     type,
     role: fields.role || 'system',
+    turnId: fields.turnId,
+    itemId: fields.itemId,
     title: fields.title,
     text: fields.text,
     status: fields.status,
     meta: fields.meta,
     patch: fields.patch,
     changes: fields.changes,
+    createdAt: fields.createdAt,
     details: fields.details,
   };
 }
@@ -379,9 +432,11 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
       id: `turn-plan:${turnId}`,
       type: 'turn_plan',
       role: 'assistant',
+      turnId,
       title: 'Execution Plan',
       text: typeof (planEntry as any)?.explanation === 'string' ? (planEntry as any).explanation : '',
       meta: plan.map((step: any) => [step?.status, step?.step].filter(Boolean).join(': ')),
+      createdAt: typeof (planEntry as any)?.updatedAt === 'number' ? (planEntry as any).updatedAt : Date.now(),
       details: planEntry,
     });
   }
@@ -396,9 +451,11 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
       id: `turn-diff:${turnId}`,
       type: 'turn_diff',
       role: 'system',
+      turnId,
       title: 'Turn Diff',
       text: 'Recovered diff snapshot',
       patch: diff,
+      createdAt: typeof (diffEntry as any)?.updatedAt === 'number' ? (diffEntry as any).updatedAt : Date.now(),
       details: diffEntry,
     });
   }
@@ -415,9 +472,11 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
         id: itemId,
         type: 'hook',
         role: 'system',
+        turnId: typeof item.turnId === 'string' ? item.turnId : undefined,
         title: 'Hook',
         text: typeof item.phase === 'string' ? `Hook ${item.phase}` : 'Hook',
         status: typeof item.status === 'string' ? item.status : undefined,
+        createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
         details: item,
       });
       continue;
@@ -427,9 +486,11 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
         id: itemId,
         type: 'guardian_review',
         role: 'system',
+        turnId: typeof item.turnId === 'string' ? item.turnId : undefined,
         title: 'Guardian Review',
         text: typeof item.phase === 'string' ? `Guardian ${item.phase}` : 'Guardian review',
         status: typeof item.status === 'string' ? item.status : undefined,
+        createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
         details: item,
       });
     }
@@ -448,6 +509,7 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
       role: 'system',
       title: typeof item.noticeKind === 'string' ? item.noticeKind : 'Notice',
       text,
+      createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
       details: item,
     });
   }
@@ -664,7 +726,7 @@ export const useAppStore = create<AppStore>((set) => ({
     timeline: {
       entriesBySessionId: {
         ...state.timeline.entriesBySessionId,
-        [threadId]: [...(state.timeline.entriesBySessionId[threadId] || []), entry],
+        [threadId]: [...(state.timeline.entriesBySessionId[threadId] || []), normalizeTimelineEntry(entry)],
       },
     },
   })),
@@ -677,6 +739,7 @@ export const useAppStore = create<AppStore>((set) => ({
         role: 'assistant',
         type: 'message',
         text: `${entries[index].text || ''}${delta}`,
+        createdAt: entries[index].createdAt || Date.now(),
       };
     } else {
       entries.push({
@@ -684,6 +747,7 @@ export const useAppStore = create<AppStore>((set) => ({
         type: 'message',
         role: 'assistant',
         text: delta,
+        createdAt: Date.now(),
       });
     }
 
@@ -702,10 +766,10 @@ export const useAppStore = create<AppStore>((set) => ({
     if (index >= 0) {
       entries[index] = {
         ...entries[index],
-        ...entry,
+        ...normalizeTimelineEntry(entry),
       };
     } else {
-      entries.push(entry);
+      entries.push(normalizeTimelineEntry(entry));
     }
     return {
       timeline: {
@@ -788,7 +852,9 @@ export const useAppStore = create<AppStore>((set) => ({
                 id: `${turnId}-user`,
                 type: 'message',
                 role: 'user',
+                turnId,
                 text: userText,
+                createdAt: typeof turn?.createdAt === 'number' ? turn.createdAt : index,
               });
             }
             if (typeof turn?.output === 'string' && turn.output.trim()) {
@@ -796,14 +862,18 @@ export const useAppStore = create<AppStore>((set) => ({
                 id: `${turnId}-assistant`,
                 type: 'message',
                 role: 'assistant',
+                turnId,
                 text: turn.output.trim(),
+                createdAt: typeof turn?.updatedAt === 'number' ? turn.updatedAt : index + 0.5,
               });
             }
             return entries.length ? entries : [{
               id: turnId,
               type: 'turn',
               role: 'system',
+              turnId,
               text: 'Empty turn',
+              createdAt: index,
             }];
           })
           : []),
@@ -894,10 +964,40 @@ export function mapServerMessageToStore(message: ServerMessage) {
     store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'plan', {
       id: entryId,
       role: 'assistant',
+      turnId: message.turnId,
+      itemId: message.itemId,
       title: 'Plan Draft',
       text: `${(useAppStore.getState().timeline.entriesBySessionId[message.threadId] || []).find((entry) => entry.id === entryId)?.text || ''}${message.delta || ''}`,
       status: 'running',
       meta: ['streaming'],
+      createdAt: message.startedAt,
+    }));
+    return;
+  }
+
+  if (message.type === 'turn_plan_updated') {
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'turn_plan', {
+      id: `turn-plan:${message.turnId || 'turn'}`,
+      role: 'assistant',
+      turnId: message.turnId,
+      title: 'Execution Plan',
+      text: typeof message.explanation === 'string' ? message.explanation : '',
+      status: 'completed',
+      meta: Array.isArray(message.plan)
+        ? message.plan.map((step: any) => [step?.status, step?.step].filter(Boolean).join(': ')).filter(Boolean)
+        : [],
+    }));
+    return;
+  }
+
+  if (message.type === 'turn_diff_updated') {
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'turn_diff', {
+      id: `turn-diff:${message.turnId || 'turn'}`,
+      turnId: message.turnId,
+      title: 'Turn Diff',
+      text: 'Updated diff snapshot',
+      patch: typeof message.diff === 'string' ? message.diff : currentDiffToText(message.diff),
+      status: 'completed',
     }));
     return;
   }
@@ -908,28 +1008,41 @@ export function mapServerMessageToStore(message: ServerMessage) {
     const nextMeta = [...(current?.meta || []), message.message || ''].filter(Boolean);
     store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'mcp_tool_progress', {
       id: entryId,
+      turnId: message.turnId,
+      itemId: message.itemId,
       title: 'MCP Tool',
       text: current?.text || 'Tool running',
       status: 'running',
       meta: nextMeta.slice(-6),
+      createdAt: message.startedAt,
     }));
     return;
   }
 
   if (message.type === 'hook_started' || message.type === 'hook_completed') {
-    store.appendTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'hook', {
-      id: `hook:${message.threadId}:${message.turnId || 'turn'}:${message.type}:${Date.now()}`,
+    const run = ('run' in message ? message.run : undefined) as Record<string, unknown> | undefined;
+    const hookId = typeof run?.id === 'string' ? run.id : `hook:${message.threadId}:${message.turnId || 'turn'}`;
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'hook', {
+      id: hookId,
+      turnId: message.turnId,
       title: 'Hook',
-      text: message.type === 'hook_started' ? 'Hook started' : 'Hook completed',
+      text: typeof run?.eventName === 'string'
+        ? `${run.eventName} ${message.type === 'hook_started' ? 'started' : 'completed'}`
+        : (message.type === 'hook_started' ? 'Hook started' : 'Hook completed'),
       status: message.type === 'hook_started' ? 'running' : 'completed',
-      details: 'run' in message ? message.run : undefined,
+      meta: [
+        typeof run?.handler === 'string' ? `handler: ${run.handler}` : '',
+        typeof run?.scope === 'string' ? `scope: ${run.scope}` : '',
+      ].filter(Boolean),
+      details: run,
     }));
     return;
   }
 
   if (message.type === 'guardian_review_started' || message.type === 'guardian_review_completed') {
-    store.appendTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'guardian_review', {
-      id: `guardian:${message.threadId}:${message.turnId || 'turn'}:${message.type}:${Date.now()}`,
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'guardian_review', {
+      id: `guardian:${message.threadId}:${message.turnId || 'turn'}`,
+      turnId: message.turnId,
       title: 'Guardian Review',
       text: message.type === 'guardian_review_started' ? 'Guardian review started' : 'Guardian review completed',
       status: message.type === 'guardian_review_started' ? 'running' : 'completed',
@@ -959,6 +1072,13 @@ export function mapServerMessageToStore(message: ServerMessage) {
           : '';
       if (text.trim()) {
         store.appendAssistantDelta(message.threadId, itemId, text.trim());
+        store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'message', {
+          id: itemId,
+          role: 'assistant',
+          turnId: message.turnId,
+          text: text.trim(),
+          status: 'completed',
+        }));
       }
       return;
     }
@@ -974,13 +1094,36 @@ export function mapServerMessageToStore(message: ServerMessage) {
     const entryId = message.itemId || `${message.threadId}:${message.turnId || 'turn'}:${message.method || 'item_delta'}`;
     const current = (useAppStore.getState().timeline.entriesBySessionId[message.threadId] || []).find((entry) => entry.id === entryId);
 
+    if (
+      message.method === 'item/reasoning/summaryTextDelta'
+      || message.method === 'item/reasoning/summaryPartAdded'
+      || message.method === 'item/reasoning/textDelta'
+    ) {
+      const deltaText = extractReasoningDelta(message);
+      store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'reasoning', {
+        id: entryId,
+        role: 'assistant',
+        turnId: message.turnId,
+        itemId: message.itemId,
+        title: 'Reasoning',
+        text: `${current?.text || ''}${deltaText}`,
+        status: 'running',
+        meta: ['streaming'],
+        createdAt: message.startedAt,
+      }));
+      return;
+    }
+
     if (message.method === 'item/commandExecution/outputDelta') {
       store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'command', {
         id: entryId,
+        turnId: message.turnId,
+        itemId: message.itemId,
         title: current?.title || 'Command',
         text: current?.text || 'Command execution',
         status: 'running',
         meta: [...(current?.meta || []), message.delta || ''].filter(Boolean).slice(-8),
+        createdAt: message.startedAt,
       }));
       return;
     }
@@ -988,6 +1131,8 @@ export function mapServerMessageToStore(message: ServerMessage) {
     if (message.method === 'item/fileChange/outputDelta' || message.method === 'item/fileChange/patchUpdated') {
       store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'file_change', {
         id: entryId,
+        turnId: message.turnId,
+        itemId: message.itemId,
         title: current?.title || 'File Change',
         text: current?.text || 'File change in progress',
         status: 'running',
@@ -999,12 +1144,15 @@ export function mapServerMessageToStore(message: ServerMessage) {
           }))
           : current?.changes,
         meta: message.delta ? [...(current?.meta || []), message.delta].slice(-8) : current?.meta,
+        createdAt: message.startedAt,
       }));
       return;
     }
 
     store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'item_delta', {
       id: entryId,
+      turnId: message.turnId,
+      itemId: message.itemId,
       title: message.method || 'Item update',
       text: message.delta || current?.text || '',
       status: 'running',
@@ -1015,6 +1163,51 @@ export function mapServerMessageToStore(message: ServerMessage) {
           kind: typeof change?.kind === 'string' ? change.kind : '',
         }))
         : current?.changes,
+      createdAt: message.startedAt,
     }));
+    return;
+  }
+
+  if (message.type === 'warning' || message.type === 'error_notice') {
+    if (!message.threadId) {
+      return;
+    }
+    const noticeId = message.noticeId || `${message.threadId}:${message.type}:${Date.now()}`;
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'notice', {
+      id: `notice:${noticeId}`,
+      role: 'system',
+      title: message.noticeKind || (message.type === 'warning' ? 'Warning' : 'Error'),
+      text: message.message,
+      status: message.type === 'warning' ? 'warning' : 'error',
+      createdAt: message.createdAt,
+    }));
+    return;
+  }
+
+  if (message.type === 'codex_error') {
+    if (!message.threadId) {
+      return;
+    }
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'notice', {
+      id: `codex-error:${message.threadId}:${Date.now()}`,
+      role: 'system',
+      title: 'Codex Error',
+      text: typeof message.error === 'string' ? message.error : compactText(JSON.stringify(message.error)),
+      status: 'error',
+    }));
+  }
+}
+
+function currentDiffToText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value) {
+    return '';
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
   }
 }

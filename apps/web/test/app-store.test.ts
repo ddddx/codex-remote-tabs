@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mapServerMessageToStore, useAppStore } from '../src/store/appStore.js';
+import { buildTimelineGroups } from '../src/features/timeline/model.js';
 
 function resetStore() {
   useAppStore.setState({
@@ -184,4 +185,89 @@ test('thread sync restores plan diff supplemental and notice entries', () => {
   assert.ok(entries.some((entry) => entry.type === 'turn_diff'));
   assert.ok(entries.some((entry) => entry.type === 'hook'));
   assert.ok(entries.some((entry) => entry.type === 'notice'));
+});
+
+test('reasoning, turn updates and notices are normalized into timeline semantics', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'item_delta',
+    threadId: 'thread-live',
+    turnId: 'turn-live',
+    itemId: 'reasoning-1',
+    method: 'item/reasoning/textDelta',
+    delta: 'Thinking',
+  } as any);
+
+  mapServerMessageToStore({
+    type: 'turn_plan_updated',
+    threadId: 'thread-live',
+    turnId: 'turn-live',
+    explanation: 'Do work',
+    plan: [{ step: 'Inspect', status: 'completed' }, { step: 'Patch', status: 'in_progress' }],
+  } as any);
+
+  mapServerMessageToStore({
+    type: 'turn_diff_updated',
+    threadId: 'thread-live',
+    turnId: 'turn-live',
+    diff: '*** Begin Patch\n*** End Patch',
+  } as any);
+
+  mapServerMessageToStore({
+    type: 'warning',
+    threadId: 'thread-live',
+    noticeId: 'warn-1',
+    noticeKind: 'warning',
+    message: 'Watch out',
+    createdAt: 10,
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-live'] || [];
+  assert.ok(entries.some((entry) => entry.type === 'reasoning' && entry.text === 'Thinking'));
+  assert.ok(entries.some((entry) => entry.type === 'turn_plan' && entry.turnId === 'turn-live'));
+  assert.ok(entries.some((entry) => entry.type === 'turn_diff' && entry.patch === '*** Begin Patch\n*** End Patch'));
+  assert.ok(entries.some((entry) => entry.type === 'notice' && entry.text === 'Watch out'));
+});
+
+test('timeline groups combine turn entries and inline approvals', () => {
+  const groups = buildTimelineGroups([
+    {
+      id: 'turn-1-user',
+      type: 'message',
+      role: 'user',
+      turnId: 'turn-1',
+      text: 'hello',
+      createdAt: 1,
+    },
+    {
+      id: 'turn-1-plan',
+      type: 'turn_plan',
+      role: 'assistant',
+      turnId: 'turn-1',
+      text: 'plan',
+      status: 'running',
+      createdAt: 2,
+    },
+  ], [
+    {
+      requestId: 'req-1',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      kind: 'command_approval',
+      status: 'pending',
+      command: 'npm test',
+      createdAt: 3,
+    },
+  ], {
+    active: true,
+    turnId: 'turn-1',
+    startedAt: 1,
+  });
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.turnId, 'turn-1');
+  assert.equal(groups[0]?.entries.length, 2);
+  assert.equal(groups[0]?.approvals.length, 1);
+  assert.equal(groups[0]?.status, 'running');
 });
