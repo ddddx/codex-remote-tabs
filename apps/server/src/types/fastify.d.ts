@@ -1,4 +1,5 @@
 import type { ServerConfig } from '../config/env.js';
+import type { AppServices } from '../application/services/index.js';
 import type { RuntimeState } from '../state/runtime-state.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
@@ -71,5 +72,6 @@ declare module 'fastify' {
     requireAuth: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     workspaceManager: WorkspaceManagerLike;
     codexClient: CodexClientLike;
+    services: AppServices;
   }
 }

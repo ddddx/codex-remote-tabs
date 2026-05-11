@@ -3,6 +3,7 @@ import websocket from '@fastify/websocket';
 import path from 'node:path';
 import { createSqliteDatabase, createSqliteRepositories, importLegacyState } from '@codex-remote/adapters';
 import type { ServerConfig } from './config/env.js';
+import { createAppServices } from './application/services/index.js';
 import { createLegacyCodexClient, createLegacyWorkspaceManager } from './legacy.js';
 import { buildRequireAuth, buildTokenVerifier } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
@@ -25,6 +26,7 @@ export async function createApp(config: ServerConfig) {
   app.decorate('repositories', repositories);
   app.decorate('workspaceManager', createLegacyWorkspaceManager());
   app.decorate('codexClient', createLegacyCodexClient());
+  app.decorate('services', createAppServices(app));
   app.runtimeState.repositories = repositories as any;
 
   await app.register(websocket);

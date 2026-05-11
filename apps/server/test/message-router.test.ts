@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createAppServices } from '../src/application/services/index.js';
 import { createRuntimeState } from '../src/state/runtime-state.js';
 import { routeClientMessage } from '../src/ws/message-router.js';
 import { ensureCodexReady } from '../src/ws/bridge.js';
@@ -147,7 +148,12 @@ function createAppStub() {
         listeners.set(event, existing);
       },
     },
+    config: {
+      maxImageUploadBytes: 1024,
+    },
   };
+
+  (app as any).services = createAppServices(app as any);
 
   return {
     app: app as any,
