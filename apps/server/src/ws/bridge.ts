@@ -35,8 +35,15 @@ type RuntimeServerRequest = {
   availableDecisions?: unknown[];
   questions?: unknown[];
   tool?: string;
+  namespace?: string;
+  arguments?: Record<string, unknown>;
   serverName?: string;
   message?: string;
+  mode?: string;
+  url?: string;
+  elicitationId?: string;
+  requestedSchema?: Record<string, unknown> | null;
+  meta?: unknown;
   raw?: Record<string, unknown>;
 };
 
@@ -198,11 +205,14 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       turnId: typeof params.turnId === 'string' ? params.turnId : null,
       itemId: typeof params.callId === 'string' ? params.callId : null,
       tool: typeof params.tool === 'string' ? params.tool : '',
+      namespace: typeof params.namespace === 'string' ? params.namespace : '',
+      arguments: params.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {},
       raw: params,
     };
   }
 
   if (msg.method === 'mcpServer/elicitation/request') {
+    const mode = params.mode === 'url' ? 'url' : 'form';
     return {
       requestId,
       rawRequestId: msg.id,
@@ -216,6 +226,13 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       itemId: null,
       serverName: typeof params.serverName === 'string' ? params.serverName : '',
       message: typeof params.message === 'string' ? params.message : '',
+      mode,
+      url: mode === 'url' && typeof params.url === 'string' ? params.url : '',
+      elicitationId: mode === 'url' && typeof params.elicitationId === 'string' ? params.elicitationId : '',
+      requestedSchema: mode === 'form' && params.requestedSchema && typeof params.requestedSchema === 'object'
+        ? params.requestedSchema as Record<string, unknown>
+        : null,
+      meta: Object.prototype.hasOwnProperty.call(params, '_meta') ? params._meta : null,
       raw: params,
     };
   }

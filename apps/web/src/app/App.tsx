@@ -51,10 +51,12 @@ function buildApprovalSummary(request: {
   reason?: string;
   command?: string;
   tool?: string;
+  namespace?: string;
   serverName?: string;
   message?: string;
   patch?: string;
   questions?: Array<{ question?: string; header?: string }>;
+  url?: string;
 }): string {
   if (request.reason) {
     return request.reason;
@@ -66,10 +68,13 @@ function buildApprovalSummary(request: {
     return request.message;
   }
   if (request.tool) {
-    return `Tool: ${request.tool}`;
+    return request.namespace ? `Tool: ${request.namespace}.${request.tool}` : `Tool: ${request.tool}`;
   }
   if (request.serverName) {
     return `Server: ${request.serverName}`;
+  }
+  if (request.url) {
+    return request.url;
   }
   if (request.questions?.length) {
     return request.questions
@@ -153,6 +158,29 @@ function buildUserInputResponse(request: ServerRequestItem, formState: Record<st
   }
 
   return { answers };
+}
+
+function normalizeSchemaFieldValue(value: string, schema: Record<string, unknown> | null): unknown {
+  const type = typeof schema?.type === 'string' ? schema.type : 'string';
+  const trimmed = value.trim();
+  if (!trimmed) {
+    if (type === 'number' || type === 'integer') {
+      return null;
+    }
+    return '';
+  }
+  if (type === 'number') {
+    const next = Number(trimmed);
+    return Number.isFinite(next) ? next : null;
+  }
+  if (type === 'integer') {
+    const next = Number.parseInt(trimmed, 10);
+    return Number.isFinite(next) ? next : null;
+  }
+  if (type === 'boolean') {
+    return trimmed === 'true';
+  }
+  return trimmed;
 }
 
 function WorkspaceBrowser(props: {
@@ -435,6 +463,9 @@ function InspectorPanel({ onRespond }: InspectorPanelProps) {
     [activeSessionId, approvals],
   );
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
+  const [dynamicToolValues, setDynamicToolValues] = useState<Record<string, string>>({});
+  const [dynamicToolSuccess, setDynamicToolSuccess] = useState<Record<string, boolean>>({});
+  const [mcpFormValues, setMcpFormValues] = useState<Record<string, string>>({});
 
   return (
     <aside className="panel inspector-panel">
@@ -542,6 +573,73 @@ function InspectorPanel({ onRespond }: InspectorPanelProps) {
                       })}
                     </div>
                   ) : null}
+                  {request.kind === 'dynamic_tool_call' ? (
+                    <div className="approval-question-list">
+                      {request.tool || request.namespace ? (
+                        <div className="approval-question-card">
+                          <strong>{request.namespace ? `${request.namespace}.${request.tool || ''}` : request.tool || 'Dynamic tool'}</strong>
+                          {request.arguments ? <pre className="timeline-entry-pre">{JSON.stringify(request.arguments, null, 2)}</pre> : null}
+                          <textarea
+                            className="composer-input approval-textarea"
+                            placeholder='填写 JSON 数组，例如 [{"type":"inputText","text":"ok"}]'
+                            value={dynamicToolValues[request.requestId] || ''}
+                            disabled={request.status === 'submitting'}
+                            onChange={(event) => setDynamicToolValues((state) => ({
+                              ...state,
+                              [request.requestId]: event.target.value,
+                            }))}
+                          />
+                          <label className="approval-option-row">
+                            <input
+                              type="checkbox"
+                              checked={dynamicToolSuccess[request.requestId] ?? true}
+                              disabled={request.status === 'submitting'}
+                              onChange={(event) => setDynamicToolSuccess((state) => ({
+                                ...state,
+                                [request.requestId]: event.target.checked,
+                              }))}
+                            />
+                            <span>Mark success</span>
+                          </label>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {request.kind === 'mcp_server_elicitation' ? (
+                    <div className="approval-question-list">
+                      <div className="approval-question-card">
+                        {request.serverName ? <strong>MCP: {request.serverName}</strong> : null}
+                        {request.message ? <span className="muted">{request.message}</span> : null}
+                        {request.mode === 'url' && request.url ? (
+                          <a href={request.url} target="_blank" rel="noreferrer" className="workspace-path">
+                            {request.url}
+                          </a>
+                        ) : null}
+                        {request.mode !== 'url' && request.responseSchema && typeof request.responseSchema === 'object' ? (
+                          <div className="approval-question-list">
+                            {Object.entries(((request.responseSchema as any)?.properties || {}) as Record<string, any>).map(([fieldKey, fieldSpec]) => {
+                              const stateKey = `${request.requestId}:${fieldKey}`;
+                              return (
+                                <label key={stateKey} className="approval-question-card">
+                                  <strong>{fieldSpec?.title || fieldKey}</strong>
+                                  {fieldSpec?.description ? <span className="muted">{fieldSpec.description}</span> : null}
+                                  <input
+                                    className="token-input"
+                                    value={mcpFormValues[stateKey] || ''}
+                                    disabled={request.status === 'submitting'}
+                                    onChange={(event) => setMcpFormValues((state) => ({
+                                      ...state,
+                                      [stateKey]: event.target.value,
+                                    }))}
+                                  />
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="approval-actions">
                     {request.kind === 'user_input' && request.questions?.length ? (
                       <button
@@ -560,7 +658,102 @@ function InspectorPanel({ onRespond }: InspectorPanelProps) {
                         Submit answers
                       </button>
                     ) : null}
-                    {request.kind !== 'user_input' ? (request.availableDecisions?.length
+                    {request.kind === 'dynamic_tool_call' ? (
+                      <button
+                        type="button"
+                        className="primary-button small"
+                        disabled={request.status === 'submitting'}
+                        onClick={() => {
+                          let contentItems: unknown[] = [];
+                          const raw = (dynamicToolValues[request.requestId] || '').trim();
+                          if (raw) {
+                            try {
+                              const parsed = JSON.parse(raw);
+                              if (!Array.isArray(parsed)) {
+                                throw new Error('contentItems must be an array');
+                              }
+                              contentItems = parsed;
+                            } catch (error) {
+                              onRespond(request, { error: error instanceof Error ? error.message : 'Invalid JSON' });
+                              return;
+                            }
+                          }
+                          onRespond(request, {
+                            contentItems,
+                            success: dynamicToolSuccess[request.requestId] ?? true,
+                          });
+                        }}
+                      >
+                        Submit result
+                      </button>
+                    ) : null}
+                    {request.kind === 'mcp_server_elicitation' ? (
+                      request.mode === 'url' ? (
+                        <>
+                          <button
+                            type="button"
+                            className="primary-button small"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'accept', content: null, _meta: request.meta })}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'decline', content: null })}
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'cancel', content: null })}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="primary-button small"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => {
+                              const properties = (((request.responseSchema as any)?.properties || {}) as Record<string, Record<string, unknown>>);
+                              const content = Object.fromEntries(
+                                Object.entries(properties).map(([fieldKey, fieldSpec]) => {
+                                  const stateKey = `${request.requestId}:${fieldKey}`;
+                                  return [fieldKey, normalizeSchemaFieldValue(mcpFormValues[stateKey] || '', fieldSpec)];
+                                }),
+                              );
+                              onRespond(request, { action: 'accept', content, _meta: request.meta });
+                            }}
+                          >
+                            Submit
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'decline', content: null })}
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={request.status === 'submitting'}
+                            onClick={() => onRespond(request, { action: 'cancel', content: null })}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      )
+                    ) : null}
+                    {request.kind !== 'user_input' && request.kind !== 'dynamic_tool_call' && request.kind !== 'mcp_server_elicitation' ? (request.availableDecisions?.length
                       ? request.availableDecisions
                       : ['accept', 'decline']).map((decision, index) => {
                         const key = typeof decision === 'string' ? decision : JSON.stringify(decision);

@@ -41,6 +41,7 @@ export type ServerRequestItem = {
   command?: string;
   cwd?: string;
   tool?: string;
+  namespace?: string;
   serverName?: string;
   patch?: string;
   questions?: Array<{
@@ -55,6 +56,11 @@ export type ServerRequestItem = {
   availableDecisions?: Array<string | Record<string, unknown>>;
   createdAt?: number;
   responseSchema?: unknown;
+  arguments?: Record<string, unknown>;
+  mode?: string;
+  url?: string;
+  elicitationId?: string;
+  meta?: unknown;
 };
 
 export type ThreadRunState = {
@@ -186,6 +192,7 @@ function normalizeServerRequest(request: any): ServerRequestItem | null {
     command: typeof request?.command === 'string' ? request.command : undefined,
     cwd: typeof request?.cwd === 'string' ? request.cwd : undefined,
     tool: typeof request?.tool === 'string' ? request.tool : undefined,
+    namespace: typeof request?.namespace === 'string' ? request.namespace : undefined,
     serverName: typeof request?.serverName === 'string' ? request.serverName : undefined,
     patch: typeof request?.patch === 'string' ? request.patch : undefined,
     questions: Array.isArray(request?.questions) ? request.questions : undefined,
@@ -193,6 +200,11 @@ function normalizeServerRequest(request: any): ServerRequestItem | null {
     availableDecisions: Array.isArray(request?.availableDecisions) ? request.availableDecisions : undefined,
     createdAt: typeof request?.createdAt === 'number' ? request.createdAt : undefined,
     responseSchema: request?.responseSchema ?? undefined,
+    arguments: request?.arguments && typeof request.arguments === 'object' ? request.arguments : undefined,
+    mode: typeof request?.mode === 'string' ? request.mode : undefined,
+    url: typeof request?.url === 'string' ? request.url : undefined,
+    elicitationId: typeof request?.elicitationId === 'string' ? request.elicitationId : undefined,
+    meta: request?.meta ?? undefined,
   };
 }
 
