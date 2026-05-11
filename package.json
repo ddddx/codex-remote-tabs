@@ -1,20 +1,28 @@
 {
-  "name": "codex-remote-tabs",
-  "version": "0.1.0",
+  "name": "codex-remote-workspace",
   "private": true,
-  "description": "Remote tab controller for Codex on PC",
-  "main": "src/server.js",
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "remote": "node restart-codex-remote.js start",
-    "remote:restart": "node restart-codex-remote.js",
-    "remote:stop": "node restart-codex-remote.js stop",
-    "appserver": "node restart-codex-remote.js appserver",
-    "web": "node restart-codex-remote.js web"
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:integration": "node --test --import tsx tests/integration/**/*.test.ts test/migration-script.test.ts",
+    "test:e2e": "playwright test",
+    "build": "npm run build --workspaces --if-present",
+    "migrate:legacy-state": "node --import tsx scripts/migrate-legacy-state.ts",
+    "start": "npm run build --workspace @codex-remote/web && npm run start --workspace @codex-remote/server",
+    "dev:web": "npm run dev --workspace @codex-remote/web",
+    "dev:server": "npm run dev --workspace @codex-remote/server",
+    "dev": "npm run dev --workspace @codex-remote/server"
   },
-  "dependencies": {
-    "express": "^4.21.2",
-    "ws": "^8.18.3"
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^22.15.31",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3"
   }
 }

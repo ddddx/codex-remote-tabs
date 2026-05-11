@@ -1,0 +1,17 @@
+{
+  "name": "@codex-remote/protocol",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --import tsx test/**/*.test.ts"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}

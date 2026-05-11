@@ -1,0 +1,77 @@
+import type { ServerConfig } from '../config/env.js';
+import type { AppServices } from '../application/services/index.js';
+import type { RuntimeState } from '../state/runtime-state.js';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { DatabaseSync } from 'node:sqlite';
+import type {
+  AppStateRepository,
+  PendingRequestRepository,
+  SessionRepository,
+  ThreadPreferenceRepository,
+  UploadRepository,
+  WindowBindingRepository,
+} from '@codex-remote/domain';
+
+type WorkspaceManagerLike = {
+  getShortcuts: () => {
+    projectRoot: string;
+    desktopPath: string;
+    lastUsedPath: string;
+    preferredPath: string;
+    roots: string[];
+  };
+  listDirectory: (path?: string) => {
+    path: string;
+    parentPath: string;
+    entries: Array<{ name: string; path: string }>;
+  };
+  createDirectory: (parentPath: string, folderName: string) => string;
+  resolveWorkspacePath: (inputPath?: string) => string;
+};
+
+type CodexClientLike = {
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+  listThreads: (limit?: number) => Promise<Array<Record<string, unknown>>>;
+  startThread: (options?: {
+    name?: string | null;
+    cwd?: string | null;
+    model?: string | null;
+    approvalPolicy?: string | null;
+    sandbox?: string | null;
+  }) => Promise<Record<string, unknown>>;
+  resumeThread: (threadId: string, options?: { excludeTurns?: boolean }) => Promise<Record<string, unknown>>;
+  startTurn: (threadId: string, text: string, options?: {
+    attachments?: Array<{ path: string; name?: string }>;
+    model?: string | null;
+    effort?: string | null;
+    approvalPolicy?: string | null;
+    sandboxPolicy?: { mode: string } | null;
+  }) => Promise<Record<string, unknown>>;
+  listModels: (options?: { includeHidden?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>;
+  readConfig: (options?: { cwd?: string }) => Promise<{ config?: Record<string, unknown> }>;
+  respond: (id: string | number, result?: unknown) => void;
+  respondError: (id: string | number, error: unknown) => void;
+  on: (event: string, listener: (...args: any[]) => void) => void;
+};
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    config: ServerConfig;
+    runtimeState: RuntimeState;
+    sqlite: DatabaseSync;
+    repositories: {
+      sessions: SessionRepository;
+      pendingRequests: PendingRequestRepository;
+      threadPreferences: ThreadPreferenceRepository;
+      uploads: UploadRepository;
+      windowBindings: WindowBindingRepository;
+      appState: AppStateRepository;
+    };
+    verifyRequestToken: (request: FastifyRequest) => boolean;
+    requireAuth: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    workspaceManager: WorkspaceManagerLike;
+    codexClient: CodexClientLike;
+    services: AppServices;
+  }
+}

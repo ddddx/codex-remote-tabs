@@ -1,0 +1,165 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { FastifyInstance } from 'fastify';
+import { createAppStateRecord } from '@codex-remote/domain';
+
+type WorkspaceManagerOptions = {
+  projectRoot?: string;
+  app: FastifyInstance;
+};
+
+export class WorkspaceManager {
+  readonly projectRoot: string;
+  readonly app: FastifyInstance;
+
+  constructor(options: WorkspaceManagerOptions) {
+    this.projectRoot = options.projectRoot || process.cwd();
+    this.app = options.app;
+  }
+
+  getShortcuts() {
+    return {
+      projectRoot: this.projectRoot,
+      desktopPath: this.normalizeExistingDirectory(path.join(os.homedir(), 'Desktop')),
+      lastUsedPath: this.getLastUsedPath(),
+      preferredPath: this.getPreferredPath(),
+      roots: this.getRoots(),
+    };
+  }
+
+  getLastUsedPath() {
+    const entry = this.app.repositories.appState.getAppState('lastWorkspacePath');
+    if (!entry?.valueJson) {
+      return '';
+    }
+
+    try {
+      return this.normalizeExistingDirectory(JSON.parse(entry.valueJson));
+    } catch {
+      return '';
+    }
+  }
+
+  getPreferredPath() {
+    return this.getLastUsedPath() || this.projectRoot;
+  }
+
+  resolveWorkspacePath(inputPath?: string) {
+    const raw = typeof inputPath === 'string' ? inputPath.trim() : '';
+    if (!raw) {
+      return this.projectRoot;
+    }
+
+    const resolved = path.resolve(this.projectRoot, raw);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`工作区目录不存在：${resolved}`);
+    }
+
+    const stat = fs.statSync(resolved);
+    if (!stat.isDirectory()) {
+      throw new Error(`工作区不是目录：${resolved}`);
+    }
+
+    return resolved;
+  }
+
+  rememberPath(workspacePath: string) {
+    const normalized = this.resolveWorkspacePath(workspacePath);
+    this.app.repositories.appState.setAppState(
+      createAppStateRecord('lastWorkspacePath', JSON.stringify(normalized)),
+    );
+    return normalized;
+  }
+
+  createDirectory(parentPath: string, folderName: string) {
+    const parent = this.resolveWorkspacePath(parentPath || this.getPreferredPath());
+    const sanitizedFolderName = sanitizeFolderName(folderName);
+    const nextPath = path.join(parent, sanitizedFolderName);
+
+    if (fs.existsSync(nextPath)) {
+      throw new Error(`目录已存在：${nextPath}`);
+    }
+
+    fs.mkdirSync(nextPath, { recursive: false });
+    this.rememberPath(nextPath);
+    return nextPath;
+  }
+
+  listDirectory(inputPath?: string) {
+    const targetPath = this.resolveWorkspacePath(inputPath || this.getPreferredPath());
+    const entries = fs.readdirSync(targetPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({
+        name: entry.name,
+        path: path.join(targetPath, entry.name),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' }));
+
+    return {
+      path: targetPath,
+      parentPath: this.getParentPath(targetPath),
+      entries,
+    };
+  }
+
+  getParentPath(inputPath: string) {
+    const targetPath = this.resolveWorkspacePath(inputPath);
+    const parsed = path.parse(targetPath);
+    const normalizedRoot = parsed.root.replace(/[\\/]+$/, '').toLowerCase();
+    const normalizedTarget = targetPath.replace(/[\\/]+$/, '').toLowerCase();
+    if (normalizedRoot === normalizedTarget) {
+      return '';
+    }
+
+    const parentPath = path.dirname(targetPath);
+    return parentPath === targetPath ? '' : parentPath;
+  }
+
+  getRoots() {
+    const roots: string[] = [];
+    for (let code = 65; code <= 90; code += 1) {
+      const drive = `${String.fromCharCode(code)}:\\`;
+      if (fs.existsSync(drive)) {
+        roots.push(drive);
+      }
+    }
+    return roots;
+  }
+
+  normalizeExistingDirectory(inputPath: unknown) {
+    const raw = typeof inputPath === 'string' ? inputPath.trim() : '';
+    if (!raw) {
+      return '';
+    }
+
+    const resolved = path.resolve(raw);
+    if (!fs.existsSync(resolved)) {
+      return '';
+    }
+
+    try {
+      if (!fs.statSync(resolved).isDirectory()) {
+        return '';
+      }
+    } catch {
+      return '';
+    }
+
+    return resolved;
+  }
+}
+
+function sanitizeFolderName(folderName: string) {
+  const normalized = typeof folderName === 'string' ? folderName.trim() : '';
+  if (!normalized) {
+    throw new Error('文件夹名称不能为空');
+  }
+  if (/[<>:"/\\|?*\u0000-\u001F]/.test(normalized)) {
+    throw new Error('文件夹名称包含非法字符');
+  }
+  if (normalized === '.' || normalized === '..') {
+    throw new Error('文件夹名称非法');
+  }
+  return normalized;
+}
