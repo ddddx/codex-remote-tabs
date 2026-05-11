@@ -15,6 +15,12 @@
     "paths": {
       "@codex-remote/protocol": [
         "packages/protocol/src/index.ts"
+      ],
+      "@codex-remote/domain": [
+        "packages/domain/src/index.ts"
+      ],
+      "@codex-remote/adapters": [
+        "packages/adapters/src/index.ts"
       ]
     }
   }

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ServerMessage } from '@codex-remote/protocol';
+import { createPendingRequestRecord, createSessionRecord, createThreadPreferenceRecord } from '@codex-remote/domain';
 
 type RuntimeTab = {
   threadId: string;
@@ -11,6 +12,31 @@ type RuntimeTab = {
   windowStatus: string;
   approvalPolicy?: string;
   sandboxMode?: string;
+};
+
+type RuntimeServerRequest = {
+  requestId: string;
+  rawRequestId: string | number;
+  method: string;
+  kind: string;
+  status: 'pending' | 'submitting';
+  createdAt: number;
+  submittedAt?: number | null;
+  threadId: string | null;
+  turnId: string | null;
+  itemId: string | null;
+  reason?: string;
+  command?: string;
+  cwd?: string;
+  patch?: string;
+  changes?: unknown[];
+  permissions?: unknown;
+  availableDecisions?: unknown[];
+  questions?: unknown[];
+  tool?: string;
+  serverName?: string;
+  message?: string;
+  raw?: Record<string, unknown>;
 };
 
 function nowUnix(): number {
@@ -46,6 +72,24 @@ export function upsertRuntimeTab(app: FastifyInstance, source: Record<string, un
   const existing = app.runtimeState.tabsById.get(normalized.threadId);
   const merged = existing ? { ...existing, ...normalized } : normalized;
   app.runtimeState.tabsById.set(merged.threadId, merged);
+  app.repositories.sessions.upsertSession(createSessionRecord({
+    threadId: merged.threadId,
+    name: merged.name,
+    cwd: merged.cwd,
+    status: merged.status,
+    windowStatus: merged.windowStatus,
+    approvalPolicy: merged.approvalPolicy || '',
+    sandboxMode: merged.sandboxMode || '',
+    createdAt: merged.createdAt,
+    updatedAt: merged.updatedAt,
+  }));
+  if (merged.approvalPolicy || merged.sandboxMode) {
+    app.repositories.threadPreferences.upsertThreadPreference(createThreadPreferenceRecord({
+      threadId: merged.threadId,
+      approvalPolicy: merged.approvalPolicy || '',
+      sandboxMode: merged.sandboxMode || '',
+    }));
+  }
   return merged;
 }
 
@@ -59,7 +103,7 @@ function listRuntimeTabs(app: FastifyInstance): RuntimeTab[] {
   });
 }
 
-function createServerRequestRecord(msg: { id: string | number; method: string; params?: Record<string, unknown> }) {
+function createServerRequestRecord(msg: { id: string | number; method: string; params?: Record<string, unknown> }): RuntimeServerRequest {
   const params = msg.params || {};
   const requestId = String(msg.id);
 
@@ -71,6 +115,7 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       kind: 'command_approval',
       status: 'pending' as const,
       createdAt: Date.now(),
+      submittedAt: null,
       threadId: typeof params.threadId === 'string' ? params.threadId : null,
       turnId: typeof params.turnId === 'string' ? params.turnId : null,
       itemId: typeof params.itemId === 'string' ? params.itemId : null,
@@ -90,6 +135,7 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       kind: 'file_change_approval',
       status: 'pending' as const,
       createdAt: Date.now(),
+      submittedAt: null,
       threadId: typeof params.threadId === 'string' ? params.threadId : null,
       turnId: typeof params.turnId === 'string' ? params.turnId : null,
       itemId: typeof params.itemId === 'string' ? params.itemId : null,
@@ -109,6 +155,7 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       kind: 'permissions_approval',
       status: 'pending' as const,
       createdAt: Date.now(),
+      submittedAt: null,
       threadId: typeof params.threadId === 'string' ? params.threadId : null,
       turnId: typeof params.turnId === 'string' ? params.turnId : null,
       itemId: typeof params.itemId === 'string' ? params.itemId : null,
@@ -128,6 +175,7 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       kind: 'user_input',
       status: 'pending' as const,
       createdAt: Date.now(),
+      submittedAt: null,
       threadId: typeof params.threadId === 'string' ? params.threadId : null,
       turnId: typeof params.turnId === 'string' ? params.turnId : null,
       itemId: typeof params.itemId === 'string' ? params.itemId : null,
@@ -144,6 +192,7 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       kind: 'dynamic_tool_call',
       status: 'pending' as const,
       createdAt: Date.now(),
+      submittedAt: null,
       threadId: typeof params.threadId === 'string' ? params.threadId : null,
       turnId: typeof params.turnId === 'string' ? params.turnId : null,
       itemId: typeof params.callId === 'string' ? params.callId : null,
@@ -160,6 +209,7 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
       kind: 'mcp_server_elicitation',
       status: 'pending' as const,
       createdAt: Date.now(),
+      submittedAt: null,
       threadId: typeof params.threadId === 'string' ? params.threadId : null,
       turnId: typeof params.turnId === 'string' ? params.turnId : null,
       itemId: null,
@@ -176,6 +226,7 @@ function createServerRequestRecord(msg: { id: string | number; method: string; p
     kind: 'unknown',
     status: 'pending' as const,
     createdAt: Date.now(),
+    submittedAt: null,
     threadId: typeof params.threadId === 'string' ? params.threadId : null,
     turnId: typeof params.turnId === 'string' ? params.turnId : null,
     itemId: typeof params.itemId === 'string' ? params.itemId : null,
@@ -317,6 +368,7 @@ function handleNotification(app: FastifyInstance, msg: { method?: string; params
     }
     const existing = app.runtimeState.serverRequestsById.get(requestId);
     app.runtimeState.serverRequestsById.delete(requestId);
+    app.repositories.pendingRequests.removePendingRequest(requestId);
     broadcastMessage(app, {
       type: 'server_request_resolved',
       requestId,
@@ -343,6 +395,18 @@ export async function ensureCodexReady(app: FastifyInstance): Promise<void> {
   app.codexClient.on('server_request', (msg: { id: string | number; method: string; params?: Record<string, unknown> }) => {
     const request = createServerRequestRecord(msg);
     app.runtimeState.serverRequestsById.set(request.requestId, request);
+    app.repositories.pendingRequests.upsertPendingRequest(createPendingRequestRecord({
+      requestId: request.requestId,
+      threadId: request.threadId ?? null,
+      turnId: request.turnId ?? null,
+      itemId: request.itemId ?? null,
+      kind: request.kind,
+      method: request.method,
+      status: request.status,
+      payloadJson: JSON.stringify(request),
+      createdAt: request.createdAt,
+      submittedAt: request.submittedAt ?? null,
+    }));
     broadcastMessage(app, {
       type: 'server_request_required',
       request,
@@ -365,6 +429,17 @@ export async function ensureCodexReady(app: FastifyInstance): Promise<void> {
 }
 
 export async function bootstrapTabs(app: FastifyInstance): Promise<RuntimeTab[]> {
+  if (!app.runtimeState.tabsById.size) {
+    for (const persisted of app.repositories.sessions.listSessions()) {
+      app.runtimeState.tabsById.set(persisted.threadId, persisted as any);
+    }
+  }
+  if (!app.runtimeState.serverRequestsById.size) {
+    for (const request of app.repositories.pendingRequests.listPendingRequests()) {
+      app.runtimeState.serverRequestsById.set(request.requestId, request as any);
+    }
+  }
+
   await ensureCodexReady(app);
   const threads = await app.codexClient.listThreads(100);
   const nextTabs = Array.isArray(threads)
@@ -391,6 +466,18 @@ export function setServerRequestSubmitting(app: FastifyInstance, requestId: stri
   }
   existing.status = 'submitting';
   existing.submittedAt = Date.now();
+  app.repositories.pendingRequests.upsertPendingRequest(createPendingRequestRecord({
+    requestId: existing.requestId,
+    threadId: existing.threadId ?? null,
+    turnId: existing.turnId ?? null,
+    itemId: existing.itemId ?? null,
+    kind: existing.kind,
+    method: existing.method,
+    status: existing.status,
+    payloadJson: JSON.stringify(existing),
+    createdAt: existing.createdAt,
+    submittedAt: existing.submittedAt ?? null,
+  }));
   broadcastMessage(app, {
     type: 'server_request_updated',
     request: existing,
@@ -404,6 +491,18 @@ export function resetServerRequestPending(app: FastifyInstance, requestId: strin
   }
   existing.status = 'pending';
   existing.submittedAt = null;
+  app.repositories.pendingRequests.upsertPendingRequest(createPendingRequestRecord({
+    requestId: existing.requestId,
+    threadId: existing.threadId ?? null,
+    turnId: existing.turnId ?? null,
+    itemId: existing.itemId ?? null,
+    kind: existing.kind,
+    method: existing.method,
+    status: existing.status,
+    payloadJson: JSON.stringify(existing),
+    createdAt: existing.createdAt,
+    submittedAt: existing.submittedAt ?? null,
+  }));
   broadcastMessage(app, {
     type: 'server_request_updated',
     request: existing,

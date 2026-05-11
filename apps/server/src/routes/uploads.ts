@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { UploadImageResponse } from '@codex-remote/protocol';
+import { createUploadRecord } from '@codex-remote/domain';
 
 const IMAGE_CONTENT_TYPES = new Map([
   ['image/png', '.png'],
@@ -70,6 +71,14 @@ export async function registerUploadRoutes(app: FastifyInstance): Promise<void> 
 
     fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
     await fsp.writeFile(filePath, body);
+    app.repositories.uploads.upsertUpload(createUploadRecord({
+      id: savedName,
+      savedName,
+      originalName: originalName || savedName,
+      contentType,
+      filePath,
+      createdAt: Date.now(),
+    }));
 
     return {
       id: savedName,

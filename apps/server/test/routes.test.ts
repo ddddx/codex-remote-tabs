@@ -75,12 +75,14 @@ function createCodexStub() {
 }
 
 async function buildTestApp() {
+  const tempSqlitePath = `C:\\Users\\Administrator\\Desktop\\cc-workspace\\tmp-server-test-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`;
   const app = await createApp({
     host: '127.0.0.1',
     port: 18637,
     wsToken: 'secret-token',
     nodeEnv: 'test',
     maxImageUploadBytes: 1024,
+    sqliteFile: tempSqlitePath,
   });
 
   app.workspaceManager = createWorkspaceStub() as any;
@@ -109,6 +111,7 @@ test('GET /health returns runtime status', async () => {
   assert.equal(payload.status, 'ok');
   assert.equal(payload.tabs, 1);
   assert.equal(payload.websocketClients, 0);
+  assert.equal(app.repositories.sessions.listSessions().length, 0);
   await app.close();
 });
 

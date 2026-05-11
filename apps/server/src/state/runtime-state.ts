@@ -32,6 +32,81 @@ type ServerRequestRecord = {
   raw?: Record<string, unknown>;
 };
 
+type RuntimeRepositories = {
+  sessions: {
+    listSessions: () => RuntimeTab[];
+    getSession: (threadId: string) => RuntimeTab | null;
+    upsertSession: (record: RuntimeTab) => void;
+    removeSession: (threadId: string) => void;
+  };
+  pendingRequests: {
+    listPendingRequests: () => ServerRequestRecord[];
+    getPendingRequest: (requestId: string) => ServerRequestRecord | null;
+    upsertPendingRequest: (record: ServerRequestRecord & { payloadJson?: string }) => void;
+    removePendingRequest: (requestId: string) => void;
+  };
+  threadPreferences: {
+    getThreadPreference: (threadId: string) => {
+      threadId: string;
+      approvalPolicy: string;
+      sandboxMode: string;
+      model: string;
+      reasoningEffort: string;
+    } | null;
+    upsertThreadPreference: (record: {
+      threadId: string;
+      approvalPolicy: string;
+      sandboxMode: string;
+      model: string;
+      reasoningEffort: string;
+    }) => void;
+  };
+  uploads: {
+    listUploads: () => Array<{
+      id: string;
+      savedName: string;
+      originalName: string;
+      contentType: string;
+      filePath: string;
+      createdAt: number;
+    }>;
+    upsertUpload: (record: {
+      id: string;
+      savedName: string;
+      originalName: string;
+      contentType: string;
+      filePath: string;
+      createdAt: number;
+    }) => void;
+  };
+  windowBindings: {
+    listWindowBindings: () => Array<{
+      threadId: string;
+      pid: number | null;
+      commandLine: string;
+      updatedAt: number;
+    }>;
+    upsertWindowBinding: (record: {
+      threadId: string;
+      pid: number | null;
+      commandLine: string;
+      updatedAt: number;
+    }) => void;
+  };
+  appState: {
+    getAppState: (key: string) => {
+      key: string;
+      valueJson: string;
+      updatedAt: number;
+    } | null;
+    setAppState: (record: {
+      key: string;
+      valueJson: string;
+      updatedAt: number;
+    }) => void;
+  };
+};
+
 export type RuntimeWsClient = {
   send: (payload: string) => void;
   close: (code?: number, reason?: string) => void;
@@ -46,6 +121,7 @@ export type RuntimeState = {
   clients: Set<RuntimeWsClient>;
   tabsById: Map<string, RuntimeTab>;
   serverRequestsById: Map<string, ServerRequestRecord>;
+  repositories: RuntimeRepositories | null;
 };
 
 export function createRuntimeState(): RuntimeState {
@@ -58,5 +134,6 @@ export function createRuntimeState(): RuntimeState {
     clients: new Set(),
     tabsById: new Map(),
     serverRequestsById: new Map(),
+    repositories: null,
   };
 }

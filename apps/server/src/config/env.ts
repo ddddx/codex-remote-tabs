@@ -4,6 +4,7 @@ export type ServerConfig = {
   wsToken: string;
   nodeEnv: string;
   maxImageUploadBytes: number;
+  sqliteFile: string;
 };
 
 function parsePort(value: string | undefined, fallback: number): number {
@@ -23,5 +24,6 @@ export function loadConfig(): ServerConfig {
     wsToken: process.env.WS_TOKEN || '',
     nodeEnv: process.env.NODE_ENV || 'development',
     maxImageUploadBytes: parsePositiveInteger(process.env.MAX_IMAGE_UPLOAD_BYTES, 15 * 1024 * 1024),
+    sqliteFile: process.env.SQLITE_FILE || '.codex-remote.sqlite',
   };
 }

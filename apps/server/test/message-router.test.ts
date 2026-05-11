@@ -21,10 +21,68 @@ function createAppStub() {
     startTurn: [] as unknown[],
     resumeThread: [] as unknown[],
     respond: [] as unknown[],
+    upsertSession: [] as unknown[],
+    upsertPendingRequest: [] as unknown[],
+    removePendingRequest: [] as unknown[],
+    upsertThreadPreference: [] as unknown[],
   };
 
   const app = {
     runtimeState,
+    repositories: {
+      sessions: {
+        listSessions() {
+          return [];
+        },
+        getSession() {
+          return null;
+        },
+        upsertSession(record: unknown) {
+          calls.upsertSession.push(record);
+        },
+        removeSession() {},
+      },
+      pendingRequests: {
+        listPendingRequests() {
+          return [];
+        },
+        getPendingRequest() {
+          return null;
+        },
+        upsertPendingRequest(record: unknown) {
+          calls.upsertPendingRequest.push(record);
+        },
+        removePendingRequest(requestId: string) {
+          calls.removePendingRequest.push(requestId);
+        },
+      },
+      threadPreferences: {
+        getThreadPreference() {
+          return null;
+        },
+        upsertThreadPreference(record: unknown) {
+          calls.upsertThreadPreference.push(record);
+        },
+      },
+      uploads: {
+        listUploads() {
+          return [];
+        },
+        upsertUpload() {},
+      },
+      windowBindings: {
+        listWindowBindings() {
+          return [];
+        },
+        upsertWindowBinding() {},
+      },
+      appState: {
+        getAppState() {
+          return null;
+        },
+        setAppState() {},
+      },
+    },
     workspaceManager: {
       resolveWorkspacePath(inputPath?: string) {
         return inputPath || 'C:\\workspace';

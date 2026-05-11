@@ -1,6 +1,15 @@
 import type { ServerConfig } from '../config/env.js';
 import type { RuntimeState } from '../state/runtime-state.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { DatabaseSync } from 'node:sqlite';
+import type {
+  AppStateRepository,
+  PendingRequestRepository,
+  SessionRepository,
+  ThreadPreferenceRepository,
+  UploadRepository,
+  WindowBindingRepository,
+} from '@codex-remote/domain';
 
 type WorkspaceManagerLike = {
   getShortcuts: () => {
@@ -49,6 +58,15 @@ declare module 'fastify' {
   interface FastifyInstance {
     config: ServerConfig;
     runtimeState: RuntimeState;
+    sqlite: DatabaseSync;
+    repositories: {
+      sessions: SessionRepository;
+      pendingRequests: PendingRequestRepository;
+      threadPreferences: ThreadPreferenceRepository;
+      uploads: UploadRepository;
+      windowBindings: WindowBindingRepository;
+      appState: AppStateRepository;
+    };
     verifyRequestToken: (request: FastifyRequest) => boolean;
     requireAuth: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     workspaceManager: WorkspaceManagerLike;
