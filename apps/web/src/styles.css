@@ -179,6 +179,61 @@ body {
   word-break: break-word;
 }
 
+.timeline-entry-meta,
+.timeline-entry-changes,
+.approval-question-list,
+.approval-option-list {
+  display: grid;
+  gap: 8px;
+}
+
+.timeline-entry-meta {
+  color: #607080;
+  font-size: 12px;
+}
+
+.timeline-entry-changes {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.timeline-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #edf3f8;
+  color: #385068;
+  font-size: 12px;
+}
+
+.timeline-entry-pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  overflow: auto;
+  background: #f9fbfd;
+  border: 1px solid rgba(30, 41, 59, 0.08);
+  font: 12px/1.5 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+.timeline-entry.type-reasoning,
+.timeline-entry.type-plan {
+  background: #f7f8ff;
+  border-color: rgba(77, 92, 191, 0.14);
+}
+
+.timeline-entry.type-command,
+.timeline-entry.type-mcp_tool,
+.timeline-entry.type-dynamic_tool {
+  background: #f7fbf7;
+  border-color: rgba(36, 118, 74, 0.14);
+}
+
+.timeline-entry.type-file_change {
+  background: #fff8f2;
+  border-color: rgba(191, 120, 55, 0.18);
+}
+
 .health-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -381,11 +436,33 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .approval-meta {
   color: #7b8794;
   font-size: 12px;
+}
+
+.approval-question-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(210, 156, 60, 0.12);
+}
+
+.approval-option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #36485c;
+  font-size: 13px;
+}
+
+.approval-textarea {
+  min-height: 72px;
 }
 
 .workspace-browser,

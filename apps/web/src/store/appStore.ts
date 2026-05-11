@@ -20,7 +20,13 @@ export type TimelineEntry = {
   id: string;
   type: string;
   role?: string;
+  title?: string;
   text?: string;
+  status?: string;
+  meta?: string[];
+  patch?: string;
+  changes?: Array<{ path?: string; kind?: string }>;
+  details?: unknown;
 };
 
 export type ServerRequestItem = {
@@ -37,10 +43,18 @@ export type ServerRequestItem = {
   tool?: string;
   serverName?: string;
   patch?: string;
-  questions?: Array<{ id?: string; question?: string; header?: string }>;
+  questions?: Array<{
+    id?: string;
+    question?: string;
+    header?: string;
+    isOther?: boolean;
+    isSecret?: boolean;
+    options?: Array<{ label?: string; description?: string }>;
+  }>;
   permissions?: unknown;
   availableDecisions?: Array<string | Record<string, unknown>>;
   createdAt?: number;
+  responseSchema?: unknown;
 };
 
 export type ThreadRunState = {
@@ -113,6 +127,7 @@ type AppStore = {
   setThreadSync: (threadId: string, message: Extract<ServerMessage, { type: 'thread_sync' }>) => void;
   appendTimelineEntry: (threadId: string, entry: TimelineEntry) => void;
   appendAssistantDelta: (threadId: string, itemId: string, delta: string) => void;
+  upsertTimelineEntry: (threadId: string, entry: TimelineEntry) => void;
   setWorkspaceLoading: (selectedPath: string) => void;
   setWorkspaceReady: (shortcuts: WorkspaceShortcutsResponse, listing: WorkspaceListResponse) => void;
   setWorkspaceError: (message: string) => void;
@@ -177,6 +192,165 @@ function normalizeServerRequest(request: any): ServerRequestItem | null {
     permissions: request?.permissions ?? undefined,
     availableDecisions: Array.isArray(request?.availableDecisions) ? request.availableDecisions : undefined,
     createdAt: typeof request?.createdAt === 'number' ? request.createdAt : undefined,
+    responseSchema: request?.responseSchema ?? undefined,
+  };
+}
+
+function compactText(value: unknown, max = 280): string {
+  const text = typeof value === 'string' ? value : '';
+  const normalized = text.trim();
+  if (!normalized) {
+    return '';
+  }
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function createTimelineEntryFromItemEvent(
+  kind: string,
+  threadId: string,
+  item: Record<string, unknown> | undefined,
+  turnId?: string,
+): TimelineEntry | null {
+  if (!item) {
+    return null;
+  }
+
+  const itemType = typeof item.type === 'string' ? item.type : '';
+  const itemId = typeof item.id === 'string'
+    ? item.id
+    : `${threadId}:${turnId || 'turn'}:${kind}:${itemType || 'item'}`;
+  const startedAt = typeof item.startedAt === 'number'
+    ? item.startedAt
+    : typeof item.createdAt === 'number'
+      ? item.createdAt
+      : Date.now();
+
+  if (itemType === 'reasoning') {
+    return {
+      id: itemId,
+      type: 'reasoning',
+      role: 'assistant',
+      title: 'Reasoning',
+      text: compactText(item.text),
+      status: kind === 'item_started' ? 'running' : 'completed',
+      meta: [kind === 'item_started' ? 'streaming' : 'captured', new Date(startedAt).toLocaleTimeString()],
+      details: item,
+    };
+  }
+
+  if (itemType === 'plan') {
+    return {
+      id: itemId,
+      type: 'plan',
+      role: 'assistant',
+      title: 'Plan Draft',
+      text: compactText(item.text) || 'Planning…',
+      status: kind === 'item_started' ? 'running' : 'completed',
+      meta: [new Date(startedAt).toLocaleTimeString()],
+      details: item,
+    };
+  }
+
+  if (itemType === 'commandExecution') {
+    const command = typeof item.command === 'string'
+      ? item.command
+      : typeof item.input === 'string'
+        ? item.input
+        : '';
+    const output = typeof item.output === 'string'
+      ? item.output
+      : typeof item.aggregatedOutput === 'string'
+        ? item.aggregatedOutput
+        : '';
+    return {
+      id: itemId,
+      type: 'command',
+      role: 'system',
+      title: 'Command',
+      text: compactText(command) || 'Command execution',
+      status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
+      meta: [
+        typeof item.cwd === 'string' && item.cwd ? item.cwd : '',
+        output ? `${output.length} chars output` : '',
+      ].filter(Boolean),
+      details: item,
+    };
+  }
+
+  if (itemType === 'fileChange') {
+    return {
+      id: itemId,
+      type: 'file_change',
+      role: 'system',
+      title: 'File Change',
+      text: compactText(typeof item.output === 'string' ? item.output : '') || 'Pending file changes',
+      status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
+      patch: typeof item.patch === 'string' ? item.patch : undefined,
+      changes: Array.isArray(item.changes)
+        ? item.changes.map((change) => ({
+          path: typeof (change as any)?.path === 'string' ? (change as any).path : '',
+          kind: typeof (change as any)?.kind === 'string' ? (change as any).kind : '',
+        }))
+        : undefined,
+      details: item,
+    };
+  }
+
+  if (itemType === 'mcpToolCall') {
+    return {
+      id: itemId,
+      type: 'mcp_tool',
+      role: 'system',
+      title: 'MCP Tool',
+      text: [item.server, item.tool].filter((value) => typeof value === 'string' && value).join('.'),
+      status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
+      meta: Array.isArray(item.progressMessages) ? item.progressMessages.filter((value): value is string => typeof value === 'string') : [],
+      details: item,
+    };
+  }
+
+  if (itemType === 'dynamicToolCall') {
+    return {
+      id: itemId,
+      type: 'dynamic_tool',
+      role: 'system',
+      title: 'Dynamic Tool',
+      text: [item.namespace, item.tool].filter((value) => typeof value === 'string' && value).join('.'),
+      status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
+      details: item,
+    };
+  }
+
+  return {
+    id: itemId,
+    type: itemType || 'item',
+    role: itemType === 'agentMessage' ? 'assistant' : 'system',
+    title: itemType || 'Item',
+    text: compactText(item.text) || compactText(item.output) || compactText(JSON.stringify(item)),
+    status: kind === 'item_started' ? 'running' : 'completed',
+    details: item,
+  };
+}
+
+function buildSystemTimelineEntry(
+  threadId: string,
+  type: string,
+  fields: Partial<TimelineEntry> & { id?: string; text?: string },
+): TimelineEntry {
+  return {
+    id: fields.id || `${threadId}:${type}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    role: fields.role || 'system',
+    title: fields.title,
+    text: fields.text,
+    status: fields.status,
+    meta: fields.meta,
+    patch: fields.patch,
+    changes: fields.changes,
+    details: fields.details,
   };
 }
 
@@ -421,6 +595,26 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     };
   }),
+  upsertTimelineEntry: (threadId, entry) => set((state) => {
+    const entries = [...(state.timeline.entriesBySessionId[threadId] || [])];
+    const index = entries.findIndex((item) => item.id === entry.id);
+    if (index >= 0) {
+      entries[index] = {
+        ...entries[index],
+        ...entry,
+      };
+    } else {
+      entries.push(entry);
+    }
+    return {
+      timeline: {
+        entriesBySessionId: {
+          ...state.timeline.entriesBySessionId,
+          [threadId]: entries,
+        },
+      },
+    };
+  }),
   setWorkspaceLoading: (selectedPath) => set((state) => ({
     workspace: {
       ...state.workspace,
@@ -591,6 +785,63 @@ export function mapServerMessageToStore(message: ServerMessage) {
     return;
   }
 
+  if (message.type === 'plan_delta') {
+    const entryId = message.itemId || `${message.threadId}:${message.turnId || 'turn'}:plan-live`;
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'plan', {
+      id: entryId,
+      role: 'assistant',
+      title: 'Plan Draft',
+      text: `${(useAppStore.getState().timeline.entriesBySessionId[message.threadId] || []).find((entry) => entry.id === entryId)?.text || ''}${message.delta || ''}`,
+      status: 'running',
+      meta: ['streaming'],
+    }));
+    return;
+  }
+
+  if (message.type === 'mcp_tool_progress') {
+    const entryId = message.itemId || `${message.threadId}:${message.turnId || 'turn'}:mcp-progress`;
+    const current = (useAppStore.getState().timeline.entriesBySessionId[message.threadId] || []).find((entry) => entry.id === entryId);
+    const nextMeta = [...(current?.meta || []), message.message || ''].filter(Boolean);
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'mcp_tool_progress', {
+      id: entryId,
+      title: 'MCP Tool',
+      text: current?.text || 'Tool running',
+      status: 'running',
+      meta: nextMeta.slice(-6),
+    }));
+    return;
+  }
+
+  if (message.type === 'hook_started' || message.type === 'hook_completed') {
+    store.appendTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'hook', {
+      id: `hook:${message.threadId}:${message.turnId || 'turn'}:${message.type}:${Date.now()}`,
+      title: 'Hook',
+      text: message.type === 'hook_started' ? 'Hook started' : 'Hook completed',
+      status: message.type === 'hook_started' ? 'running' : 'completed',
+      details: 'run' in message ? message.run : undefined,
+    }));
+    return;
+  }
+
+  if (message.type === 'guardian_review_started' || message.type === 'guardian_review_completed') {
+    store.appendTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'guardian_review', {
+      id: `guardian:${message.threadId}:${message.turnId || 'turn'}:${message.type}:${Date.now()}`,
+      title: 'Guardian Review',
+      text: message.type === 'guardian_review_started' ? 'Guardian review started' : 'Guardian review completed',
+      status: message.type === 'guardian_review_started' ? 'running' : 'completed',
+    }));
+    return;
+  }
+
+  if (message.type === 'item_started') {
+    const item = message.item as Record<string, unknown> | undefined;
+    const entry = createTimelineEntryFromItemEvent('item_started', message.threadId, item, message.turnId);
+    if (entry) {
+      store.upsertTimelineEntry(message.threadId, entry);
+    }
+    return;
+  }
+
   if (message.type === 'item_completed') {
     const item = message.item as Record<string, unknown> | undefined;
     if (item?.type === 'agentMessage') {
@@ -605,6 +856,61 @@ export function mapServerMessageToStore(message: ServerMessage) {
       if (text.trim()) {
         store.appendAssistantDelta(message.threadId, itemId, text.trim());
       }
+      return;
     }
+
+    const entry = createTimelineEntryFromItemEvent('item_completed', message.threadId, item, message.turnId);
+    if (entry) {
+      store.upsertTimelineEntry(message.threadId, entry);
+    }
+    return;
+  }
+
+  if (message.type === 'item_delta') {
+    const entryId = message.itemId || `${message.threadId}:${message.turnId || 'turn'}:${message.method || 'item_delta'}`;
+    const current = (useAppStore.getState().timeline.entriesBySessionId[message.threadId] || []).find((entry) => entry.id === entryId);
+
+    if (message.method === 'item/commandExecution/outputDelta') {
+      store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'command', {
+        id: entryId,
+        title: current?.title || 'Command',
+        text: current?.text || 'Command execution',
+        status: 'running',
+        meta: [...(current?.meta || []), message.delta || ''].filter(Boolean).slice(-8),
+      }));
+      return;
+    }
+
+    if (message.method === 'item/fileChange/outputDelta' || message.method === 'item/fileChange/patchUpdated') {
+      store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'file_change', {
+        id: entryId,
+        title: current?.title || 'File Change',
+        text: current?.text || 'File change in progress',
+        status: 'running',
+        patch: typeof message.patch === 'string' ? message.patch : current?.patch,
+        changes: Array.isArray(message.changes)
+          ? message.changes.map((change: any) => ({
+            path: typeof change?.path === 'string' ? change.path : '',
+            kind: typeof change?.kind === 'string' ? change.kind : '',
+          }))
+          : current?.changes,
+        meta: message.delta ? [...(current?.meta || []), message.delta].slice(-8) : current?.meta,
+      }));
+      return;
+    }
+
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'item_delta', {
+      id: entryId,
+      title: message.method || 'Item update',
+      text: message.delta || current?.text || '',
+      status: 'running',
+      patch: typeof message.patch === 'string' ? message.patch : current?.patch,
+      changes: Array.isArray(message.changes)
+        ? message.changes.map((change: any) => ({
+          path: typeof change?.path === 'string' ? change.path : '',
+          kind: typeof change?.kind === 'string' ? change.kind : '',
+        }))
+        : current?.changes,
+    }));
   }
 }

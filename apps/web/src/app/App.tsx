@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { writeStoredToken, readStoredToken } from '../lib/storage.js';
-import { useAppStore, mapServerMessageToStore, type ServerRequestItem } from '../store/appStore.js';
+import { useAppStore, mapServerMessageToStore, type ServerRequestItem, type TimelineEntry } from '../store/appStore.js';
 import { getHealth } from '../transport/http/health.js';
 import {
   createWorkspaceDirectory,
@@ -110,6 +110,49 @@ function getDecisionLabel(decision: string | Record<string, unknown>): string {
   }
 
   return 'Respond';
+}
+
+function summarizeTimelineEntry(entry: TimelineEntry): string {
+  if (entry.text?.trim()) {
+    return entry.text;
+  }
+  if (entry.patch?.trim()) {
+    return entry.patch;
+  }
+  if (entry.meta?.length) {
+    return entry.meta.join('\n');
+  }
+  return 'No details';
+}
+
+function formatTimelineLabel(entry: TimelineEntry): string {
+  if (entry.title) {
+    return entry.title;
+  }
+  if (entry.role) {
+    return entry.role;
+  }
+  return entry.type;
+}
+
+function buildUserInputResponse(request: ServerRequestItem, formState: Record<string, string>): { answers: Record<string, { answers: string[] }> } {
+  const answers: Record<string, { answers: string[] }> = {};
+
+  for (const question of request.questions || []) {
+    const questionId = question.id || '';
+    if (!questionId) {
+      continue;
+    }
+    const value = (formState[questionId] || '').trim();
+    if (!value) {
+      continue;
+    }
+    answers[questionId] = {
+      answers: [value],
+    };
+  }
+
+  return { answers };
 }
 
 function WorkspaceBrowser(props: {
@@ -317,12 +360,28 @@ function TimelineWorkspace() {
             {entries.map((entry) => (
               <article
                 key={entry.id}
-                className={`timeline-entry${entry.role ? ` ${entry.role}` : ''}`}
+                className={`timeline-entry${entry.role ? ` ${entry.role}` : ''}${entry.type ? ` type-${entry.type}` : ''}`}
               >
                 <div className="timeline-entry-head">
-                  <div className="label">{entry.role || entry.type}</div>
+                  <div className="label">{formatTimelineLabel(entry)}</div>
+                  {entry.status ? <div className={`badge${entry.status === 'running' ? ' warning' : ''}`}>{entry.status}</div> : null}
                 </div>
-                <div className="timeline-entry-text">{entry.text || 'No text'}</div>
+                <div className="timeline-entry-text">{summarizeTimelineEntry(entry)}</div>
+                {entry.meta?.length ? (
+                  <div className="timeline-entry-meta">
+                    {entry.meta.map((line, index) => <span key={`${entry.id}-meta-${index}`}>{line}</span>)}
+                  </div>
+                ) : null}
+                {entry.changes?.length ? (
+                  <div className="timeline-entry-changes">
+                    {entry.changes.map((change, index) => (
+                      <span key={`${entry.id}-change-${index}`} className="timeline-chip">
+                        {[change.kind, change.path].filter(Boolean).join(': ')}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {entry.patch ? <pre className="timeline-entry-pre">{entry.patch}</pre> : null}
               </article>
             ))}
           </div>
@@ -375,6 +434,7 @@ function InspectorPanel({ onRespond }: InspectorPanelProps) {
       : approvals,
     [activeSessionId, approvals],
   );
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
 
   return (
     <aside className="panel inspector-panel">
@@ -418,8 +478,89 @@ function InspectorPanel({ onRespond }: InspectorPanelProps) {
                     <span>{request.threadId || 'global'}</span>
                     <span>{request.requestId}</span>
                   </div>
+                  {request.kind === 'user_input' && request.questions?.length ? (
+                    <div className="approval-question-list">
+                      {request.questions.map((question) => {
+                        const questionId = question.id || '';
+                        const options = Array.isArray(question.options) ? question.options : [];
+                        const currentValue = questionAnswers[`${request.requestId}:${questionId}`] || '';
+                        return (
+                          <div key={`${request.requestId}:${questionId}`} className="approval-question-card">
+                            <strong>{question.header || question.question || questionId}</strong>
+                            {question.question && question.header !== question.question ? <span className="muted">{question.question}</span> : null}
+                            {options.length ? (
+                              <div className="approval-option-list">
+                                {options.map((option) => {
+                                  const label = option.label || '';
+                                  return (
+                                    <label key={`${request.requestId}:${questionId}:${label}`} className="approval-option-row">
+                                      <input
+                                        type="radio"
+                                        name={`${request.requestId}:${questionId}`}
+                                        value={label}
+                                        checked={currentValue === label}
+                                        disabled={request.status === 'submitting'}
+                                        onChange={(event) => setQuestionAnswers((state) => ({
+                                          ...state,
+                                          [`${request.requestId}:${questionId}`]: event.target.value,
+                                        }))}
+                                      />
+                                      <span>{label}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                            {(question.isOther || question.isSecret || !options.length) ? (
+                              question.isSecret ? (
+                                <input
+                                  type="password"
+                                  className="token-input"
+                                  placeholder="填写回答"
+                                  value={currentValue}
+                                  disabled={request.status === 'submitting'}
+                                  onChange={(event) => setQuestionAnswers((state) => ({
+                                    ...state,
+                                    [`${request.requestId}:${questionId}`]: event.target.value,
+                                  }))}
+                                />
+                              ) : (
+                                <textarea
+                                  className="composer-input approval-textarea"
+                                  placeholder="填写回答"
+                                  value={currentValue}
+                                  disabled={request.status === 'submitting'}
+                                  onChange={(event) => setQuestionAnswers((state) => ({
+                                    ...state,
+                                    [`${request.requestId}:${questionId}`]: event.target.value,
+                                  }))}
+                                />
+                              )
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                   <div className="approval-actions">
-                    {(request.availableDecisions?.length
+                    {request.kind === 'user_input' && request.questions?.length ? (
+                      <button
+                        type="button"
+                        className="primary-button small"
+                        disabled={request.status === 'submitting'}
+                        onClick={() => {
+                          const stateForRequest = Object.fromEntries(
+                            Object.entries(questionAnswers)
+                              .filter(([key]) => key.startsWith(`${request.requestId}:`))
+                              .map(([key, value]) => [key.slice(request.requestId.length + 1), value]),
+                          );
+                          onRespond(request, buildUserInputResponse(request, stateForRequest));
+                        }}
+                      >
+                        Submit answers
+                      </button>
+                    ) : null}
+                    {request.kind !== 'user_input' ? (request.availableDecisions?.length
                       ? request.availableDecisions
                       : ['accept', 'decline']).map((decision, index) => {
                         const key = typeof decision === 'string' ? decision : JSON.stringify(decision);
@@ -436,7 +577,7 @@ function InspectorPanel({ onRespond }: InspectorPanelProps) {
                             {getDecisionLabel(decision)}
                           </button>
                         );
-                    })}
+                    }) : null}
                   </div>
                 </article>
               ))}

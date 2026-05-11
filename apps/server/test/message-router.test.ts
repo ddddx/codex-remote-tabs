@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRuntimeState } from '../src/state/runtime-state.js';
 import { routeClientMessage } from '../src/ws/message-router.js';
+import { ensureCodexReady } from '../src/ws/bridge.js';
 
 function createSocket() {
   const sent: unknown[] = [];
@@ -236,4 +237,94 @@ test('server_request_respond replies through codex client', async () => {
     result: { decision: 'accept' },
   });
   assert.equal(app.runtimeState.serverRequestsById.get('req-1')?.status, 'submitting');
+});
+
+test('bridge forwards plan, progress, hook and guardian notifications', async () => {
+  const { app, listeners } = createAppStub();
+  const socket = createSocket();
+  app.runtimeState.clients.add(socket as any);
+
+  await ensureCodexReady(app);
+  const notificationListener = listeners.get('notification')?.[0];
+  assert.ok(notificationListener);
+
+  notificationListener?.({
+    method: 'item/plan/delta',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'plan-1',
+      delta: 'Step 1',
+    },
+  });
+  notificationListener?.({
+    method: 'item/mcpToolCall/progress',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'mcp-1',
+      message: 'Searching',
+    },
+  });
+  notificationListener?.({
+    method: 'hook/started',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      run: { id: 'hook-1', eventName: 'pre-command' },
+    },
+  });
+  notificationListener?.({
+    method: 'item/autoApprovalReview/completed',
+    params: {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    },
+  });
+
+  const messages = socket.sent as Array<any>;
+  assert.equal(messages[0]?.type, 'plan_delta');
+  assert.equal(messages[1]?.type, 'mcp_tool_progress');
+  assert.equal(messages[2]?.type, 'hook_started');
+  assert.equal(messages[3]?.type, 'guardian_review_completed');
+});
+
+test('file change patch updates refresh pending request snapshot', async () => {
+  const { app, listeners } = createAppStub();
+  const socket = createSocket();
+  app.runtimeState.clients.add(socket as any);
+  app.runtimeState.serverRequestsById.set('req-2', {
+    requestId: 'req-2',
+    rawRequestId: 'raw-2',
+    method: 'item/fileChange/requestApproval',
+    kind: 'file_change_approval',
+    status: 'pending',
+    createdAt: Date.now(),
+    threadId: 'thread-2',
+    patch: '',
+    changes: [],
+  } as any);
+
+  await ensureCodexReady(app);
+  const notificationListener = listeners.get('notification')?.[0];
+  assert.ok(notificationListener);
+
+  notificationListener?.({
+    method: 'item/fileChange/patchUpdated',
+    params: {
+      threadId: 'thread-2',
+      turnId: 'turn-2',
+      itemId: 'item-2',
+      requestId: 'req-2',
+      patch: '*** Begin Patch\n*** End Patch',
+      changes: [{ path: 'apps/web/src/app/App.tsx', kind: 'update' }],
+    },
+  });
+
+  const updatedRequest = app.runtimeState.serverRequestsById.get('req-2');
+  assert.equal(updatedRequest?.patch, '*** Begin Patch\n*** End Patch');
+  assert.deepEqual(updatedRequest?.changes, [{ path: 'apps/web/src/app/App.tsx', kind: 'update' }]);
+  const messages = socket.sent as Array<any>;
+  assert.equal(messages[0]?.type, 'server_request_updated');
+  assert.equal(messages[1]?.type, 'item_delta');
 });

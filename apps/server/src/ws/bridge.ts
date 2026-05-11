@@ -238,6 +238,31 @@ function listServerRequests(app: FastifyInstance): unknown[] {
   return Array.from(app.runtimeState.serverRequestsById.values()).sort((left, right) => left.createdAt - right.createdAt);
 }
 
+function persistServerRequest(app: FastifyInstance, request: {
+  requestId: string;
+  threadId?: string | null;
+  turnId?: string | null;
+  itemId?: string | null;
+  kind: string;
+  method: string;
+  status: 'pending' | 'submitting';
+  createdAt: number;
+  submittedAt?: number | null;
+}): void {
+  app.repositories.pendingRequests.upsertPendingRequest(createPendingRequestRecord({
+    requestId: request.requestId,
+    threadId: request.threadId ?? null,
+    turnId: request.turnId ?? null,
+    itemId: request.itemId ?? null,
+    kind: request.kind,
+    method: request.method,
+    status: request.status,
+    payloadJson: JSON.stringify(request),
+    createdAt: request.createdAt,
+    submittedAt: request.submittedAt ?? null,
+  }));
+}
+
 function handleNotification(app: FastifyInstance, msg: { method?: string; params?: Record<string, unknown> }): void {
   const method = msg.method || '';
   const params = msg.params || {};
@@ -338,6 +363,68 @@ function handleNotification(app: FastifyInstance, msg: { method?: string; params
     return;
   }
 
+  if (method === 'item/plan/delta' && typeof params.threadId === 'string') {
+    broadcastMessage(app, {
+      type: 'plan_delta',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+      itemId: typeof params.itemId === 'string' ? params.itemId : undefined,
+      delta: typeof params.delta === 'string' ? params.delta : '',
+      startedAt: typeof params.startedAt === 'number' ? params.startedAt : Date.now(),
+    });
+    return;
+  }
+
+  if (method === 'item/mcpToolCall/progress' && typeof params.threadId === 'string') {
+    broadcastMessage(app, {
+      type: 'mcp_tool_progress',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+      itemId: typeof params.itemId === 'string' ? params.itemId : undefined,
+      message: typeof params.message === 'string' ? params.message : '',
+      startedAt: typeof params.startedAt === 'number' ? params.startedAt : Date.now(),
+    });
+    return;
+  }
+
+  if (method === 'hook/started' && typeof params.threadId === 'string') {
+    broadcastMessage(app, {
+      type: 'hook_started',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+      run: params.run,
+    });
+    return;
+  }
+
+  if (method === 'hook/completed' && typeof params.threadId === 'string') {
+    broadcastMessage(app, {
+      type: 'hook_completed',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+      run: params.run,
+    });
+    return;
+  }
+
+  if (method === 'item/autoApprovalReview/started' && typeof params.threadId === 'string') {
+    broadcastMessage(app, {
+      type: 'guardian_review_started',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+    });
+    return;
+  }
+
+  if (method === 'item/autoApprovalReview/completed' && typeof params.threadId === 'string') {
+    broadcastMessage(app, {
+      type: 'guardian_review_completed',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+    });
+    return;
+  }
+
   if (method === 'item/started' && typeof params.threadId === 'string') {
     broadcastMessage(app, {
       type: 'item_started',
@@ -355,6 +442,42 @@ function handleNotification(app: FastifyInstance, msg: { method?: string; params
       threadId: params.threadId,
       turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
       item: params.item,
+    });
+    return;
+  }
+
+  if (method === 'item/fileChange/patchUpdated') {
+    const requestId = typeof params.requestId === 'string' || typeof params.requestId === 'number'
+      ? String(params.requestId)
+      : '';
+    const existing = requestId ? app.runtimeState.serverRequestsById.get(requestId) : null;
+    if (existing && existing.kind === 'file_change_approval') {
+      existing.patch = typeof params.patch === 'string' ? params.patch : existing.patch;
+      existing.changes = Array.isArray(params.changes) ? params.changes : existing.changes;
+      persistServerRequest(app, existing);
+      broadcastMessage(app, {
+        type: 'server_request_updated',
+        request: existing,
+      });
+    }
+  }
+
+  if (method.startsWith('item/') && typeof params.threadId === 'string') {
+    broadcastMessage(app, {
+      type: 'item_delta',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+      itemId: typeof params.itemId === 'string'
+        ? params.itemId
+        : typeof params.callId === 'string'
+          ? params.callId
+          : undefined,
+      method,
+      delta: typeof params.delta === 'string' ? params.delta : undefined,
+      patch: typeof params.patch === 'string' ? params.patch : undefined,
+      changes: Array.isArray(params.changes) ? params.changes : undefined,
+      part: params.part,
+      startedAt: typeof params.startedAt === 'number' ? params.startedAt : Date.now(),
     });
     return;
   }
@@ -395,18 +518,7 @@ export async function ensureCodexReady(app: FastifyInstance): Promise<void> {
   app.codexClient.on('server_request', (msg: { id: string | number; method: string; params?: Record<string, unknown> }) => {
     const request = createServerRequestRecord(msg);
     app.runtimeState.serverRequestsById.set(request.requestId, request);
-    app.repositories.pendingRequests.upsertPendingRequest(createPendingRequestRecord({
-      requestId: request.requestId,
-      threadId: request.threadId ?? null,
-      turnId: request.turnId ?? null,
-      itemId: request.itemId ?? null,
-      kind: request.kind,
-      method: request.method,
-      status: request.status,
-      payloadJson: JSON.stringify(request),
-      createdAt: request.createdAt,
-      submittedAt: request.submittedAt ?? null,
-    }));
+    persistServerRequest(app, request);
     broadcastMessage(app, {
       type: 'server_request_required',
       request,
@@ -466,18 +578,7 @@ export function setServerRequestSubmitting(app: FastifyInstance, requestId: stri
   }
   existing.status = 'submitting';
   existing.submittedAt = Date.now();
-  app.repositories.pendingRequests.upsertPendingRequest(createPendingRequestRecord({
-    requestId: existing.requestId,
-    threadId: existing.threadId ?? null,
-    turnId: existing.turnId ?? null,
-    itemId: existing.itemId ?? null,
-    kind: existing.kind,
-    method: existing.method,
-    status: existing.status,
-    payloadJson: JSON.stringify(existing),
-    createdAt: existing.createdAt,
-    submittedAt: existing.submittedAt ?? null,
-  }));
+  persistServerRequest(app, existing);
   broadcastMessage(app, {
     type: 'server_request_updated',
     request: existing,
@@ -491,18 +592,7 @@ export function resetServerRequestPending(app: FastifyInstance, requestId: strin
   }
   existing.status = 'pending';
   existing.submittedAt = null;
-  app.repositories.pendingRequests.upsertPendingRequest(createPendingRequestRecord({
-    requestId: existing.requestId,
-    threadId: existing.threadId ?? null,
-    turnId: existing.turnId ?? null,
-    itemId: existing.itemId ?? null,
-    kind: existing.kind,
-    method: existing.method,
-    status: existing.status,
-    payloadJson: JSON.stringify(existing),
-    createdAt: existing.createdAt,
-    submittedAt: existing.submittedAt ?? null,
-  }));
+  persistServerRequest(app, existing);
   broadcastMessage(app, {
     type: 'server_request_updated',
     request: existing,
