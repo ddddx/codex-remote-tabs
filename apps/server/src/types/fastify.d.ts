@@ -21,6 +21,7 @@ type WorkspaceManagerLike = {
 
 type CodexClientLike = {
   start: () => Promise<void>;
+  listThreads: (limit?: number) => Promise<Array<Record<string, unknown>>>;
   listModels: (options?: { includeHidden?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>;
   readConfig: (options?: { cwd?: string }) => Promise<{ config?: Record<string, unknown> }>;
 };

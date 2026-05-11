@@ -89,8 +89,44 @@ body {
   padding: 18px 20px 20px;
 }
 
+.session-list,
+.timeline-list {
+  display: grid;
+  gap: 12px;
+}
+
+.session-item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(30, 41, 59, 0.08);
+  background: #f7fafc;
+  border-radius: 14px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.session-item.active {
+  border-color: rgba(28, 120, 133, 0.35);
+  background: #eef8fa;
+}
+
+.session-item span {
+  color: #5b6572;
+  font-size: 13px;
+}
+
 .timeline-workspace .panel-body {
   flex: 1;
+}
+
+.timeline-entry,
+.inspector-card {
+  padding: 14px;
+  border-radius: 16px;
+  background: #f4f7fa;
+  border: 1px solid rgba(30, 41, 59, 0.06);
 }
 
 .health-grid {
@@ -136,6 +172,15 @@ body {
   padding: 14px;
   font: inherit;
   background: #fbfdff;
+}
+
+.token-input {
+  width: 100%;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(30, 41, 59, 0.12);
+  padding: 12px 14px;
+  font: inherit;
 }
 
 @media (max-width: 1100px) {

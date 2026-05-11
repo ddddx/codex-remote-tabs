@@ -8,6 +8,9 @@
     ],
     "jsx": "react-jsx"
   },
+  "references": [
+    { "path": "../../packages/protocol" }
+  ],
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx"

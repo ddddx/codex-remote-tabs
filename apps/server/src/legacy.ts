@@ -27,6 +27,7 @@ const { WorkspaceManager } = require('../../../src/workspaceManager.js') as {
 const { CodexAppServerClient } = require('../../../src/codexAppServerClient.js') as {
   CodexAppServerClient: new (options?: Record<string, unknown>) => {
     start: () => Promise<void>;
+    listThreads: (limit?: number) => Promise<Array<Record<string, unknown>>>;
     listModels: (options?: { includeHidden?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>;
     readConfig: (options?: { cwd?: string }) => Promise<{ config?: Record<string, unknown> }>;
   };

@@ -17,6 +17,18 @@ function normalizeIncomingMessage(raw: string): ClientMessage {
   return JSON.parse(raw) as ClientMessage;
 }
 
+function normalizeTab(tab: Record<string, unknown>) {
+  return {
+    threadId: String(tab.id || tab.threadId || ''),
+    name: typeof tab.name === 'string' ? tab.name : '',
+    cwd: typeof tab.cwd === 'string' ? tab.cwd : '',
+    status: typeof tab.status === 'string' ? tab.status : '',
+    updatedAt: typeof tab.updatedAt === 'number' ? tab.updatedAt : 0,
+    createdAt: typeof tab.createdAt === 'number' ? tab.createdAt : 0,
+    windowStatus: 'detached',
+  };
+}
+
 export async function registerWsGateway(app: FastifyInstance): Promise<void> {
   app.get('/ws', { websocket: true }, (socket, request) => {
     const token = typeof (request.query as Record<string, unknown> | undefined)?.token === 'string'
@@ -35,12 +47,23 @@ export async function registerWsGateway(app: FastifyInstance): Promise<void> {
 
     app.runtimeState.websocketClientCount += 1;
 
-    sendMessage(socket, {
-      type: 'state',
-      tabs: [],
-      serverRequests: [],
-      globalSupplementalItems: [],
-    });
+    void (async () => {
+      try {
+        await app.codexClient.start();
+        const threads = await app.codexClient.listThreads(100);
+        sendMessage(socket, {
+          type: 'state',
+          tabs: Array.isArray(threads) ? threads.map((thread) => normalizeTab(thread)) : [],
+          serverRequests: [],
+          globalSupplementalItems: [],
+        });
+      } catch (error) {
+        sendMessage(socket, {
+          type: 'backend_error',
+          message: error instanceof Error ? error.message : 'Failed to bootstrap WebSocket state',
+        });
+      }
+    })();
 
     socket.on('message', async (raw: Buffer) => {
       try {
