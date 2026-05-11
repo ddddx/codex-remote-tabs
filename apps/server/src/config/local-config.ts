@@ -1,19 +1,19 @@
-const fs = require('node:fs');
-const crypto = require('node:crypto');
-const path = require('node:path');
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
-const CONFIG_FILE_NAME = 'config.local.json';
-const DEFAULT_CONFIG = Object.freeze({
+export const CONFIG_FILE_NAME = 'config.local.json';
+
+export const DEFAULT_CONFIG = Object.freeze({
   PORT: 18637,
   CODEX_CMD: 'codex.cmd',
-  CODEX_APP_SERVER_WS: 'ws://127.0.0.1:4792',
 });
 
-function resolveConfigPath() {
+function resolveConfigPath(): string {
   return process.env.LOCAL_CONFIG_PATH || path.join(process.cwd(), CONFIG_FILE_NAME);
 }
 
-function generateWsToken() {
+function generateWsToken(): string {
   return crypto.randomBytes(24).toString('hex');
 }
 
@@ -24,7 +24,10 @@ function createDefaultConfig() {
   };
 }
 
-function ensureLocalConfig() {
+export function ensureLocalConfig(): {
+  configPath: string;
+  config: Record<string, unknown>;
+} | null {
   const configPath = resolveConfigPath();
   if (fs.existsSync(configPath)) {
     return null;
@@ -35,7 +38,7 @@ function ensureLocalConfig() {
   return { configPath, config };
 }
 
-function readLocalConfig() {
+export function readLocalConfig(): Record<string, unknown> {
   const configPath = resolveConfigPath();
   if (!fs.existsSync(configPath)) {
     return {};
@@ -46,21 +49,27 @@ function readLocalConfig() {
     return {};
   }
 
-  let parsed;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`failed to parse ${configPath}: ${error.message}`);
+    throw new Error(`failed to parse ${configPath}: ${(error as Error).message}`);
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`invalid config file ${configPath}: root value must be an object`);
   }
 
-  return parsed;
+  return parsed as Record<string, unknown>;
 }
 
-function applyLocalConfig() {
+export function applyLocalConfig(): {
+  config: Record<string, unknown>;
+  created: {
+    configPath: string;
+    config: Record<string, unknown>;
+  } | null;
+} {
   const created = ensureLocalConfig();
   const config = readLocalConfig();
 
@@ -73,13 +82,3 @@ function applyLocalConfig() {
 
   return { config, created };
 }
-
-module.exports = {
-  DEFAULT_CONFIG,
-  CONFIG_FILE_NAME,
-  applyLocalConfig,
-  ensureLocalConfig,
-  generateWsToken,
-  readLocalConfig,
-  resolveConfigPath,
-};

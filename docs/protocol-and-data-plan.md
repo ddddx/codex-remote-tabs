@@ -20,23 +20,35 @@
 
 - `turn_send`
 - `tab_close`
-- `tab_refresh`
-- `approval_response`
-- `request_user_input_response`
-- `session_pref_update`
+- `thread_sync`
+- `server_request_respond`
 
 ### 2.3 WebSocket 出站
 
-- thread/session snapshot
-- message delta
-- tool output
-- plan update
-- diff update
-- token usage
-- approval request
-- request user input
-- auth failure
-- connection error
+- `state`
+- `tab_created`
+- `tab_updated`
+- `thread_sync`
+- `turn_started`
+- `turn_completed`
+- `turn_plan_updated`
+- `turn_diff_updated`
+- `plan_delta`
+- `agent_delta`
+- `item_started`
+- `item_completed`
+- `item_delta`
+- `mcp_tool_progress`
+- `token_usage`
+- `server_request_required`
+- `server_request_updated`
+- `server_request_resolved`
+- `server_request_reset`
+- `warning`
+- `error`
+- `backend_error`
+- `codex_error`
+- `notification`
 
 ## 3. Schema 规则
 
@@ -64,7 +76,7 @@ type ApiError = {
 
 ### 4.1 现状
 
-当前主状态散落在：
+旧状态曾散落在：
 
 - 内存 `Map`
 - `.window-map.json`
@@ -73,10 +85,9 @@ type ApiError = {
 
 ### 4.2 目标
 
-目标主状态进入 SQLite：
+当前主状态进入 SQLite：
 
 - session 元信息
-- window binding
 - user preference
 - pending request
 - upload metadata
@@ -86,26 +97,25 @@ type ApiError = {
 
 ### 5.1 一次导入
 
-首次启动新后端时：
+显式执行迁移脚本时：
 
-- 检查 SQLite 是否为空
-- 如为空，读取 legacy JSON
+- 读取 legacy JSON
 - 执行导入
 - 保留原文件备份
 
 ### 5.2 并行验证
 
-迁移期：
+迁移完成前：
 
 - SQLite 为主读写
-- 遇到缺失数据允许读取 legacy 文件
+- legacy 文件仅作为导入来源
 
 ### 5.3 收口
 
 确认稳定后：
 
-- 去除 legacy fallback
-- JSON 不再参与主逻辑
+- 迁移脚本保留
+- JSON 不再参与运行时主逻辑
 
 ## 6. 协议开发顺序
 

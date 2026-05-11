@@ -115,6 +115,19 @@ test('GET /health returns runtime status', async () => {
   await app.close();
 });
 
+test('GET / serves rebuilt web shell', async () => {
+  const app = await buildTestApp();
+  const response = await app.inject({
+    method: 'GET',
+    url: '/',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.body, /<div id="root"><\/div>/);
+  assert.match(response.body, /assets\/index-/);
+  await app.close();
+});
+
 test('workspace shortcuts require auth token', async () => {
   const app = await buildTestApp();
 

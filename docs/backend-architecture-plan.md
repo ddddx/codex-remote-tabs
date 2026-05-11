@@ -82,16 +82,7 @@ apps/server/src/
 - 新建目录
 - 维护最近工作区
 
-### 3.6 WindowService
-
-职责：
-
-- 打开本地窗口
-- 关闭本地窗口
-- 恢复 thread 到窗口绑定
-- 扫描 resume 窗口
-
-### 3.7 UploadService
+### 3.6 UploadService
 
 职责：
 
@@ -105,25 +96,21 @@ apps/server/src/
 
 - sessions 表读写
 
-### 4.2 WindowBindingRepository
-
-- thread <-> pid/window 绑定
-
-### 4.3 PreferenceRepository
+### 4.2 PreferenceRepository
 
 - 会话偏好
 - 全局偏好
 
-### 4.4 PendingRequestRepository
+### 4.3 PendingRequestRepository
 
 - 审批请求
 - user input 请求
 
-### 4.5 UploadRepository
+### 4.4 UploadRepository
 
 - 上传记录
 
-### 4.6 AppStateRepository
+### 4.5 AppStateRepository
 
 - 最近工作区
 - UI 级辅助状态
@@ -190,16 +177,7 @@ apps/server/src/
 - read config
 - approve / decline request
 
-### 7.2 WindowsGateway
-
-封装：
-
-- open window
-- close window
-- find resume windows
-- pid alive check
-
-### 7.3 SqliteStore
+### 7.2 SqliteStore
 
 封装：
 
@@ -207,7 +185,7 @@ apps/server/src/
 - queries
 - transactions
 
-### 7.4 UploadStorage
+### 7.3 UploadStorage
 
 封装：
 

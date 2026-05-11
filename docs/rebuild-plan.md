@@ -1,5 +1,7 @@
 # Codex Remote 重构开发计划
 
+> 状态：历史重构计划。最终实现已采用 `Node test runner + Playwright`，并且运行时已移除旧兼容层。
+
 ## 1. 目标
 
 本计划用于指导 `codex-remote-tabs` 从当前单仓原生前端 + Node 单体实现，重构为长期可维护的分层单体架构。
@@ -12,7 +14,7 @@
 - 领域层：独立的 `domain` 包
 - 适配层：`Codex / Windows / SQLite / file storage`
 - 持久化：`SQLite`
-- 测试：`Vitest + Playwright`
+- 测试：`Node test runner + Playwright`
 
 本计划基于以下前提：
 
@@ -50,7 +52,7 @@
   - 图片上传
   - 工作区浏览与创建目录
   - 断线重连
-  - 本地窗口映射与恢复
+  - 会话关闭、线程恢复与断线重连
 - 前端允许重新设计布局与交互层级，以更适合长期演进的方式组织会话、时间线、审批和设置。
 
 ## 3. 目标目录结构

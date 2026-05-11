@@ -1,5 +1,7 @@
 # 协议映射表
 
+> 状态：历史映射参考。旧位置列用于追踪重构来源，不代表当前仓库仍保留这些文件。
+
 ## 1. 使用方式
 
 本表用于将旧协议逐条映射到新 `packages/protocol`。
@@ -27,7 +29,7 @@
 | 消息 type | 旧位置 | 新文件 | 优先级 | 备注 |
 |---|---|---|---|---|
 | `tab_create` | `src/server.js:855` | `packages/protocol/src/ws/client.ts` | 高 | 新建会话 |
-| `tab_close` | `src/server.js:864` | `packages/protocol/src/ws/client.ts` | 高 | 关闭窗口 |
+| `tab_close` | `src/server.js:864` | `packages/protocol/src/ws/client.ts` | 高 | 关闭会话标签 |
 | `turn_send` | `src/server.js:869` | `packages/protocol/src/ws/client.ts` | 高 | 发消息 |
 | `thread_sync` | `src/server.js:881` | `packages/protocol/src/ws/client.ts` | 高 | 拉线程同步 |
 | `server_request_respond` | `src/server.js:886` | `packages/protocol/src/ws/client.ts` | 高 | 审批响应 |

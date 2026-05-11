@@ -1,14 +1,20 @@
 import Fastify from 'fastify';
+import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import path from 'node:path';
-import { createSqliteDatabase, createSqliteRepositories, importLegacyState } from '@codex-remote/adapters';
+import { fileURLToPath } from 'node:url';
+import { createSqliteDatabase, createSqliteRepositories } from '@codex-remote/adapters';
 import type { ServerConfig } from './config/env.js';
 import { createAppServices } from './application/services/index.js';
-import { createLegacyCodexClient, createLegacyWorkspaceManager } from './legacy.js';
+import { CodexAppServerClient } from './platform/codex-client.js';
+import { WorkspaceManager } from './platform/workspace-manager.js';
 import { buildRequireAuth, buildTokenVerifier } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
 import { createRuntimeState } from './state/runtime-state.js';
 import { registerWsGateway } from './ws/gateway.js';
+
+const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const webDistRoot = path.resolve(serverRoot, '../web/dist');
 
 export async function createApp(config: ServerConfig) {
   const app = Fastify({
@@ -17,19 +23,28 @@ export async function createApp(config: ServerConfig) {
   const sqlite = createSqliteDatabase({
     filePath: path.resolve(process.cwd(), config.sqliteFile),
   });
-  importLegacyState(sqlite);
   const repositories = createSqliteRepositories(sqlite);
 
   app.decorate('config', config);
   app.decorate('runtimeState', createRuntimeState());
   app.decorate('sqlite', sqlite);
   app.decorate('repositories', repositories);
-  app.decorate('workspaceManager', createLegacyWorkspaceManager());
-  app.decorate('codexClient', createLegacyCodexClient());
+  app.decorate('workspaceManager', new WorkspaceManager({
+    app,
+    projectRoot: process.cwd(),
+  }));
+  app.decorate('codexClient', new CodexAppServerClient({
+    cwd: process.cwd(),
+  }));
   app.decorate('services', createAppServices(app));
   app.runtimeState.repositories = repositories as any;
 
   await app.register(websocket);
+  await app.register(fastifyStatic, {
+    root: webDistRoot,
+    prefix: '/',
+    wildcard: false,
+  });
 
   const verifyRequestToken = buildTokenVerifier(config.wsToken);
   const requireAuth = buildRequireAuth(verifyRequestToken);

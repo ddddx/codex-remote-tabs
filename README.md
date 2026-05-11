@@ -4,12 +4,11 @@
 
 - `apps/server`: Fastify + WebSocket server
 - `apps/web`: React + Vite 控制台
-- `apps/remote`: 兼容现有启动封装
 - `packages/protocol`: shared HTTP / WS types 与 schemas
 - `packages/domain`: domain entities / factories / repositories
 - `packages/adapters`: SQLite 与 legacy import adapters
 
-旧 `public/` 和旧 `src/` 仍保留为兼容参考，但不再是新开发主链路。
+运行时已经完全切到新 `server + web` 链路，不再依赖旧兼容层。
 
 ## 能力
 
@@ -36,27 +35,22 @@ npm install
 
 ## 启动
 
-新 web:
+开发模式:
 
 ```bash
 npm run dev:web
-```
-
-新 server:
-
-```bash
 npm run dev:server
 ```
 
-兼容启动封装:
+生产模式:
 
 ```bash
-npm run remote:restart
+npm start
 ```
 
 默认地址:
 
-- web: `http://127.0.0.1:5173`
+- dev web: `http://127.0.0.1:5173`
 - server: `http://127.0.0.1:18637`
 
 ## 关键命令
@@ -107,15 +101,19 @@ server 读取这些变量:
 - `NODE_ENV`
 - `MAX_IMAGE_UPLOAD_BYTES`
 - `SQLITE_FILE`
+- `CODEX_CMD`
+- `CODEX_HOME`
+- `CODEX_CONNECT_TIMEOUT`
+- `CODEX_REQUEST_TIMEOUT`
+- `LOCAL_CONFIG_PATH`
 
-legacy Codex 桥接仍会读取 `config.local.json`。
+`config.local.json` 仅作为新 server 的本地环境文件来源。
 
 ## 项目结构
 
 ```text
 cc-workspace/
 ├── apps/
-│   ├── remote/
 │   ├── server/
 │   └── web/
 ├── packages/
@@ -128,8 +126,6 @@ cc-workspace/
 ├── tests/
 │   ├── e2e/
 │   └── integration/
-├── public/        # legacy frontend reference
-└── src/           # legacy backend reference
 ```
 
 ## 迁移与切换
@@ -156,5 +152,3 @@ cc-workspace/
 - package tests 通过
 - integration tests 通过
 - Playwright E2E 通过
-
-剩余 legacy 目录主要作为兼容桥与行为参考，不承载新架构开发。

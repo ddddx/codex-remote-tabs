@@ -1,10 +1,53 @@
-const { EventEmitter } = require('node:events');
-const { spawn } = require('node:child_process');
-const fs = require('node:fs');
-const WebSocket = require('ws');
+import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import WebSocket from 'ws';
 
-class CodexAppServerClient extends EventEmitter {
-  constructor(options = {}) {
+type StartThreadOptions = {
+  name?: string | null;
+  cwd?: string | null;
+  model?: string | null;
+  approvalPolicy?: string | null;
+  sandbox?: string | null;
+};
+
+type StartTurnOptions = {
+  attachments?: Array<{ path: string; name?: string }>;
+  model?: string | null;
+  effort?: string | null;
+  approvalPolicy?: string | null;
+  sandboxPolicy?: { mode: string } | null;
+};
+
+type CodexClientOptions = {
+  codexCmd?: string;
+  codexHome?: string | null;
+  cwd?: string;
+  wsUrl?: string | null;
+  requestTimeoutMs?: number;
+  connectTimeoutMs?: number;
+};
+
+export class CodexAppServerClient extends EventEmitter {
+  readonly codexCmd: string;
+  readonly codexHome: string | null;
+  readonly defaultCwd: string;
+  readonly wsUrl: string | null;
+  readonly requestTimeoutMs: number;
+  readonly connectTimeoutMs: number;
+  proc: ReturnType<typeof spawn> | null;
+  ws: WebSocket | null;
+  nextId: number;
+  pending: Map<string, {
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+    method: string;
+  }>;
+  buffer: string;
+  started: boolean;
+
+  constructor(options: CodexClientOptions = {}) {
     super();
     this.codexCmd = options.codexCmd || process.env.CODEX_CMD || 'codex.cmd';
     this.codexHome = options.codexHome || process.env.CODEX_HOME || null;
@@ -16,7 +59,6 @@ class CodexAppServerClient extends EventEmitter {
     this.connectTimeoutMs = parsePositiveInteger(options.connectTimeoutMs)
       || parsePositiveInteger(process.env.CODEX_CONNECT_TIMEOUT)
       || 10000;
-
     this.proc = null;
     this.ws = null;
     this.nextId = 1;
@@ -35,12 +77,12 @@ class CodexAppServerClient extends EventEmitter {
     }
 
     if (this.wsUrl) {
-      await this.#startWebSocket();
+      await this.startWebSocket();
     } else {
-      await this.#startStdio();
+      await this.startStdio();
     }
 
-    await this.#initialize();
+    await this.initialize();
     this.started = true;
   }
 
@@ -58,7 +100,7 @@ class CodexAppServerClient extends EventEmitter {
     this.started = false;
   }
 
-  async request(method, params = {}) {
+  async request(method: string, params: Record<string, unknown> = {}) {
     if (!this.proc && !this.ws) {
       throw new Error('codex app-server is not running');
     }
@@ -66,7 +108,7 @@ class CodexAppServerClient extends EventEmitter {
     const id = String(this.nextId++);
     const payload = { id, method, params };
 
-    const promise = new Promise((resolve, reject) => {
+    const promise = new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`request timeout for ${method}`));
@@ -75,37 +117,37 @@ class CodexAppServerClient extends EventEmitter {
       this.pending.set(id, { resolve, reject, timeout, method });
     });
 
-    this.#send(payload);
+    this.send(payload);
     return promise;
   }
 
-  respond(id, result = {}) {
+  respond(id: string | number, result: unknown = {}) {
     if (!this.proc && !this.ws) {
       throw new Error('codex app-server is not running');
     }
-    this.#send({ id, result });
+    this.send({ id, result });
   }
 
-  respondError(id, error) {
+  respondError(id: string | number, error: unknown) {
     if (!this.proc && !this.ws) {
       throw new Error('codex app-server is not running');
     }
-    this.#send({ id, error });
+    this.send({ id, error });
   }
 
-  notify(method, params = {}) {
+  notify(method: string, params: Record<string, unknown> = {}) {
     if (!this.proc && !this.ws) {
       throw new Error('codex app-server is not running');
     }
-    this.#send({ method, params });
+    this.send({ method, params });
   }
 
   async listThreads(limit = 100) {
-    const result = await this.request('thread/list', { limit, archived: false });
+    const result = await this.request('thread/list', { limit, archived: false }) as { data?: Array<Record<string, unknown>> };
     return result.data || [];
   }
 
-  async startThread({ name, cwd, model, approvalPolicy, sandbox } = {}) {
+  async startThread({ name, cwd, model, approvalPolicy, sandbox }: StartThreadOptions = {}) {
     const workingCwd = cwd || this.defaultCwd;
     const result = await this.request('thread/start', {
       model: model || null,
@@ -114,7 +156,7 @@ class CodexAppServerClient extends EventEmitter {
       cwd: workingCwd,
       experimentalRawEvents: false,
       persistExtendedHistory: true,
-    });
+    }) as { thread: Record<string, unknown> };
 
     const thread = result.thread;
     thread.cwd = thread.cwd || workingCwd;
@@ -125,25 +167,16 @@ class CodexAppServerClient extends EventEmitter {
     return thread;
   }
 
-  async archiveThread(threadId) {
-    await this.request('thread/archive', { threadId });
-  }
-
-  async readThread(threadId) {
-    const result = await this.request('thread/read', { threadId, includeTurns: true });
-    return result.thread;
-  }
-
-  async resumeThread(threadId, options = {}) {
+  async resumeThread(threadId: string, options: { excludeTurns?: boolean } = {}) {
     const result = await this.request('thread/resume', {
       threadId,
       excludeTurns: options.excludeTurns === true,
-    });
+    }) as { thread: Record<string, unknown> };
     return result.thread;
   }
 
-  async startTurn(threadId, text, options = {}) {
-    const input = [];
+  async startTurn(threadId: string, text: string, options: StartTurnOptions = {}) {
+    const input: Array<Record<string, unknown>> = [];
     if (typeof text === 'string' && text.trim()) {
       input.push({
         type: 'text',
@@ -171,20 +204,20 @@ class CodexAppServerClient extends EventEmitter {
       approvalPolicy: options.approvalPolicy || null,
       sandboxPolicy: options.sandboxPolicy || null,
       input,
-    });
+    }) as { turn: Record<string, unknown> };
     return result.turn;
   }
 
   async listModels({ includeHidden = false, limit = 200 } = {}) {
-    const data = [];
-    let cursor = null;
+    const data: Array<Record<string, unknown>> = [];
+    let cursor: string | null = null;
 
     do {
       const result = await this.request('model/list', {
         includeHidden,
         limit,
         cursor,
-      });
+      }) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null };
       const page = Array.isArray(result.data) ? result.data : [];
       data.push(...page);
       cursor = result.nextCursor || null;
@@ -193,15 +226,14 @@ class CodexAppServerClient extends EventEmitter {
     return data;
   }
 
-  async readConfig({ cwd } = {}) {
-    const result = await this.request('config/read', {
+  async readConfig({ cwd }: { cwd?: string } = {}) {
+    return this.request('config/read', {
       includeLayers: false,
       cwd: cwd || null,
-    });
-    return result;
+    }) as Promise<{ config?: Record<string, unknown> }>;
   }
 
-  async #startStdio() {
+  private async startStdio() {
     const env = { ...process.env };
     if (this.codexHome) {
       env.CODEX_HOME = this.codexHome;
@@ -215,18 +247,18 @@ class CodexAppServerClient extends EventEmitter {
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
-      }
+      },
     );
 
-    this.proc.stdout.setEncoding('utf8');
-    this.proc.stdout.on('data', (chunk) => this.#onTextData(chunk));
+    this.proc.stdout?.setEncoding('utf8');
+    this.proc.stdout?.on('data', (chunk: string) => this.onTextData(chunk));
 
-    this.proc.stderr.setEncoding('utf8');
-    this.proc.stderr.on('data', (line) => {
+    this.proc.stderr?.setEncoding('utf8');
+    this.proc.stderr?.on('data', (line: string) => {
       this.emit('log', line.trim());
     });
 
-    this.proc.on('exit', (code, signal) => {
+    this.proc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
       this.started = false;
       const err = new Error(`codex app-server exited (code=${code}, signal=${signal})`);
       for (const { reject } of this.pending.values()) {
@@ -237,9 +269,9 @@ class CodexAppServerClient extends EventEmitter {
     });
   }
 
-  async #startWebSocket() {
-    await new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.wsUrl);
+  private async startWebSocket() {
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(this.wsUrl!);
       this.ws = ws;
 
       const timer = setTimeout(() => {
@@ -252,11 +284,11 @@ class CodexAppServerClient extends EventEmitter {
         resolve();
       });
 
-      ws.on('message', (data) => {
-        this.#onTextData(data.toString('utf8'));
+      ws.on('message', (data: string | Buffer | ArrayBuffer | Buffer[]) => {
+        this.onTextData(data.toString('utf8'));
       });
 
-      ws.on('error', (err) => {
+      ws.on('error', (err: Error) => {
         clearTimeout(timer);
         reject(err);
       });
@@ -272,7 +304,7 @@ class CodexAppServerClient extends EventEmitter {
     });
   }
 
-  async #initialize() {
+  private async initialize() {
     await this.request('initialize', {
       clientInfo: {
         name: 'codex-remote-tabs',
@@ -288,7 +320,7 @@ class CodexAppServerClient extends EventEmitter {
     this.notify('initialized', {});
   }
 
-  #send(payload) {
+  private send(payload: Record<string, unknown>) {
     const line = JSON.stringify(payload);
 
     if (this.ws) {
@@ -296,14 +328,13 @@ class CodexAppServerClient extends EventEmitter {
       return;
     }
 
-    this.proc.stdin.write(`${line}\n`);
+    this.proc?.stdin?.write(`${line}\n`);
   }
 
-  #onTextData(chunk) {
-    // For WebSocket mode, each message is complete
+  private onTextData(chunk: string) {
     if (this.ws) {
       try {
-        const msg = JSON.parse(chunk.trim());
+        const msg = JSON.parse(chunk.trim()) as Record<string, any>;
         if (msg.method && Object.prototype.hasOwnProperty.call(msg, 'id')) {
           this.emit('server_request', msg);
         } else if (msg.method) {
@@ -320,13 +351,12 @@ class CodexAppServerClient extends EventEmitter {
             }
           }
         }
-      } catch (e) {
-        this.emit('log', `ws parse error: ${e.message}`);
+      } catch (error) {
+        this.emit('log', `ws parse error: ${(error as Error).message}`);
       }
       return;
     }
 
-    // Stdio mode: newline-delimited
     this.buffer += chunk;
 
     while (true) {
@@ -341,7 +371,7 @@ class CodexAppServerClient extends EventEmitter {
         continue;
       }
 
-      let msg;
+      let msg: Record<string, any>;
       try {
         msg = JSON.parse(raw);
       } catch {
@@ -378,9 +408,7 @@ class CodexAppServerClient extends EventEmitter {
   }
 }
 
-function parsePositiveInteger(value) {
-  const parsed = Number.parseInt(value || '', 10);
+function parsePositiveInteger(value: unknown) {
+  const parsed = Number.parseInt(String(value || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
-
-module.exports = { CodexAppServerClient };
