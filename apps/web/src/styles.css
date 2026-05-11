@@ -66,6 +66,10 @@ body {
   min-height: 0;
 }
 
+.workspace-panel {
+  min-height: 0;
+}
+
 .panel {
   display: flex;
   flex-direction: column;
@@ -384,6 +388,70 @@ body {
   font-size: 12px;
 }
 
+.workspace-browser,
+.workspace-list,
+.attachment-list {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-path {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #f6f8fb;
+  border: 1px solid rgba(30, 41, 59, 0.08);
+  word-break: break-word;
+}
+
+.workspace-actions,
+.workspace-create,
+.attachment-toolbar,
+.attachment-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.workspace-entry,
+.attachment-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(30, 41, 59, 0.08);
+  background: #f8fafc;
+}
+
+.workspace-entry {
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-entry span,
+.attachment-meta span {
+  color: #6a7684;
+  font-size: 12px;
+}
+
+.file-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attachment-card {
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.attachment-preview {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid rgba(30, 41, 59, 0.08);
+}
+
 .token-usage {
   display: inline-flex;
   align-items: baseline;
@@ -427,13 +495,20 @@ body {
   .composer-actions,
   .timeline-toolbar,
   .section-head,
-  .approval-meta {
+  .approval-meta,
+  .workspace-actions,
+  .workspace-create,
+  .attachment-toolbar {
     align-items: flex-start;
     flex-direction: column;
   }
 
   .inspector-card-grid,
   .health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .attachment-card {
     grid-template-columns: 1fr;
   }
 }

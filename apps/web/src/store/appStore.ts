@@ -1,5 +1,11 @@
 import { create } from 'zustand';
-import type { HealthResponse, ServerMessage } from '@codex-remote/protocol';
+import type {
+  HealthResponse,
+  ServerMessage,
+  UploadImageResponse,
+  WorkspaceListResponse,
+  WorkspaceShortcutsResponse,
+} from '@codex-remote/protocol';
 import type { ConnectionStatus } from '../transport/ws/createSocketClient.js';
 
 export type SessionItem = {
@@ -43,6 +49,18 @@ export type ThreadRunState = {
   startedAt?: number;
 };
 
+export type WorkspaceBrowserState = {
+  shortcuts: WorkspaceShortcutsResponse | null;
+  listing: WorkspaceListResponse | null;
+  selectedPath: string;
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  error: string | null;
+};
+
+export type AttachmentItem = UploadImageResponse & {
+  previewUrl: string;
+};
+
 type AppStore = {
   health: {
     status: 'idle' | 'loading' | 'ready' | 'error';
@@ -72,6 +90,10 @@ type AppStore = {
   tokenUsage: {
     bySessionId: Record<string, unknown>;
   };
+  workspace: WorkspaceBrowserState;
+  composer: {
+    attachmentsBySessionId: Record<string, AttachmentItem[]>;
+  };
   setHealthLoading: () => void;
   setHealthReady: (data: HealthResponse) => void;
   setHealthError: (message: string) => void;
@@ -91,6 +113,13 @@ type AppStore = {
   setThreadSync: (threadId: string, message: Extract<ServerMessage, { type: 'thread_sync' }>) => void;
   appendTimelineEntry: (threadId: string, entry: TimelineEntry) => void;
   appendAssistantDelta: (threadId: string, itemId: string, delta: string) => void;
+  setWorkspaceLoading: (selectedPath: string) => void;
+  setWorkspaceReady: (shortcuts: WorkspaceShortcutsResponse, listing: WorkspaceListResponse) => void;
+  setWorkspaceError: (message: string) => void;
+  setWorkspaceListing: (listing: WorkspaceListResponse) => void;
+  addAttachment: (threadId: string, attachment: AttachmentItem) => void;
+  removeAttachment: (threadId: string, attachmentId: string) => void;
+  clearAttachments: (threadId: string) => void;
 };
 
 function normalizeTab(tab: any): SessionItem {
@@ -179,6 +208,16 @@ export const useAppStore = create<AppStore>((set) => ({
   },
   tokenUsage: {
     bySessionId: {},
+  },
+  workspace: {
+    shortcuts: null,
+    listing: null,
+    selectedPath: '',
+    status: 'idle',
+    error: null,
+  },
+  composer: {
+    attachmentsBySessionId: {},
   },
   setHealthLoading: () => set((state) => ({
     health: {
@@ -382,6 +421,63 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     };
   }),
+  setWorkspaceLoading: (selectedPath) => set((state) => ({
+    workspace: {
+      ...state.workspace,
+      selectedPath,
+      status: 'loading',
+      error: null,
+    },
+  })),
+  setWorkspaceReady: (shortcuts, listing) => set({
+    workspace: {
+      shortcuts,
+      listing,
+      selectedPath: listing.path,
+      status: 'ready',
+      error: null,
+    },
+  }),
+  setWorkspaceError: (message) => set((state) => ({
+    workspace: {
+      ...state.workspace,
+      status: 'error',
+      error: message,
+    },
+  })),
+  setWorkspaceListing: (listing) => set((state) => ({
+    workspace: {
+      ...state.workspace,
+      listing,
+      selectedPath: listing.path,
+      status: 'ready',
+      error: null,
+    },
+  })),
+  addAttachment: (threadId, attachment) => set((state) => ({
+    composer: {
+      attachmentsBySessionId: {
+        ...state.composer.attachmentsBySessionId,
+        [threadId]: [...(state.composer.attachmentsBySessionId[threadId] || []), attachment],
+      },
+    },
+  })),
+  removeAttachment: (threadId, attachmentId) => set((state) => ({
+    composer: {
+      attachmentsBySessionId: {
+        ...state.composer.attachmentsBySessionId,
+        [threadId]: (state.composer.attachmentsBySessionId[threadId] || []).filter((item) => item.id !== attachmentId),
+      },
+    },
+  })),
+  clearAttachments: (threadId) => set((state) => ({
+    composer: {
+      attachmentsBySessionId: {
+        ...state.composer.attachmentsBySessionId,
+        [threadId]: [],
+      },
+    },
+  })),
   setThreadSync: (threadId, message) => set((state) => ({
     timeline: {
       entriesBySessionId: {

@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { writeStoredToken, readStoredToken } from '../lib/storage.js';
 import { useAppStore, mapServerMessageToStore, type ServerRequestItem } from '../store/appStore.js';
 import { getHealth } from '../transport/http/health.js';
+import {
+  createWorkspaceDirectory,
+  getWorkspaceListing,
+  getWorkspaceShortcuts,
+} from '../transport/http/workspace.js';
+import { uploadImage } from '../transport/http/uploads.js';
 import { createSocketClient } from '../transport/ws/createSocketClient.js';
 
 function buildSessionNameFromPrompt(text: string): string {
@@ -104,6 +110,140 @@ function getDecisionLabel(decision: string | Record<string, unknown>): string {
   }
 
   return 'Respond';
+}
+
+function WorkspaceBrowser(props: {
+  token: string;
+  selectedPath: string;
+  onSelectPath: (path: string) => void;
+}) {
+  const { token, selectedPath, onSelectPath } = props;
+  const workspace = useAppStore((state) => state.workspace);
+  const setWorkspaceLoading = useAppStore((state) => state.setWorkspaceLoading);
+  const setWorkspaceReady = useAppStore((state) => state.setWorkspaceReady);
+  const setWorkspaceError = useAppStore((state) => state.setWorkspaceError);
+  const setWorkspaceListing = useAppStore((state) => state.setWorkspaceListing);
+  const [nextFolderName, setNextFolderName] = useState('');
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    let cancelled = false;
+    setWorkspaceLoading(selectedPath);
+    Promise.all([
+      getWorkspaceShortcuts(token),
+      getWorkspaceListing(token, selectedPath),
+    ])
+      .then(([shortcuts, listing]) => {
+        if (!cancelled) {
+          setWorkspaceReady(shortcuts, listing);
+          if (!selectedPath) {
+            onSelectPath(listing.path);
+          }
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          setWorkspaceError(error.message);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onSelectPath, selectedPath, setWorkspaceError, setWorkspaceLoading, setWorkspaceReady, token]);
+
+  const currentPath = workspace.listing?.path || selectedPath;
+
+  return (
+    <div className="workspace-browser">
+      <div className="section-head">
+        <strong>Workspace</strong>
+        <span className="muted">{workspace.status}</span>
+      </div>
+      {workspace.error ? <div className="status error">{workspace.error}</div> : null}
+      <div className="workspace-path">{currentPath || workspace.shortcuts?.preferredPath || 'No path selected'}</div>
+      <div className="workspace-actions">
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={!workspace.shortcuts?.preferredPath}
+          onClick={() => {
+            const nextPath = workspace.shortcuts?.preferredPath || '';
+            onSelectPath(nextPath);
+            setWorkspaceLoading(nextPath);
+            void getWorkspaceListing(token, nextPath)
+              .then((listing) => setWorkspaceListing(listing))
+              .catch((error: Error) => setWorkspaceError(error.message));
+          }}
+        >
+          Preferred
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={!workspace.listing?.parentPath}
+          onClick={() => {
+            const nextPath = workspace.listing?.parentPath || '';
+            onSelectPath(nextPath);
+            setWorkspaceLoading(nextPath);
+            void getWorkspaceListing(token, nextPath)
+              .then((listing) => setWorkspaceListing(listing))
+              .catch((error: Error) => setWorkspaceError(error.message));
+          }}
+        >
+          Up
+        </button>
+      </div>
+      <div className="workspace-list">
+        {(workspace.listing?.entries || []).map((entry) => (
+          <button
+            key={entry.path}
+            type="button"
+            className="workspace-entry"
+            onClick={() => {
+              onSelectPath(entry.path);
+              setWorkspaceLoading(entry.path);
+              void getWorkspaceListing(token, entry.path)
+                .then((listing) => setWorkspaceListing(listing))
+                .catch((error: Error) => setWorkspaceError(error.message));
+            }}
+          >
+            <strong>{entry.name}</strong>
+            <span>{entry.path}</span>
+          </button>
+        ))}
+      </div>
+      <div className="workspace-create">
+        <input
+          className="token-input"
+          placeholder="New folder name"
+          value={nextFolderName}
+          onChange={(event) => setNextFolderName(event.target.value)}
+        />
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={!currentPath || !nextFolderName.trim()}
+          onClick={() => {
+            void createWorkspaceDirectory(token, {
+              parentPath: currentPath,
+              folderName: nextFolderName.trim(),
+            })
+              .then((result) => {
+                setNextFolderName('');
+                onSelectPath(result.path);
+                return getWorkspaceListing(token, currentPath);
+              })
+              .then((listing) => setWorkspaceListing(listing))
+              .catch((error: Error) => setWorkspaceError(error.message));
+          }}
+        >
+          Create folder
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function SessionRail() {
@@ -319,13 +459,21 @@ type ComposerDockProps = {
   submit: () => void;
   busy: boolean;
   composerError: string;
+  workspacePath: string;
+  setWorkspacePath: (value: string) => void;
 };
 
-function ComposerDock({ draft, setDraft, submit, busy, composerError }: ComposerDockProps) {
+function ComposerDock({ draft, setDraft, submit, busy, composerError, workspacePath, setWorkspacePath }: ComposerDockProps) {
   const token = useAppStore((state) => state.auth.token);
   const setToken = useAppStore((state) => state.setToken);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const connectionStatus = useAppStore((state) => state.connection.status);
+  const attachments = useAppStore((state) => {
+    const key = activeSessionId || '__new__';
+    return state.composer.attachmentsBySessionId[key] || [];
+  });
+  const addAttachment = useAppStore((state) => state.addAttachment);
+  const removeAttachment = useAppStore((state) => state.removeAttachment);
 
   return (
     <footer className="panel composer-dock">
@@ -357,6 +505,59 @@ function ComposerDock({ draft, setDraft, submit, busy, composerError }: Composer
             }
           }}
         />
+        {!activeSessionId ? (
+          <input
+            className="token-input"
+            placeholder="Workspace path for new session"
+            value={workspacePath}
+            onChange={(event) => setWorkspacePath(event.target.value)}
+          />
+        ) : null}
+        <div className="attachment-toolbar">
+          <label className="secondary-button file-button">
+            <input
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (!file || !token) {
+                  return;
+                }
+                const targetThreadId = activeSessionId || '__new__';
+                void uploadImage(token, file)
+                  .then((result) => {
+                    addAttachment(targetThreadId, {
+                      ...result,
+                      previewUrl: URL.createObjectURL(file),
+                    });
+                  });
+                event.currentTarget.value = '';
+              }}
+            />
+            Upload image
+          </label>
+        </div>
+        {attachments.length ? (
+          <div className="attachment-list">
+            {attachments.map((attachment) => (
+              <article key={attachment.id} className="attachment-card">
+                <img src={attachment.previewUrl} alt={attachment.name} className="attachment-preview" />
+                <div className="attachment-meta">
+                  <strong>{attachment.name}</strong>
+                  <span>{attachment.contentType}</span>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => removeAttachment(activeSessionId || '__new__', attachment.id)}
+                >
+                  Remove
+                </button>
+              </article>
+            ))}
+          </div>
+        ) : null}
         <div className="composer-actions">
           <div className="composer-hint">
             <span className="muted">
@@ -388,10 +589,13 @@ export function App() {
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const connectionStatus = useAppStore((state) => state.connection.status);
   const appendTimelineEntry = useAppStore((state) => state.appendTimelineEntry);
+  const clearAttachments = useAppStore((state) => state.clearAttachments);
+  const workspaceSelectedPath = useAppStore((state) => state.workspace.selectedPath);
 
   const [draft, setDraft] = useState('');
   const [queuedPrompt, setQueuedPrompt] = useState('');
   const [composerError, setComposerError] = useState('');
+  const [workspacePath, setWorkspacePath] = useState('');
 
   const socketClient = useMemo(() => createSocketClient({
     onMessage: (message) => {
@@ -454,7 +658,10 @@ export function App() {
       type: 'turn_send',
       threadId: activeSessionId,
       text: queuedPrompt,
-      attachments: [],
+      attachments: (useAppStore.getState().composer.attachmentsBySessionId[activeSessionId] || []).map((item) => ({
+        path: item.filePath,
+        name: item.name,
+      })),
     });
     if (sent) {
       appendTimelineEntry(activeSessionId, {
@@ -466,10 +673,11 @@ export function App() {
       setQueuedPrompt('');
       setComposerError('');
       setDraft('');
+      clearAttachments(activeSessionId);
     } else {
       setComposerError('Failed to send the queued prompt.');
     }
-  }, [activeSessionId, connectionStatus, queuedPrompt, socketClient]);
+  }, [activeSessionId, clearAttachments, connectionStatus, queuedPrompt, socketClient, appendTimelineEntry]);
 
   function submitComposer() {
     const text = draft.trim();
@@ -491,6 +699,7 @@ export function App() {
       const created = socketClient.send({
         type: 'tab_create',
         name: buildSessionNameFromPrompt(text),
+        cwd: workspacePath || workspaceSelectedPath || '',
       });
       if (!created) {
         setComposerError('Failed to create session.');
@@ -504,7 +713,10 @@ export function App() {
       type: 'turn_send',
       threadId: activeSessionId,
       text,
-      attachments: [],
+      attachments: (useAppStore.getState().composer.attachmentsBySessionId[activeSessionId] || []).map((item) => ({
+        path: item.filePath,
+        name: item.name,
+      })),
     });
 
     if (!sent) {
@@ -519,6 +731,7 @@ export function App() {
       text,
     });
     setDraft('');
+    clearAttachments(activeSessionId);
   }
 
   function respondApproval(request: ServerRequestItem, response: unknown) {
@@ -547,12 +760,24 @@ export function App() {
         <TimelineWorkspace />
         <InspectorPanel onRespond={respondApproval} />
       </main>
+      <section className="panel workspace-panel">
+        <div className="panel-title">Workspace Browser</div>
+        <div className="panel-body">
+          <WorkspaceBrowser
+            token={token}
+            selectedPath={workspacePath || workspaceSelectedPath}
+            onSelectPath={setWorkspacePath}
+          />
+        </div>
+      </section>
       <ComposerDock
         draft={draft}
         setDraft={setDraft}
         submit={submitComposer}
         busy={Boolean(queuedPrompt)}
         composerError={composerError}
+        workspacePath={workspacePath}
+        setWorkspacePath={setWorkspacePath}
       />
     </div>
   );
