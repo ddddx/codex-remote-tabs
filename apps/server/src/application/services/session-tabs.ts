@@ -17,10 +17,27 @@ function nowUnix(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+function resolveTabName(source: Record<string, unknown>): string {
+  const candidates = [
+    source.name,
+    source.threadName,
+    source.thread_name,
+    source.preview,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return '未命名会话';
+}
+
 export function normalizeTab(source: Record<string, unknown>): RuntimeTab {
   return {
     threadId: String(source.threadId || source.id || ''),
-    name: typeof source.name === 'string' && source.name.trim() ? source.name : '未命名会话',
+    name: resolveTabName(source),
     cwd: typeof source.cwd === 'string' ? source.cwd : '',
     status: typeof source.status === 'string' && source.status.trim() ? source.status : 'idle',
     updatedAt: typeof source.updatedAt === 'number' ? source.updatedAt : nowUnix(),

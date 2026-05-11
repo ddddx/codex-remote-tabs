@@ -3,9 +3,16 @@ function normalizeBaseUrl(value: string | undefined, fallback: string): string {
   return raw || fallback;
 }
 
+function detectBrowserBaseUrl(): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+  return 'http://127.0.0.1:18637';
+}
+
 export const apiBaseUrl = normalizeBaseUrl(
   import.meta.env.VITE_API_BASE_URL as string | undefined,
-  'http://127.0.0.1:18637'
+  detectBrowserBaseUrl(),
 );
 
 export function buildApiUrl(pathname: string): string {

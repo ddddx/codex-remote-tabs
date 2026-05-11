@@ -74,12 +74,12 @@ export function TimelineWorkspace() {
 
   return (
     <section className="panel timeline-workspace">
-      <div className="panel-title">Timeline</div>
+      <div className="panel-title">时间线</div>
       <div className="panel-body timeline-body">
         {activeSessionId ? (
           <div className="timeline-toolbar">
             <div className={`status-chip${turnState?.active ? ' running' : ''}`}>
-              {turnState?.active ? 'Running' : 'Idle'}
+              {turnState?.active ? '运行中' : '空闲'}
             </div>
             <div className="token-usage">
               <span className="label">Tokens</span>
@@ -88,7 +88,7 @@ export function TimelineWorkspace() {
           </div>
         ) : null}
         {error ? <div className="status error">{error}</div> : null}
-        {!error && !health ? <div className="status">Loading health…</div> : null}
+        {!error && !health ? <div className="status">正在加载服务状态…</div> : null}
         {activeSessionId && groups.length ? (
           <div className="timeline-group-list">
             {groups.map((group) => (
@@ -110,18 +110,18 @@ export function TimelineWorkspace() {
         ) : null}
         {activeSessionId && !groups.length ? (
           <div className="empty-state">
-            <strong>No timeline yet</strong>
-            <span>Submit a prompt to start the first turn in this session.</span>
+            <strong>还没有时间线记录</strong>
+            <span>发送第一条消息后，这个会话的过程会显示在这里。</span>
           </div>
         ) : null}
         {!activeSessionId && health ? (
           <div className="health-grid">
             <div className="health-card">
-              <span className="label">Status</span>
+              <span className="label">状态</span>
               <strong>{health.status}</strong>
             </div>
             <div className="health-card">
-              <span className="label">Tabs</span>
+              <span className="label">会话数</span>
               <strong>{health.tabs}</strong>
             </div>
             <div className="health-card">
@@ -129,7 +129,7 @@ export function TimelineWorkspace() {
               <strong>{health.websocketClients}</strong>
             </div>
             <div className="health-card">
-              <span className="label">Uptime</span>
+              <span className="label">运行时长</span>
               <strong>{health.uptimeSec}s</strong>
             </div>
           </div>

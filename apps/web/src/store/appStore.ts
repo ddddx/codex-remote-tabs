@@ -147,9 +147,11 @@ type AppStore = {
 };
 
 function normalizeTab(tab: any): SessionItem {
+  const candidates = [tab?.name, tab?.threadName, tab?.thread_name, tab?.preview];
+  const resolvedName = candidates.find((value) => typeof value === 'string' && value.trim());
   return {
     threadId: String(tab?.threadId || ''),
-    name: String(tab?.name || '').trim() || '未命名会话',
+    name: String(resolvedName || '').trim() || '未命名会话',
     cwd: typeof tab?.cwd === 'string' ? tab.cwd : '',
     status: typeof tab?.status === 'string' ? tab.status : '',
     windowStatus: typeof tab?.windowStatus === 'string' ? tab.windowStatus : '',

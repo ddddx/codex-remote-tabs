@@ -50,11 +50,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   return (
     <div className="workspace-browser">
       <div className="section-head">
-        <strong>Workspace</strong>
+        <strong>工作区</strong>
         <span className="muted">{workspace.status}</span>
       </div>
+      {!token ? <div className="status">请先配置 WebSocket 令牌，再加载工作区。</div> : null}
       {workspace.error ? <div className="status error">{workspace.error}</div> : null}
-      <div className="workspace-path">{currentPath || workspace.shortcuts?.preferredPath || 'No path selected'}</div>
+      <div className="workspace-path">{currentPath || workspace.shortcuts?.preferredPath || '尚未选择路径'}</div>
       <div className="workspace-actions">
         <button
           type="button"
@@ -69,7 +70,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               .catch((error: Error) => setWorkspaceError(error.message));
           }}
         >
-          Preferred
+          常用目录
         </button>
         <button
           type="button"
@@ -84,7 +85,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               .catch((error: Error) => setWorkspaceError(error.message));
           }}
         >
-          Up
+          上一级
         </button>
       </div>
       <div className="workspace-list">
@@ -109,7 +110,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       <div className="workspace-create">
         <input
           className="token-input"
-          placeholder="New folder name"
+          placeholder="新文件夹名称"
           value={nextFolderName}
           onChange={(event) => setNextFolderName(event.target.value)}
         />
@@ -131,7 +132,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               .catch((error: Error) => setWorkspaceError(error.message));
           }}
         >
-          Create folder
+          新建文件夹
         </button>
       </div>
     </div>

@@ -8,7 +8,7 @@ export function SessionRail() {
 
   return (
     <aside className="panel session-rail">
-      <div className="panel-title">Sessions</div>
+      <div className="panel-title">会话</div>
       <div className="panel-body">
         {sessions.length ? (
           <div className="session-list">
@@ -25,15 +25,15 @@ export function SessionRail() {
                     <strong>{session.name}</strong>
                     {pendingCount ? <span className="badge warning">{pendingCount}</span> : null}
                   </div>
-                  <span>{session.cwd || 'No workspace'}</span>
+                  <span>{session.cwd || '未设置工作区'}</span>
                 </button>
               );
             })}
           </div>
         ) : (
           <div className="empty-state">
-            <strong>No sessions yet</strong>
-            <span>Send a prompt from Composer to create the first session.</span>
+            <strong>还没有会话</strong>
+            <span>在下方输入区发送第一条消息后会自动创建会话。</span>
           </div>
         )}
       </div>

@@ -184,9 +184,9 @@ export function App() {
       <header className="topbar">
         <div>
           <div className="eyebrow">Rebuild</div>
-          <h1>Codex Remote Console</h1>
+          <h1>Codex 远程控制台</h1>
         </div>
-        <div className="topbar-meta">Turn-based timeline, inline approvals, and modular web shell</div>
+        <div className="topbar-meta">会话时间线、内联审批和工作区操作</div>
       </header>
       <main className="workspace-grid">
         <SessionRail />
@@ -194,7 +194,7 @@ export function App() {
         <InspectorPanel onRespond={respondApproval} />
       </main>
       <section className="panel workspace-panel">
-        <div className="panel-title">Workspace Browser</div>
+        <div className="panel-title">工作区浏览器</div>
         <div className="panel-body">
           <WorkspaceBrowser
             token={token}

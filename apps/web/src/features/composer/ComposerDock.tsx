@@ -36,12 +36,12 @@ export function ComposerDock({
 
   return (
     <footer className="panel composer-dock">
-      <div className="panel-title">Composer</div>
+      <div className="panel-title">输入区</div>
       <div className="panel-body composer-body">
         <div className="composer-topline">
           <input
             className="token-input"
-            placeholder="WebSocket token"
+            placeholder="WebSocket 令牌"
             value={token}
             onChange={(event) => {
               const nextToken = writeStoredToken(event.target.value);
@@ -54,7 +54,7 @@ export function ComposerDock({
         </div>
         <textarea
           className="composer-input"
-          placeholder={activeSessionId ? 'Type a prompt…' : 'Type a prompt to create a new session…'}
+          placeholder={activeSessionId ? '输入提示词…' : '输入提示词，先创建新会话…'}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -67,7 +67,7 @@ export function ComposerDock({
         {!activeSessionId ? (
           <input
             className="token-input"
-            placeholder="Workspace path for new session"
+            placeholder="新会话的工作区路径"
             value={workspacePath}
             onChange={(event) => setWorkspacePath(event.target.value)}
           />
@@ -94,7 +94,7 @@ export function ComposerDock({
                 event.currentTarget.value = '';
               }}
             />
-            Upload image
+            上传图片
           </label>
         </div>
         {attachments.length ? (
@@ -120,7 +120,7 @@ export function ComposerDock({
         <div className="composer-actions">
           <div className="composer-hint">
             <span className="muted">
-              {activeSessionId ? 'Send to active session' : 'Will create a new session first'}
+              {activeSessionId ? '将发送到当前会话' : '会先创建新会话再发送'}
             </span>
             {composerError ? <span className="composer-error">{composerError}</span> : null}
           </div>
@@ -130,7 +130,7 @@ export function ComposerDock({
             onClick={submit}
             disabled={busy || !draft.trim()}
           >
-            {busy ? 'Sending…' : activeSessionId ? 'Send' : 'Create & send'}
+            {busy ? '发送中…' : activeSessionId ? '发送' : '创建并发送'}
           </button>
         </div>
       </div>
