@@ -331,7 +331,7 @@ function mergeTokenUsageFromSessions(
   return next;
 }
 
-function extractTurnText(turn: any): string {
+function extractTurnUserText(turn: any): string {
   if (typeof turn?.text === 'string' && turn.text.trim()) {
     return turn.text;
   }
@@ -343,9 +343,6 @@ function extractTurnText(turn: any): string {
         .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
         .map((part: any) => part.text.trim())
         .filter(Boolean);
-    }
-    if (item?.type === 'agentMessage' && typeof item?.text === 'string' && item.text.trim()) {
-      return [item.text.trim()];
     }
     return [];
   });
@@ -668,6 +665,26 @@ function createTimelineEntryFromItemEvent(
       status,
       patch,
       changes,
+      createdAt: startedAt,
+      details: item,
+    };
+  }
+
+  if (itemType === 'contextCompaction') {
+    const summary = [
+      compactText(item.summary),
+      compactText(item.text),
+      summarizeUnknownObject(item, 4),
+    ].filter(Boolean)[0] || '上下文已压缩';
+    return {
+      id: itemId,
+      type: 'context_compaction',
+      role: 'system',
+      turnId,
+      itemId,
+      title: '上下文压缩',
+      text: summary,
+      status: typeof item.status === 'string' ? item.status : 'completed',
       createdAt: startedAt,
       details: item,
     };
@@ -1168,7 +1185,7 @@ function createEntriesFromThreadTurn(threadId: string, turn: any, index: number)
     }
   }
 
-  const userText = extractTurnText(turn);
+  const userText = extractTurnUserText(turn);
   if (userText && !hasUserMessage) {
     entries.push({
       id: `${turnId}-user`,

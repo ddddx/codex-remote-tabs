@@ -306,6 +306,36 @@ test('thread sync keeps visible user and assistant messages when a turn also con
   assert.ok(entries.some((entry) => entry.type === 'command' && entry.text === 'npm test'));
 });
 
+test('thread sync does not synthesize user text from assistant items and restores context compaction', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-context',
+    turns: [{
+      id: 'turn-context',
+      createdAt: 1,
+      items: [
+        {
+          id: 'assistant-1',
+          type: 'agentMessage',
+          text: '只有助手消息',
+        },
+        {
+          id: 'compact-1',
+          type: 'contextCompaction',
+        },
+      ],
+    }],
+    tokenUsage: null,
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-context'] || [];
+  assert.equal(entries.filter((entry) => entry.role === 'user').length, 0);
+  assert.ok(entries.some((entry) => entry.id === 'turn-context:assistant-1' && entry.role === 'assistant'));
+  assert.ok(entries.some((entry) => entry.id === 'compact-1' && entry.type === 'context_compaction'));
+});
+
 test('state and thread sync preserve usable token usage for active session header', () => {
   resetStore();
 
