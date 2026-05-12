@@ -62,6 +62,35 @@ function ExpandableTimelineRow(props: ExpandableTimelineRowProps) {
   );
 }
 
+function ExpandableFileChangeRow({
+  title,
+  summary,
+  details,
+  className = '',
+}: ExpandableTimelineRowProps) {
+  const [open, setOpen] = useState(true);
+  const expandable = Boolean(details);
+
+  return (
+    <div className={`timeline-process-row ${className}${expandable ? ' is-expandable' : ''}${open ? ' is-open' : ''}`}>
+      <button
+        type="button"
+        className={`timeline-process-summary timeline-process-summary-file${expandable ? ' is-expandable' : ''}`}
+        onClick={() => {
+          if (!expandable) {
+            return;
+          }
+          setOpen((value) => !value);
+        }}
+      >
+        <div className="timeline-inline-title">{title}</div>
+        {summary ? <div className="timeline-inline-meta timeline-inline-summary">{summary}</div> : null}
+      </button>
+      {expandable && open ? <div className="timeline-inline-detail-body">{details}</div> : null}
+    </div>
+  );
+}
+
 function normalizePlanStepStatus(status: string | undefined): string {
   const normalized = (status || '').replace(/[\s_-]/g, '').toLowerCase();
   if (normalized === 'completed' || normalized === 'done' || normalized === 'success') {
@@ -612,26 +641,32 @@ function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
         <div className={`timeline-event kind-${kind} ${buildTimelineStateClass(entry)}`}>
           <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true">{buildTimelineMarkerSymbol(entry)}</span></div>
           <div className="timeline-content">
-            <div className={`timeline-process-row timeline-process-static timeline-card-${kind}`}>
-              <div className="timeline-inline-title">{buildProcessHeadline(entry)}</div>
-              <div className="timeline-inline-meta">{describeTimelineType(entry)}{entry.status ? ` · ${formatExecutionStatus(entry.status)}` : ''}</div>
-              {renderableChanges.length ? (
-                <div className="file-change-list">
-                  {renderableChanges.map((change, index) => (
-                    <div key={`${entry.id}-change-${index}`} className={`file-change-entry kind-${(change.kind || 'update').toLowerCase()}`}>
-                      <span>{`${formatFileChangePrefix(change.kind)} ${change.path || '未命名文件'}`}</span>
-                      {renderFileChangeStats(change)}
+            <ExpandableFileChangeRow
+              className={`timeline-card-${kind}`}
+              title={buildProcessHeadline(entry)}
+              summary={buildProcessPreview(entry) || describeTimelineType(entry)}
+              details={(
+                <>
+                  <div className="timeline-inline-meta">{describeTimelineType(entry)}{entry.status ? ` · ${formatExecutionStatus(entry.status)}` : ''}</div>
+                  {renderableChanges.length ? (
+                    <div className="file-change-list">
+                      {renderableChanges.map((change, index) => (
+                        <div key={`${entry.id}-change-${index}`} className={`file-change-entry kind-${(change.kind || 'update').toLowerCase()}`}>
+                          <span>{`${formatFileChangePrefix(change.kind)} ${change.path || '未命名文件'}`}</span>
+                          {renderFileChangeStats(change)}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              ) : null}
-              {entry.meta?.length ? (
-                <div className="timeline-inline-meta timeline-inline-meta-code">
-                  {entry.meta.join('\n')}
-                </div>
-              ) : null}
-              {entry.patch ? renderDiffBlock(entry.patch) : null}
-            </div>
+                  ) : null}
+                  {entry.meta?.length ? (
+                    <div className="timeline-inline-meta timeline-inline-meta-code">
+                      {entry.meta.join('\n')}
+                    </div>
+                  ) : null}
+                  {entry.patch ? renderDiffBlock(entry.patch) : null}
+                </>
+              )}
+            />
           </div>
         </div>
       );

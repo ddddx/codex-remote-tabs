@@ -234,6 +234,35 @@ test('thread_sync returns tab update and thread snapshot', async () => {
   assert.equal((socket.sent[1] as any).globalSupplementalItems.length, 1);
 });
 
+test('thread_sync preserves nested usage payloads for header display', async () => {
+  const { app } = createAppStub();
+  const socket = createSocket();
+
+  app.codexClient.resumeThread = async (threadId: string) => ({
+    id: threadId,
+    name: 'Resumed thread',
+    cwd: 'C:\\workspace',
+    status: 'idle',
+    createdAt: 1,
+    updatedAt: 2,
+    turns: [],
+    usage: {
+      prompt_tokens: 21,
+      completion_tokens: 12,
+    },
+  });
+
+  await routeClientMessage(app, socket as any, {
+    type: 'thread_sync',
+    threadId: '00000000-0000-0000-0000-000000000777',
+  });
+
+  assert.deepEqual((socket.sent[1] as any).tokenUsage, {
+    prompt_tokens: 21,
+    completion_tokens: 12,
+  });
+});
+
 test('tab_create creates thread and replies with tab_created', async () => {
   const { app, calls } = createAppStub();
   const socket = createSocket();

@@ -879,6 +879,25 @@ textarea {
   cursor: pointer;
 }
 
+.timeline-process-summary-file {
+  padding-right: 26px;
+  position: relative;
+}
+
+.timeline-process-summary-file::after {
+  content: '+';
+  position: absolute;
+  right: 4px;
+  top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.timeline-process-row.is-open .timeline-process-summary-file::after {
+  content: '-';
+}
+
 .timeline-inline-title {
   font-size: 13px;
   line-height: 1.45;
@@ -925,13 +944,6 @@ textarea {
   flex-direction: column;
   gap: 6px;
   padding: 8px 0 0;
-}
-
-.timeline-process-static {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 6px 0 0;
 }
 
 .timeline-inline-pre {
@@ -1024,6 +1036,10 @@ textarea {
   font-size: 12px;
   line-height: 1.45;
   word-break: break-word;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .file-change-entry.kind-add {

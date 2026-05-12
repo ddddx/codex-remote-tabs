@@ -46,7 +46,7 @@ export function buildThreadSyncMessage(
     turns,
     supplementalItems: listSupplementalItems(app.runtimeState, threadId),
     globalSupplementalItems: [...app.runtimeState.globalNotices],
-    tokenUsage: thread.tokenUsage ?? thread.token_usage ?? null,
+    tokenUsage: thread.tokenUsage ?? thread.token_usage ?? thread.usage ?? thread.tokenStats ?? thread.token_stats ?? null,
     turnPlans: listTurnPlans(app.runtimeState, threadId, turns),
     turnDiffs: listTurnDiffs(app.runtimeState, threadId, turns),
   };

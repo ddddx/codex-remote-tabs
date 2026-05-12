@@ -1366,7 +1366,7 @@ export const useAppStore = create<AppStore>((set) => ({
     tokenUsage: {
       bySessionId: {
         ...state.tokenUsage.bySessionId,
-        [threadId]: normalizeTokenUsage(message) ?? state.tokenUsage.bySessionId[threadId] ?? null,
+        [threadId]: normalizeTokenUsage(message.tokenUsage ?? message) ?? state.tokenUsage.bySessionId[threadId] ?? null,
       },
     },
   })),
