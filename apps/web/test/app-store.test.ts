@@ -183,9 +183,10 @@ test('thread sync restores plan diff supplemental and notice entries', () => {
   } as any);
 
   const entries = useAppStore.getState().timeline.entriesBySessionId['thread-restore'] || [];
-  assert.equal(entries.length, 2);
+  assert.equal(entries.length, 3);
   assert.ok(entries.some((entry) => entry.type === 'turn_plan'));
   assert.ok(entries.some((entry) => entry.type === 'turn_diff'));
+  assert.ok(entries.some((entry) => entry.type === 'hook'));
 });
 
 test('reasoning, turn updates and notices are normalized into timeline semantics', () => {

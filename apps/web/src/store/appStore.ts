@@ -771,6 +771,63 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
     if (!itemId || !itemType) {
       continue;
     }
+    const turnId = typeof item._turnId === 'string' ? item._turnId : undefined;
+    const createdAt = normalizeTimestamp(
+      typeof item.completedAt === 'number'
+        ? item.completedAt
+        : typeof item.startedAt === 'number'
+          ? item.startedAt
+          : typeof item.createdAt === 'number'
+            ? item.createdAt
+            : typeof item.updatedAt === 'number'
+              ? item.updatedAt
+              : Date.now(),
+    );
+
+    if (itemType === 'hookEvent') {
+      const run = item.run && typeof item.run === 'object' ? item.run as Record<string, unknown> : null;
+      const command = typeof run?.command === 'string' ? run.command : '';
+      const status = typeof item.status === 'string' ? item.status : 'completed';
+      entries.push({
+        id: itemId,
+        type: 'hook',
+        role: 'system',
+        turnId,
+        itemId,
+        title: 'Hook',
+        text: command || `Hook ${typeof item.phase === 'string' ? item.phase : 'event'}`,
+        status,
+        meta: [
+          typeof item.phase === 'string' ? item.phase : '',
+          typeof run?.exitCode === 'number' ? `退出码 ${run.exitCode}` : '',
+        ].filter(Boolean),
+        createdAt,
+        details: item,
+      });
+      continue;
+    }
+
+    if (itemType === 'guardianReview') {
+      const review = item.review && typeof item.review === 'object' ? item.review as Record<string, unknown> : null;
+      const action = item.action && typeof item.action === 'object' ? item.action as Record<string, unknown> : null;
+      const status = typeof item.status === 'string' ? item.status : 'completed';
+      entries.push({
+        id: itemId,
+        type: 'guardian_review',
+        role: 'system',
+        turnId,
+        itemId,
+        title: 'Guardian 审查',
+        text: summarizeUnknownObject(review) || summarizeUnknownObject(action) || 'Guardian 审查',
+        status,
+        meta: [
+          typeof item.phase === 'string' ? item.phase : '',
+          typeof item.decisionSource === 'string' ? item.decisionSource : '',
+        ].filter(Boolean),
+        createdAt,
+        details: item,
+      });
+    }
   }
 
   return entries;

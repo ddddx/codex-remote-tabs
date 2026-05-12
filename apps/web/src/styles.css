@@ -304,12 +304,14 @@ textarea {
   border: 1px solid var(--line);
   background: var(--card-strong);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 0;
   text-align: left;
   position: relative;
-  cursor: pointer;
   transition: border-color 0.15s;
   color: inherit;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
 }
 
 .tab-item:hover {
@@ -348,6 +350,31 @@ textarea {
   right: 0;
   top: 50%;
   transform: translateY(-50%);
+}
+
+.tab-item-main {
+  min-width: 0;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tab-item-close {
+  width: 34px;
+  border: none;
+  border-left: 1px solid rgba(123, 110, 93, 0.12);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.tab-item-close:hover {
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+  color: var(--ink);
 }
 
 .tab-item .workspace {

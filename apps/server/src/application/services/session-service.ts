@@ -56,5 +56,14 @@ export function createSessionService(app: FastifyInstance) {
       await ensureCodexReady(app);
       await bootstrapTabs(app);
     },
+
+    async closeTabWindow(threadId: string): Promise<RuntimeTab | null> {
+      await ensureCodexReady(app);
+      const closedTab = await app.windowAttachments.closeWindowForThread(threadId) as RuntimeTab | null;
+      if (closedTab) {
+        return closedTab;
+      }
+      return app.runtimeState.tabsById.get(threadId) || null;
+    },
   };
 }

@@ -556,6 +556,16 @@ export function App() {
     }
   }
 
+  function closeSessionWindow(threadId: string) {
+    const sent = socketClient.send({
+      type: 'tab_close',
+      threadId,
+    });
+    if (!sent) {
+      setComposerError('关闭 Codex 窗口失败。');
+    }
+  }
+
   function handleThemeChange(value: string) {
     const next = writeThemePreference(value);
     setTheme(next);
@@ -639,6 +649,7 @@ export function App() {
             </button>
           </div>
           <SessionRail
+            onCloseSessionWindow={closeSessionWindow}
             onNewSession={() => {
               setSessionDraft({
                 name: '',

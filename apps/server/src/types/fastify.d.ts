@@ -48,7 +48,7 @@ type CodexClientLike = {
     model?: string | null;
     effort?: string | null;
     approvalPolicy?: string | null;
-    sandboxPolicy?: { mode: string } | null;
+    sandboxPolicy?: Record<string, unknown> | null;
   }) => Promise<Record<string, unknown>>;
   listModels: (options?: { includeHidden?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>;
   readConfig: (options?: { cwd?: string }) => Promise<{ config?: Record<string, unknown> }>;

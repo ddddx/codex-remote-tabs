@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/appStore.js';
 
 type SessionRailProps = {
   onNewSession: () => void;
+  onCloseSessionWindow: (threadId: string) => void;
 };
 
 function buildStatusDotClass(status: string | undefined): string {
@@ -16,7 +17,7 @@ function buildStatusDotClass(status: string | undefined): string {
   return 'closed';
 }
 
-export function SessionRail({ onNewSession }: SessionRailProps) {
+export function SessionRail({ onNewSession, onCloseSessionWindow }: SessionRailProps) {
   const sessions = useAppStore((state) => state.sessions.items);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const approvals = useAppStore((state) => state.approvals.items);
@@ -30,19 +31,35 @@ export function SessionRail({ onNewSession }: SessionRailProps) {
           const isActive = session.threadId === activeSessionId;
           const isClosed = (session.status || '').trim().toLowerCase() === 'closed';
           return (
-            <button
+            <div
               key={session.threadId}
               className={`tab-item${isActive ? ' active' : ''}${isClosed ? ' closed' : ''}${pendingCount ? ' has-unread' : ''}`}
-              type="button"
-              onClick={() => setActiveSession(session.threadId)}
             >
-              <span className="name">{session.name}</span>
-              <span className="workspace">{session.cwd || '未设置工作区'}</span>
-              <span className="meta">
-                <span className={`status-dot ${buildStatusDotClass(session.windowStatus)}`}></span>
-                <span>{formatWindowStatus(session.windowStatus) || '窗口未打开'}</span>
-              </span>
-            </button>
+              <button
+                type="button"
+                className="tab-item-main"
+                onClick={() => setActiveSession(session.threadId)}
+              >
+                <span className="name">{session.name}</span>
+                <span className="workspace">{session.cwd || '未设置工作区'}</span>
+                <span className="meta">
+                  <span className={`status-dot ${buildStatusDotClass(session.windowStatus)}`}></span>
+                  <span>{formatWindowStatus(session.windowStatus) || '窗口未打开'}</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="tab-item-close"
+                aria-label={`关闭 ${session.name} 的 Codex 窗口`}
+                title="关闭 Codex 窗口"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseSessionWindow(session.threadId);
+                }}
+              >
+                ×
+              </button>
+            </div>
           );
         }) : (
           <div className="empty-state">

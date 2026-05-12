@@ -34,6 +34,14 @@ export async function routeClientMessage(app: FastifyInstance, socket: WsLike, m
     return;
   }
 
+  if (message.type === 'tab_close') {
+    const tab = await app.services.sessions.closeTabWindow(message.threadId);
+    if (tab) {
+      sendMessage(socket, { type: 'tab_updated', tab });
+    }
+    return;
+  }
+
   if (message.type === 'thread_sync') {
     const { tab, message: snapshot } = await app.services.sessions.syncThread(message.threadId);
     sendMessage(socket, { type: 'tab_updated', tab });

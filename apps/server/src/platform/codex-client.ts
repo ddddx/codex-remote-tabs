@@ -17,7 +17,7 @@ type StartTurnOptions = {
   model?: string | null;
   effort?: string | null;
   approvalPolicy?: string | null;
-  sandboxPolicy?: { mode: string } | null;
+  sandboxPolicy?: Record<string, unknown> | null;
 };
 
 type CodexClientOptions = {

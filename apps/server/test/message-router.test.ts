@@ -24,6 +24,7 @@ function createAppStub() {
     resumeThread: [] as unknown[],
     respond: [] as unknown[],
     openWindowForThread: [] as unknown[],
+    closeWindowForThread: [] as unknown[],
     refreshTabWindowStatus: [] as unknown[],
     upsertSession: [] as unknown[],
     upsertPendingRequest: [] as unknown[],
@@ -98,6 +99,7 @@ function createAppStub() {
       },
       async refreshAllTabsWindowStatus() {},
       async closeWindowForThread() {
+        calls.closeWindowForThread.push(true);
         return null;
       },
     },
@@ -302,6 +304,63 @@ test('turn_send starts a turn and updates runtime tab status', async () => {
 
   assert.equal(calls.startTurn.length, 1);
   assert.equal(app.runtimeState.tabsById.get('00000000-0000-0000-0000-000000000123')?.status, 'running');
+});
+
+test('turn_send maps full access preset to codex sandbox policy shape', async () => {
+  const { app, calls } = createAppStub();
+  const socket = createSocket();
+  app.runtimeState.tabsById.set('00000000-0000-0000-0000-000000000123', {
+    threadId: '00000000-0000-0000-0000-000000000123',
+    name: 'Existing',
+    cwd: 'C:\\workspace',
+    status: 'idle',
+    createdAt: 1,
+    updatedAt: 1,
+    windowStatus: 'attached',
+  });
+
+  await routeClientMessage(app, socket as any, {
+    type: 'turn_send',
+    threadId: '00000000-0000-0000-0000-000000000123',
+    text: 'hello',
+    attachments: [],
+    sandboxMode: 'danger-full-access',
+  });
+
+  assert.deepEqual((calls.startTurn[0] as any)?.options?.sandboxPolicy, { type: 'dangerFullAccess' });
+});
+
+test('tab_close closes host window but keeps session', async () => {
+  const { app, calls } = createAppStub();
+  const socket = createSocket();
+  app.runtimeState.tabsById.set('00000000-0000-0000-0000-000000000123', {
+    threadId: '00000000-0000-0000-0000-000000000123',
+    name: 'Existing',
+    cwd: 'C:\\workspace',
+    status: 'idle',
+    createdAt: 1,
+    updatedAt: 1,
+    windowStatus: 'attached',
+  });
+  app.windowAttachments.closeWindowForThread = async (threadId: string) => {
+    calls.closeWindowForThread.push(threadId);
+    const tab = app.runtimeState.tabsById.get(threadId);
+    if (!tab) {
+      return null;
+    }
+    tab.windowStatus = 'detached';
+    return tab;
+  };
+
+  await routeClientMessage(app, socket as any, {
+    type: 'tab_close',
+    threadId: '00000000-0000-0000-0000-000000000123',
+  });
+
+  assert.equal(calls.closeWindowForThread.length, 1);
+  assert.equal((socket.sent[0] as any).type, 'tab_updated');
+  assert.equal((socket.sent[0] as any).tab.windowStatus, 'detached');
+  assert.equal(app.runtimeState.tabsById.has('00000000-0000-0000-0000-000000000123'), true);
 });
 
 test('turn_send failure returns correlated error payload', async () => {
