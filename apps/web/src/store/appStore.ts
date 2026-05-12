@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type {
+  CodexOptionsResponse,
   HealthResponse,
   ServerMessage,
   UploadImageResponse,
@@ -7,6 +8,7 @@ import type {
   WorkspaceShortcutsResponse,
 } from '@codex-remote/protocol';
 import type { ConnectionStatus } from '../transport/ws/createSocketClient.js';
+import { summarizeUnknownObject } from '../app/view-helpers.js';
 
 export type SessionItem = {
   threadId: string;
@@ -14,6 +16,13 @@ export type SessionItem = {
   cwd?: string;
   status?: string;
   windowStatus?: string;
+  approvalPolicy?: string;
+  sandboxMode?: string;
+  model?: string;
+  reasoningEffort?: string;
+  tokenUsage?: unknown;
+  createdAt?: number;
+  updatedAt?: number;
 };
 
 export type TimelineEntry = {
@@ -27,8 +36,9 @@ export type TimelineEntry = {
   status?: string;
   meta?: string[];
   patch?: string;
-  changes?: Array<{ path?: string; kind?: string }>;
+  changes?: Array<{ path?: string; kind?: string; addedLines?: number; deletedLines?: number }>;
   createdAt?: number;
+  partial?: boolean;
   details?: unknown;
 };
 
@@ -84,6 +94,15 @@ export type AttachmentItem = UploadImageResponse & {
   previewUrl: string;
 };
 
+export type FloatingNotice = {
+  id: string;
+  level: 'warning' | 'error' | 'info';
+  title: string;
+  message: string;
+  threadId?: string;
+  createdAt: number;
+};
+
 type AppStore = {
   health: {
     status: 'idle' | 'loading' | 'ready' | 'error';
@@ -97,6 +116,11 @@ type AppStore = {
   auth: {
     token: string;
   };
+  codexOptions: {
+    status: 'idle' | 'loading' | 'ready' | 'error';
+    data: CodexOptionsResponse | null;
+    error: string | null;
+  };
   sessions: {
     items: SessionItem[];
     activeSessionId: string | null;
@@ -107,6 +131,9 @@ type AppStore = {
   approvals: {
     items: ServerRequestItem[];
   };
+  notifications: {
+    items: FloatingNotice[];
+  };
   turns: {
     activeBySessionId: Record<string, ThreadRunState>;
   };
@@ -116,26 +143,49 @@ type AppStore = {
   workspace: WorkspaceBrowserState;
   composer: {
     attachmentsBySessionId: Record<string, AttachmentItem[]>;
+    prefsBySessionId: Record<string, {
+      model: string;
+      reasoningEffort: string;
+      approvalPolicy: string;
+      sandboxMode: string;
+    }>;
   };
   setHealthLoading: () => void;
   setHealthReady: (data: HealthResponse) => void;
   setHealthError: (message: string) => void;
   setConnectionStatus: (status: ConnectionStatus, error?: string) => void;
   setToken: (token: string) => void;
+  setCodexOptionsLoading: () => void;
+  setCodexOptionsReady: (data: CodexOptionsResponse) => void;
+  setCodexOptionsError: (message: string) => void;
   setSessions: (items: SessionItem[]) => void;
   upsertSession: (item: SessionItem) => void;
   removeSession: (threadId: string) => void;
   setActiveSession: (threadId: string | null) => void;
+  setComposerPrefs: (threadId: string, prefs: {
+    model: string;
+    reasoningEffort: string;
+    approvalPolicy: string;
+    sandboxMode: string;
+  }) => void;
   replaceServerRequests: (items: unknown[]) => void;
   upsertServerRequest: (request: unknown) => void;
   removeServerRequest: (requestId: string) => void;
   resetServerRequests: () => void;
+  pushNotification: (notice: FloatingNotice) => void;
+  dismissNotification: (noticeId: string) => void;
   setTurnStarted: (threadId: string, turnId?: string, startedAt?: number) => void;
   setTurnCompleted: (threadId: string, turnId?: string) => void;
+  settleAssistantActivity: (threadId: string, turnId?: string) => void;
   setTokenUsage: (threadId: string, usage: unknown) => void;
   setThreadSync: (threadId: string, message: Extract<ServerMessage, { type: 'thread_sync' }>) => void;
   appendTimelineEntry: (threadId: string, entry: TimelineEntry) => void;
-  appendAssistantDelta: (threadId: string, itemId: string, delta: string) => void;
+  appendAssistantDelta: (
+    threadId: string,
+    itemId: string,
+    delta: string,
+    options?: { turnId?: string; createdAt?: number },
+  ) => void;
   upsertTimelineEntry: (threadId: string, entry: TimelineEntry) => void;
   setWorkspaceLoading: (selectedPath: string) => void;
   setWorkspaceReady: (shortcuts: WorkspaceShortcutsResponse, listing: WorkspaceListResponse) => void;
@@ -144,6 +194,7 @@ type AppStore = {
   addAttachment: (threadId: string, attachment: AttachmentItem) => void;
   removeAttachment: (threadId: string, attachmentId: string) => void;
   clearAttachments: (threadId: string) => void;
+  promotePendingUserEntries: (threadId: string, turnId?: string, startedAt?: number) => void;
 };
 
 function normalizeTab(tab: any): SessionItem {
@@ -155,12 +206,150 @@ function normalizeTab(tab: any): SessionItem {
     cwd: typeof tab?.cwd === 'string' ? tab.cwd : '',
     status: typeof tab?.status === 'string' ? tab.status : '',
     windowStatus: typeof tab?.windowStatus === 'string' ? tab.windowStatus : '',
+    approvalPolicy: typeof tab?.approvalPolicy === 'string' ? tab.approvalPolicy : '',
+    sandboxMode: typeof tab?.sandboxMode === 'string' ? tab.sandboxMode : '',
+    model: typeof tab?.model === 'string' ? tab.model : '',
+    reasoningEffort: typeof tab?.reasoningEffort === 'string' ? tab.reasoningEffort : '',
+    tokenUsage: normalizeTokenUsage(tab),
+    createdAt: typeof tab?.createdAt === 'number' ? tab.createdAt : 0,
+    updatedAt: typeof tab?.updatedAt === 'number' ? tab.updatedAt : 0,
   };
+}
+
+function extractTokenUsageValue(value: unknown): unknown {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const source = value as Record<string, unknown>;
+  const looksLikeUsageObject = [
+    source.totalTokens,
+    source.total_tokens,
+    source.total,
+    source.inputTokens,
+    source.input_tokens,
+    source.promptTokens,
+    source.prompt_tokens,
+    source.outputTokens,
+    source.output_tokens,
+    source.completionTokens,
+    source.completion_tokens,
+  ].some((entry) => typeof entry === 'number');
+  if (looksLikeUsageObject) {
+    return source;
+  }
+  const direct = source.tokenUsage
+    ?? source.token_usage
+    ?? source.usage
+    ?? source.tokenStats
+    ?? source.token_stats
+    ?? null;
+  if (direct !== null && direct !== undefined) {
+    return direct;
+  }
+  const nested = source.usage && typeof source.usage === 'object'
+    ? source.usage as Record<string, unknown>
+    : null;
+  return nested?.tokenUsage
+    ?? nested?.token_usage
+    ?? nested?.usage
+    ?? nested?.tokenStats
+    ?? nested?.token_stats
+    ?? null;
+}
+
+function normalizeTokenUsage(value: unknown): unknown {
+  const extracted = extractTokenUsageValue(value);
+  if (!extracted || typeof extracted !== 'object') {
+    return extracted;
+  }
+  const usage = extracted as Record<string, unknown>;
+  const nested = usage.usage && typeof usage.usage === 'object' ? usage.usage as Record<string, unknown> : null;
+  return {
+    ...usage,
+    totalTokens: typeof usage.totalTokens === 'number'
+      ? usage.totalTokens
+      : typeof usage.total_tokens === 'number'
+        ? usage.total_tokens
+        : typeof usage.total === 'number'
+          ? usage.total
+          : typeof nested?.totalTokens === 'number'
+            ? nested.totalTokens
+            : typeof nested?.total_tokens === 'number'
+              ? nested.total_tokens
+              : undefined,
+    inputTokens: typeof usage.inputTokens === 'number'
+      ? usage.inputTokens
+      : typeof usage.input_tokens === 'number'
+        ? usage.input_tokens
+        : typeof usage.promptTokens === 'number'
+          ? usage.promptTokens
+          : typeof usage.prompt_tokens === 'number'
+            ? usage.prompt_tokens
+            : typeof nested?.inputTokens === 'number'
+              ? nested.inputTokens
+              : typeof nested?.input_tokens === 'number'
+                ? nested.input_tokens
+                : typeof nested?.promptTokens === 'number'
+                  ? nested.promptTokens
+                  : typeof nested?.prompt_tokens === 'number'
+                    ? nested.prompt_tokens
+                    : undefined,
+    outputTokens: typeof usage.outputTokens === 'number'
+      ? usage.outputTokens
+      : typeof usage.output_tokens === 'number'
+        ? usage.output_tokens
+        : typeof usage.completionTokens === 'number'
+          ? usage.completionTokens
+          : typeof usage.completion_tokens === 'number'
+            ? usage.completion_tokens
+            : typeof nested?.outputTokens === 'number'
+              ? nested.outputTokens
+              : typeof nested?.output_tokens === 'number'
+                ? nested.output_tokens
+                : typeof nested?.completionTokens === 'number'
+                  ? nested.completionTokens
+                  : typeof nested?.completion_tokens === 'number'
+                    ? nested.completion_tokens
+                    : undefined,
+  };
+}
+
+function mergeTokenUsageFromSessions(
+  existing: Record<string, unknown>,
+  sessions: SessionItem[],
+): Record<string, unknown> {
+  const next = { ...existing };
+  for (const session of sessions) {
+    if (!session.threadId) {
+      continue;
+    }
+    if (session.tokenUsage !== undefined && session.tokenUsage !== null) {
+      next[session.threadId] = normalizeTokenUsage(session.tokenUsage);
+    }
+  }
+  return next;
 }
 
 function extractTurnText(turn: any): string {
   if (typeof turn?.text === 'string' && turn.text.trim()) {
     return turn.text;
+  }
+
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const itemTextParts = items.flatMap((item: any) => {
+    if (item?.type === 'userMessage' && Array.isArray(item?.content)) {
+      return item.content
+        .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
+        .map((part: any) => part.text.trim())
+        .filter(Boolean);
+    }
+    if (item?.type === 'agentMessage' && typeof item?.text === 'string' && item.text.trim()) {
+      return [item.text.trim()];
+    }
+    return [];
+  });
+  if (itemTextParts.length) {
+    return itemTextParts.join('\n');
   }
 
   const inputItems = Array.isArray(turn?.input) ? turn.input : [];
@@ -203,7 +392,7 @@ function normalizeServerRequest(request: any): ServerRequestItem | null {
     questions: Array.isArray(request?.questions) ? request.questions : undefined,
     permissions: request?.permissions ?? undefined,
     availableDecisions: Array.isArray(request?.availableDecisions) ? request.availableDecisions : undefined,
-    createdAt: typeof request?.createdAt === 'number' ? request.createdAt : undefined,
+    createdAt: normalizeTimestamp(request?.createdAt),
     responseSchema: request?.responseSchema ?? undefined,
     arguments: request?.arguments && typeof request.arguments === 'object' ? request.arguments : undefined,
     mode: typeof request?.mode === 'string' ? request.mode : undefined,
@@ -225,11 +414,91 @@ function compactText(value: unknown, max = 280): string {
   return `${normalized.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function summarizeFileChangeText(
+  status: string | undefined,
+  changes: Array<{ path?: string; kind?: string }> | undefined,
+  patch: string | undefined,
+  output: string,
+): string {
+  const outputText = compactText(output);
+  if (outputText) {
+    return outputText;
+  }
+
+  const validChanges = Array.isArray(changes) ? changes.filter((change) => change.path || change.kind) : [];
+  if (validChanges.length) {
+    const preview = validChanges
+      .slice(0, 3)
+      .map((change) => [change.kind, change.path].filter(Boolean).join(' '))
+      .filter(Boolean)
+      .join(' · ');
+    const suffix = validChanges.length > 3 ? ` 等 ${validChanges.length} 项` : '';
+    return preview ? `${preview}${suffix}` : `已记录 ${validChanges.length} 项文件变更`;
+  }
+
+  if (typeof patch === 'string' && patch.trim()) {
+    return '已生成变更补丁';
+  }
+
+  if (status === 'completed' || status === 'success' || status === 'succeeded') {
+    return '文件变更已完成';
+  }
+
+  return '等待文件变更内容';
+}
+
+function normalizeTimestamp(value: unknown, fallback = Date.now()): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return value < 1e12 ? Math.trunc(value * 1000) : Math.trunc(value);
+}
+
 function normalizeTimelineEntry(entry: TimelineEntry): TimelineEntry {
   return {
     ...entry,
-    createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : Date.now(),
+    changes: Array.isArray(entry.changes)
+      ? entry.changes.map((change) => ({
+        ...change,
+        addedLines: typeof change?.addedLines === 'number' ? change.addedLines : undefined,
+        deletedLines: typeof change?.deletedLines === 'number' ? change.deletedLines : undefined,
+      }))
+      : entry.changes,
+    createdAt: normalizeTimestamp(entry.createdAt),
+    partial: Boolean(entry.partial),
   };
+}
+
+function isAssistantActivityEntry(entry: TimelineEntry): boolean {
+  return entry.role === 'assistant'
+    && (entry.type === 'reasoning' || entry.type === 'plan' || entry.type === 'message');
+}
+
+function promotePendingUserEntriesForTurn(
+  entries: TimelineEntry[],
+  threadId: string,
+  turnId?: string,
+  startedAt?: number,
+): TimelineEntry[] {
+  const resolvedTurnId = turnId || `${threadId}:pending-turn`;
+  const resolvedStartedAt = normalizeTimestamp(startedAt);
+  let changed = false;
+
+  const nextEntries = entries.map((entry) => {
+    if (entry.role !== 'user' || entry.turnId !== `${threadId}:pending-turn`) {
+      return entry;
+    }
+    changed = true;
+    return {
+      ...entry,
+      turnId: resolvedTurnId,
+      createdAt: entry.createdAt || resolvedStartedAt,
+    };
+  });
+
+  return changed
+    ? nextEntries.sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0))
+    : entries;
 }
 
 function extractReasoningDelta(message: Extract<ServerMessage, { type: 'item_delta' }>): string {
@@ -265,23 +534,31 @@ function createTimelineEntryFromItemEvent(
   const itemId = typeof item.id === 'string'
     ? item.id
     : `${threadId}:${turnId || 'turn'}:${kind}:${itemType || 'item'}`;
-  const startedAt = typeof item.startedAt === 'number'
-    ? item.startedAt
-    : typeof item.createdAt === 'number'
-      ? item.createdAt
-      : Date.now();
+  const startedAt = normalizeTimestamp(
+    typeof item.startedAt === 'number'
+      ? item.startedAt
+      : typeof item.createdAt === 'number'
+        ? item.createdAt
+        : Date.now(),
+  );
 
   if (itemType === 'reasoning') {
+    const summaryText = Array.isArray(item.summary)
+      ? item.summary
+        .map((entry) => typeof (entry as any)?.text === 'string' ? (entry as any).text : '')
+        .filter(Boolean)
+        .join('\n')
+      : '';
     return {
       id: itemId,
       type: 'reasoning',
       role: 'assistant',
       turnId,
       itemId,
-      title: 'Reasoning',
-      text: compactText(item.text),
+      title: '推理',
+      text: compactText(item.text) || compactText(summaryText) || '思考中…',
       status: kind === 'item_started' ? 'running' : 'completed',
-      meta: [kind === 'item_started' ? 'streaming' : 'captured', new Date(startedAt).toLocaleTimeString()],
+      meta: [kind === 'item_started' ? '流式输出中' : '已记录', new Date(startedAt).toLocaleTimeString()],
       createdAt: startedAt,
       details: item,
     };
@@ -294,8 +571,8 @@ function createTimelineEntryFromItemEvent(
       role: 'assistant',
       turnId,
       itemId,
-      title: 'Plan Draft',
-      text: compactText(item.text) || 'Planning…',
+      title: '计划草稿',
+      text: compactText(item.text) || '正在规划…',
       status: kind === 'item_started' ? 'running' : 'completed',
       meta: [new Date(startedAt).toLocaleTimeString()],
       createdAt: startedAt,
@@ -320,12 +597,12 @@ function createTimelineEntryFromItemEvent(
       role: 'system',
       turnId,
       itemId,
-      title: 'Command',
-      text: compactText(command) || 'Command execution',
+      title: '命令',
+      text: compactText(command) || '执行命令',
       status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
       meta: [
         typeof item.cwd === 'string' && item.cwd ? item.cwd : '',
-        output ? `${output.length} chars output` : '',
+        output ? `输出 ${output.length} 字符` : '',
       ].filter(Boolean),
       createdAt: startedAt,
       details: item,
@@ -333,22 +610,28 @@ function createTimelineEntryFromItemEvent(
   }
 
   if (itemType === 'fileChange') {
+    const status = typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed');
+    const changes = Array.isArray(item.changes)
+      ? item.changes.map((change) => ({
+        path: typeof (change as any)?.path === 'string' ? (change as any).path : '',
+        kind: typeof (change as any)?.kind === 'string' ? (change as any).kind : '',
+        addedLines: typeof (change as any)?.addedLines === 'number' ? (change as any).addedLines : undefined,
+        deletedLines: typeof (change as any)?.deletedLines === 'number' ? (change as any).deletedLines : undefined,
+      }))
+      : undefined;
+    const patch = typeof item.patch === 'string' ? item.patch : undefined;
+    const output = typeof item.output === 'string' ? item.output : '';
     return {
       id: itemId,
       type: 'file_change',
       role: 'system',
       turnId,
       itemId,
-      title: 'File Change',
-      text: compactText(typeof item.output === 'string' ? item.output : '') || 'Pending file changes',
-      status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
-      patch: typeof item.patch === 'string' ? item.patch : undefined,
-      changes: Array.isArray(item.changes)
-        ? item.changes.map((change) => ({
-          path: typeof (change as any)?.path === 'string' ? (change as any).path : '',
-          kind: typeof (change as any)?.kind === 'string' ? (change as any).kind : '',
-        }))
-        : undefined,
+      title: '文件变更',
+      text: summarizeFileChangeText(status, changes, patch, output),
+      status,
+      patch,
+      changes,
       createdAt: startedAt,
       details: item,
     };
@@ -361,7 +644,7 @@ function createTimelineEntryFromItemEvent(
       role: 'system',
       turnId,
       itemId,
-      title: 'MCP Tool',
+      title: 'MCP 工具',
       text: [item.server, item.tool].filter((value) => typeof value === 'string' && value).join('.'),
       status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
       meta: Array.isArray(item.progressMessages) ? item.progressMessages.filter((value): value is string => typeof value === 'string') : [],
@@ -377,7 +660,7 @@ function createTimelineEntryFromItemEvent(
       role: 'system',
       turnId,
       itemId,
-      title: 'Dynamic Tool',
+      title: '动态工具',
       text: [item.namespace, item.tool].filter((value) => typeof value === 'string' && value).join('.'),
       status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
       createdAt: startedAt,
@@ -385,18 +668,35 @@ function createTimelineEntryFromItemEvent(
     };
   }
 
-  return {
-    id: itemId,
-    type: itemType || 'item',
-    role: itemType === 'agentMessage' ? 'assistant' : 'system',
-    turnId,
-    itemId,
-    title: itemType || 'Item',
-    text: compactText(item.text) || compactText(item.output) || compactText(JSON.stringify(item)),
-    status: kind === 'item_started' ? 'running' : 'completed',
-    createdAt: startedAt,
-    details: item,
-  };
+  if (itemType === 'webSearch') {
+    const action = item.action && typeof item.action === 'object' ? item.action as Record<string, unknown> : undefined;
+    const actionType = typeof action?.type === 'string' ? action.type : '';
+    const query = typeof item.query === 'string'
+      ? item.query
+      : typeof action?.query === 'string'
+        ? action.query
+        : '';
+    const url = typeof item.url === 'string'
+      ? item.url
+      : typeof action?.url === 'string'
+        ? action.url
+        : '';
+    return {
+      id: itemId,
+      type: 'web_search',
+      role: 'system',
+      turnId,
+      itemId,
+      title: actionType === 'openPage' ? '打开网页' : '网页搜索',
+      text: query || url || '网页搜索',
+      status: typeof item.status === 'string' ? item.status : (kind === 'item_started' ? 'running' : 'completed'),
+      meta: [actionType, url].filter(Boolean),
+      createdAt: startedAt,
+      details: item,
+    };
+  }
+
+  return null;
 }
 
 function buildSystemTimelineEntry(
@@ -417,6 +717,7 @@ function buildSystemTimelineEntry(
     patch: fields.patch,
     changes: fields.changes,
     createdAt: fields.createdAt,
+    partial: fields.partial,
     details: fields.details,
   };
 }
@@ -435,7 +736,7 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
       type: 'turn_plan',
       role: 'assistant',
       turnId,
-      title: 'Execution Plan',
+      title: '执行计划',
       text: typeof (planEntry as any)?.explanation === 'string' ? (planEntry as any).explanation : '',
       meta: plan.map((step: any) => [step?.status, step?.step].filter(Boolean).join(': ')),
       createdAt: typeof (planEntry as any)?.updatedAt === 'number' ? (planEntry as any).updatedAt : Date.now(),
@@ -454,8 +755,8 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
       type: 'turn_diff',
       role: 'system',
       turnId,
-      title: 'Turn Diff',
-      text: 'Recovered diff snapshot',
+      title: '轮次 Diff',
+      text: '已恢复的差异快照',
       patch: diff,
       createdAt: typeof (diffEntry as any)?.updatedAt === 'number' ? (diffEntry as any).updatedAt : Date.now(),
       details: diffEntry,
@@ -469,54 +770,116 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
     if (!itemId || !itemType) {
       continue;
     }
-    if (itemType === 'hookEvent') {
-      entries.push({
-        id: itemId,
-        type: 'hook',
-        role: 'system',
-        turnId: typeof item.turnId === 'string' ? item.turnId : undefined,
-        title: 'Hook',
-        text: typeof item.phase === 'string' ? `Hook ${item.phase}` : 'Hook',
-        status: typeof item.status === 'string' ? item.status : undefined,
-        createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
-        details: item,
-      });
-      continue;
-    }
-    if (itemType === 'guardianReview') {
-      entries.push({
-        id: itemId,
-        type: 'guardian_review',
-        role: 'system',
-        turnId: typeof item.turnId === 'string' ? item.turnId : undefined,
-        title: 'Guardian Review',
-        text: typeof item.phase === 'string' ? `Guardian ${item.phase}` : 'Guardian review',
-        status: typeof item.status === 'string' ? item.status : undefined,
-        createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
-        details: item,
-      });
-    }
-  }
-
-  for (const notice of Array.isArray(message.globalSupplementalItems) ? message.globalSupplementalItems : []) {
-    const item = notice as Record<string, unknown>;
-    const itemId = typeof item.id === 'string' ? item.id : '';
-    const text = typeof item.text === 'string' ? item.text : '';
-    if (!itemId || !text) {
-      continue;
-    }
-    entries.push({
-      id: `notice:${itemId}`,
-      type: 'notice',
-      role: 'system',
-      title: typeof item.noticeKind === 'string' ? item.noticeKind : 'Notice',
-      text,
-      createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
-      details: item,
-    });
   }
 
   return entries;
+}
+
+function createEntriesFromThreadTurn(threadId: string, turn: any, index: number): TimelineEntry[] {
+  const turnId = String(turn?.id || `${threadId}-${index}`);
+  const createdAt = normalizeTimestamp(typeof turn?.createdAt === 'number' ? turn.createdAt : Date.now() + index);
+  const entries: TimelineEntry[] = [];
+  let hasUserMessage = false;
+  let hasAssistantMessage = false;
+
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  if (items.length) {
+    for (const item of items) {
+      if (item?.type === 'userMessage' && Array.isArray(item?.content)) {
+        const text = item.content
+          .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
+          .map((part: any) => part.text.trim())
+          .filter(Boolean)
+          .join('\n');
+        if (text) {
+          entries.push({
+            id: `${turnId}:${item.id || 'user'}`,
+            type: 'message',
+            role: 'user',
+            turnId,
+            itemId: typeof item?.id === 'string' ? item.id : undefined,
+            text,
+            createdAt: normalizeTimestamp(item?.createdAt, createdAt),
+          });
+          hasUserMessage = true;
+        }
+        continue;
+      }
+
+      if (item?.type === 'agentMessage' && typeof item?.text === 'string' && item.text.trim()) {
+        entries.push({
+          id: `${turnId}:${item.id || 'assistant'}`,
+          type: 'message',
+          role: 'assistant',
+          turnId,
+          itemId: typeof item?.id === 'string' ? item.id : undefined,
+          text: item.text.trim(),
+          createdAt: normalizeTimestamp(typeof item?.createdAt === 'number' ? item.createdAt : turn?.updatedAt, createdAt + 1),
+        });
+        hasAssistantMessage = true;
+        continue;
+      }
+
+      if (item?.type === 'commandExecution') {
+        entries.push({
+          id: `${turnId}:${item.id || 'command'}`,
+          type: 'command',
+          role: 'system',
+          turnId,
+          itemId: typeof item?.id === 'string' ? item.id : undefined,
+          title: '命令',
+          text: typeof item?.command === 'string' ? item.command : '执行命令',
+          status: typeof item?.status === 'string' ? item.status : 'completed',
+          meta: [
+            typeof item?.cwd === 'string' ? item.cwd : '',
+            typeof item?.exitCode === 'number' ? `退出码 ${item.exitCode}` : '',
+          ].filter(Boolean),
+          createdAt: normalizeTimestamp(typeof item?.createdAt === 'number' ? item.createdAt : createdAt, createdAt),
+        });
+        continue;
+      }
+
+      const fallbackEntry = createTimelineEntryFromItemEvent('item_completed', threadId, item, turnId);
+      if (fallbackEntry) {
+        entries.push({
+          ...fallbackEntry,
+          createdAt: normalizeTimestamp(fallbackEntry.createdAt, createdAt),
+        });
+      }
+    }
+  }
+
+  const userText = extractTurnText(turn);
+  if (userText && !hasUserMessage) {
+    entries.push({
+      id: `${turnId}-user`,
+      type: 'message',
+      role: 'user',
+      turnId,
+      text: userText,
+      createdAt,
+    });
+  }
+
+  if (typeof turn?.output === 'string' && turn.output.trim() && !hasAssistantMessage) {
+    entries.push({
+      id: `${turnId}-assistant`,
+      type: 'message',
+      role: 'assistant',
+      turnId,
+      text: turn.output.trim(),
+      createdAt: normalizeTimestamp(turn?.updatedAt, createdAt + 1),
+    });
+  }
+
+  return entries.length ? entries : [{
+    id: turnId,
+    type: 'turn',
+    role: 'system',
+    turnId,
+    text: '空轮次',
+    createdAt,
+  }];
 }
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -532,6 +895,11 @@ export const useAppStore = create<AppStore>((set) => ({
   auth: {
     token: '',
   },
+  codexOptions: {
+    status: 'idle',
+    data: null,
+    error: null,
+  },
   sessions: {
     items: [],
     activeSessionId: null,
@@ -540,6 +908,9 @@ export const useAppStore = create<AppStore>((set) => ({
     entriesBySessionId: {},
   },
   approvals: {
+    items: [],
+  },
+  notifications: {
     items: [],
   },
   turns: {
@@ -557,6 +928,7 @@ export const useAppStore = create<AppStore>((set) => ({
   },
   composer: {
     attachmentsBySessionId: {},
+    prefsBySessionId: {},
   },
   setHealthLoading: () => set((state) => ({
     health: {
@@ -591,12 +963,36 @@ export const useAppStore = create<AppStore>((set) => ({
       token,
     },
   })),
+  setCodexOptionsLoading: () => set((state) => ({
+    codexOptions: {
+      ...state.codexOptions,
+      status: 'loading',
+      error: null,
+    },
+  })),
+  setCodexOptionsReady: (data) => set({
+    codexOptions: {
+      status: 'ready',
+      data,
+      error: null,
+    },
+  }),
+  setCodexOptionsError: (message) => set((state) => ({
+    codexOptions: {
+      ...state.codexOptions,
+      status: 'error',
+      error: message,
+    },
+  })),
   setSessions: (items) => set((state) => ({
     sessions: {
       items,
       activeSessionId: state.sessions.activeSessionId && items.some((item) => item.threadId === state.sessions.activeSessionId)
         ? state.sessions.activeSessionId
-        : (items[0]?.threadId || null),
+        : null,
+    },
+    tokenUsage: {
+      bySessionId: mergeTokenUsageFromSessions(state.tokenUsage.bySessionId, items),
     },
   })),
   upsertSession: (item) => set((state) => {
@@ -613,7 +1009,15 @@ export const useAppStore = create<AppStore>((set) => ({
     return {
       sessions: {
         items: nextItems,
-        activeSessionId: state.sessions.activeSessionId || item.threadId,
+        activeSessionId: state.sessions.activeSessionId,
+      },
+      tokenUsage: {
+        bySessionId: item.tokenUsage !== undefined && item.tokenUsage !== null
+          ? {
+            ...state.tokenUsage.bySessionId,
+            [item.threadId]: normalizeTokenUsage(item.tokenUsage),
+          }
+          : state.tokenUsage.bySessionId,
       },
     };
   }),
@@ -629,7 +1033,7 @@ export const useAppStore = create<AppStore>((set) => ({
     return {
       sessions: {
         items: nextItems,
-        activeSessionId: state.sessions.activeSessionId === threadId ? (nextItems[0]?.threadId || null) : state.sessions.activeSessionId,
+        activeSessionId: state.sessions.activeSessionId === threadId ? null : state.sessions.activeSessionId,
       },
       timeline: {
         entriesBySessionId: nextEntries,
@@ -649,6 +1053,15 @@ export const useAppStore = create<AppStore>((set) => ({
     sessions: {
       ...state.sessions,
       activeSessionId: threadId,
+    },
+  })),
+  setComposerPrefs: (threadId, prefs) => set((state) => ({
+    composer: {
+      ...state.composer,
+      prefsBySessionId: {
+        ...state.composer.prefsBySessionId,
+        [threadId]: prefs,
+      },
     },
   })),
   replaceServerRequests: (items) => set(() => ({
@@ -693,6 +1106,17 @@ export const useAppStore = create<AppStore>((set) => ({
       items: [],
     },
   }),
+  pushNotification: (notice) => set((state) => ({
+    notifications: {
+      items: [...state.notifications.items.filter((item) => item.id !== notice.id), notice]
+        .sort((left, right) => left.createdAt - right.createdAt),
+    },
+  })),
+  dismissNotification: (noticeId) => set((state) => ({
+    notifications: {
+      items: state.notifications.items.filter((item) => item.id !== noticeId),
+    },
+  })),
   setTurnStarted: (threadId, turnId, startedAt) => set((state) => ({
     turns: {
       activeBySessionId: {
@@ -700,7 +1124,7 @@ export const useAppStore = create<AppStore>((set) => ({
         [threadId]: {
           active: true,
           turnId,
-          startedAt,
+          startedAt: normalizeTimestamp(startedAt),
         },
       },
     },
@@ -716,11 +1140,49 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     },
   })),
+  settleAssistantActivity: (threadId, turnId) => set((state) => {
+    const entries = [...(state.timeline.entriesBySessionId[threadId] || [])];
+    let changed = false;
+
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (!isAssistantActivityEntry(entry)) {
+        continue;
+      }
+      if (turnId && entry.turnId && entry.turnId !== turnId) {
+        continue;
+      }
+      if (!entry.partial && entry.status !== 'running') {
+        continue;
+      }
+
+      entries[index] = {
+        ...entry,
+        partial: false,
+        status: entry.status === 'error' ? entry.status : 'completed',
+        meta: entry.meta?.filter((line) => line !== '流式输出中'),
+      };
+      changed = true;
+    }
+
+    if (!changed) {
+      return state;
+    }
+
+    return {
+      timeline: {
+        entriesBySessionId: {
+          ...state.timeline.entriesBySessionId,
+          [threadId]: entries,
+        },
+      },
+    };
+  }),
   setTokenUsage: (threadId, usage) => set((state) => ({
     tokenUsage: {
       bySessionId: {
         ...state.tokenUsage.bySessionId,
-        [threadId]: usage,
+        [threadId]: normalizeTokenUsage(usage),
       },
     },
   })),
@@ -732,24 +1194,39 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     },
   })),
-  appendAssistantDelta: (threadId, itemId, delta) => set((state) => {
-    const entries = [...(state.timeline.entriesBySessionId[threadId] || [])];
+  appendAssistantDelta: (threadId, itemId, delta, options) => set((state) => {
+    const entries = [
+      ...promotePendingUserEntriesForTurn(
+        [...(state.timeline.entriesBySessionId[threadId] || [])],
+        threadId,
+        options?.turnId,
+        options?.createdAt,
+      ),
+    ];
     const index = entries.findIndex((entry) => entry.id === itemId);
     if (index >= 0) {
       entries[index] = {
         ...entries[index],
         role: 'assistant',
         type: 'message',
+        turnId: entries[index].turnId || options?.turnId,
+        itemId: entries[index].itemId || itemId,
         text: `${entries[index].text || ''}${delta}`,
-        createdAt: entries[index].createdAt || Date.now(),
+        createdAt: entries[index].createdAt || normalizeTimestamp(options?.createdAt),
+        partial: true,
+        status: 'running',
       };
     } else {
       entries.push({
         id: itemId,
         type: 'message',
         role: 'assistant',
+        turnId: options?.turnId,
+        itemId,
         text: delta,
-        createdAt: Date.now(),
+        createdAt: normalizeTimestamp(options?.createdAt),
+        partial: true,
+        status: 'running',
       });
     }
 
@@ -763,7 +1240,14 @@ export const useAppStore = create<AppStore>((set) => ({
     };
   }),
   upsertTimelineEntry: (threadId, entry) => set((state) => {
-    const entries = [...(state.timeline.entriesBySessionId[threadId] || [])];
+    const entries = [
+      ...promotePendingUserEntriesForTurn(
+        [...(state.timeline.entriesBySessionId[threadId] || [])],
+        threadId,
+        entry.turnId,
+        entry.createdAt,
+      ),
+    ];
     const index = entries.findIndex((item) => item.id === entry.id);
     if (index >= 0) {
       entries[index] = {
@@ -817,6 +1301,7 @@ export const useAppStore = create<AppStore>((set) => ({
   })),
   addAttachment: (threadId, attachment) => set((state) => ({
     composer: {
+      ...state.composer,
       attachmentsBySessionId: {
         ...state.composer.attachmentsBySessionId,
         [threadId]: [...(state.composer.attachmentsBySessionId[threadId] || []), attachment],
@@ -825,6 +1310,7 @@ export const useAppStore = create<AppStore>((set) => ({
   })),
   removeAttachment: (threadId, attachmentId) => set((state) => ({
     composer: {
+      ...state.composer,
       attachmentsBySessionId: {
         ...state.composer.attachmentsBySessionId,
         [threadId]: (state.composer.attachmentsBySessionId[threadId] || []).filter((item) => item.id !== attachmentId),
@@ -833,60 +1319,45 @@ export const useAppStore = create<AppStore>((set) => ({
   })),
   clearAttachments: (threadId) => set((state) => ({
     composer: {
+      ...state.composer,
       attachmentsBySessionId: {
         ...state.composer.attachmentsBySessionId,
         [threadId]: [],
       },
     },
   })),
+  promotePendingUserEntries: (threadId, turnId, startedAt) => set((state) => {
+    const currentEntries = state.timeline.entriesBySessionId[threadId] || [];
+    const nextEntries = promotePendingUserEntriesForTurn([...currentEntries], threadId, turnId, startedAt);
+    if (nextEntries === currentEntries) {
+      return state;
+    }
+
+    return {
+      timeline: {
+        entriesBySessionId: {
+          ...state.timeline.entriesBySessionId,
+          [threadId]: nextEntries,
+        },
+      },
+    };
+  }),
   setThreadSync: (threadId, message) => set((state) => ({
     timeline: {
       entriesBySessionId: {
         ...state.timeline.entriesBySessionId,
         [threadId]: [
           ...(Array.isArray(message.turns)
-          ? message.turns.flatMap((turn: any, index) => {
-            const turnId = String(turn?.id || `${threadId}-${index}`);
-            const entries: TimelineEntry[] = [];
-            const userText = extractTurnText(turn);
-            if (userText) {
-              entries.push({
-                id: `${turnId}-user`,
-                type: 'message',
-                role: 'user',
-                turnId,
-                text: userText,
-                createdAt: typeof turn?.createdAt === 'number' ? turn.createdAt : index,
-              });
-            }
-            if (typeof turn?.output === 'string' && turn.output.trim()) {
-              entries.push({
-                id: `${turnId}-assistant`,
-                type: 'message',
-                role: 'assistant',
-                turnId,
-                text: turn.output.trim(),
-                createdAt: typeof turn?.updatedAt === 'number' ? turn.updatedAt : index + 0.5,
-              });
-            }
-            return entries.length ? entries : [{
-              id: turnId,
-              type: 'turn',
-              role: 'system',
-              turnId,
-              text: 'Empty turn',
-              createdAt: index,
-            }];
-          })
+          ? message.turns.flatMap((turn: any, index) => createEntriesFromThreadTurn(threadId, turn, index))
           : []),
           ...createTimelineEntriesFromThreadSync(message),
-        ],
+        ].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0)),
       },
     },
     tokenUsage: {
       bySessionId: {
         ...state.tokenUsage.bySessionId,
-        [threadId]: message.tokenUsage ?? null,
+        [threadId]: normalizeTokenUsage(message) ?? state.tokenUsage.bySessionId[threadId] ?? null,
       },
     },
   })),
@@ -939,11 +1410,13 @@ export function mapServerMessageToStore(message: ServerMessage) {
 
   if (message.type === 'turn_started') {
     store.setTurnStarted(message.threadId, message.turnId, message.startedAt);
+    store.promotePendingUserEntries(message.threadId, message.turnId, message.startedAt);
     return;
   }
 
   if (message.type === 'turn_completed') {
     store.setTurnCompleted(message.threadId, message.turnId);
+    store.settleAssistantActivity(message.threadId, message.turnId);
     return;
   }
 
@@ -957,6 +1430,10 @@ export function mapServerMessageToStore(message: ServerMessage) {
       message.threadId,
       message.itemId || `${message.threadId}-assistant-live`,
       message.delta || '',
+      {
+        turnId: message.turnId,
+        createdAt: message.startedAt,
+      },
     );
     return;
   }
@@ -968,11 +1445,12 @@ export function mapServerMessageToStore(message: ServerMessage) {
       role: 'assistant',
       turnId: message.turnId,
       itemId: message.itemId,
-      title: 'Plan Draft',
+      title: '计划草稿',
       text: `${(useAppStore.getState().timeline.entriesBySessionId[message.threadId] || []).find((entry) => entry.id === entryId)?.text || ''}${message.delta || ''}`,
       status: 'running',
-      meta: ['streaming'],
+      meta: ['流式输出中'],
       createdAt: message.startedAt,
+      partial: true,
     }));
     return;
   }
@@ -982,7 +1460,7 @@ export function mapServerMessageToStore(message: ServerMessage) {
       id: `turn-plan:${message.turnId || 'turn'}`,
       role: 'assistant',
       turnId: message.turnId,
-      title: 'Execution Plan',
+      title: '执行计划',
       text: typeof message.explanation === 'string' ? message.explanation : '',
       status: 'completed',
       meta: Array.isArray(message.plan)
@@ -996,8 +1474,8 @@ export function mapServerMessageToStore(message: ServerMessage) {
     store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'turn_diff', {
       id: `turn-diff:${message.turnId || 'turn'}`,
       turnId: message.turnId,
-      title: 'Turn Diff',
-      text: 'Updated diff snapshot',
+      title: '轮次 Diff',
+      text: '已更新的差异快照',
       patch: typeof message.diff === 'string' ? message.diff : currentDiffToText(message.diff),
       status: 'completed',
     }));
@@ -1012,43 +1490,21 @@ export function mapServerMessageToStore(message: ServerMessage) {
       id: entryId,
       turnId: message.turnId,
       itemId: message.itemId,
-      title: 'MCP Tool',
-      text: current?.text || 'Tool running',
+      title: 'MCP 工具',
+      text: current?.text || '工具运行中',
       status: 'running',
       meta: nextMeta.slice(-6),
       createdAt: message.startedAt,
+      partial: true,
     }));
     return;
   }
 
   if (message.type === 'hook_started' || message.type === 'hook_completed') {
-    const run = ('run' in message ? message.run : undefined) as Record<string, unknown> | undefined;
-    const hookId = typeof run?.id === 'string' ? run.id : `hook:${message.threadId}:${message.turnId || 'turn'}`;
-    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'hook', {
-      id: hookId,
-      turnId: message.turnId,
-      title: 'Hook',
-      text: typeof run?.eventName === 'string'
-        ? `${run.eventName} ${message.type === 'hook_started' ? 'started' : 'completed'}`
-        : (message.type === 'hook_started' ? 'Hook started' : 'Hook completed'),
-      status: message.type === 'hook_started' ? 'running' : 'completed',
-      meta: [
-        typeof run?.handler === 'string' ? `handler: ${run.handler}` : '',
-        typeof run?.scope === 'string' ? `scope: ${run.scope}` : '',
-      ].filter(Boolean),
-      details: run,
-    }));
     return;
   }
 
   if (message.type === 'guardian_review_started' || message.type === 'guardian_review_completed') {
-    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'guardian_review', {
-      id: `guardian:${message.threadId}:${message.turnId || 'turn'}`,
-      turnId: message.turnId,
-      title: 'Guardian Review',
-      text: message.type === 'guardian_review_started' ? 'Guardian review started' : 'Guardian review completed',
-      status: message.type === 'guardian_review_started' ? 'running' : 'completed',
-    }));
     return;
   }
 
@@ -1073,13 +1529,15 @@ export function mapServerMessageToStore(message: ServerMessage) {
           ? item.output
           : '';
       if (text.trim()) {
-        store.appendAssistantDelta(message.threadId, itemId, text.trim());
         store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'message', {
           id: itemId,
           role: 'assistant',
           turnId: message.turnId,
+          itemId,
           text: text.trim(),
           status: 'completed',
+          partial: false,
+          createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
         }));
       }
       return;
@@ -1107,25 +1565,41 @@ export function mapServerMessageToStore(message: ServerMessage) {
         role: 'assistant',
         turnId: message.turnId,
         itemId: message.itemId,
-        title: 'Reasoning',
+        title: '推理',
         text: `${current?.text || ''}${deltaText}`,
         status: 'running',
-        meta: ['streaming'],
+        meta: ['流式输出中'],
         createdAt: message.startedAt,
+        partial: true,
       }));
       return;
     }
 
     if (message.method === 'item/commandExecution/outputDelta') {
+      const currentDetails = current?.details && typeof current.details === 'object'
+        ? current.details as Record<string, unknown>
+        : {};
+      const currentOutput = typeof currentDetails.output === 'string'
+        ? currentDetails.output
+        : typeof currentDetails.aggregatedOutput === 'string'
+          ? currentDetails.aggregatedOutput
+          : '';
+      const nextOutput = `${currentOutput}${message.delta || ''}`;
       store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'command', {
         id: entryId,
         turnId: message.turnId,
         itemId: message.itemId,
-        title: current?.title || 'Command',
-        text: current?.text || 'Command execution',
+        title: current?.title || '命令',
+        text: current?.text || '执行命令',
         status: 'running',
         meta: [...(current?.meta || []), message.delta || ''].filter(Boolean).slice(-8),
         createdAt: message.startedAt,
+        partial: true,
+        details: {
+          ...currentDetails,
+          output: nextOutput,
+          aggregatedOutput: nextOutput,
+        },
       }));
       return;
     }
@@ -1135,54 +1609,39 @@ export function mapServerMessageToStore(message: ServerMessage) {
         id: entryId,
         turnId: message.turnId,
         itemId: message.itemId,
-        title: current?.title || 'File Change',
-        text: current?.text || 'File change in progress',
+        title: current?.title || '文件变更',
+        text: current?.text || '文件变更处理中',
         status: 'running',
         patch: typeof message.patch === 'string' ? message.patch : current?.patch,
         changes: Array.isArray(message.changes)
           ? message.changes.map((change: any) => ({
             path: typeof change?.path === 'string' ? change.path : '',
             kind: typeof change?.kind === 'string' ? change.kind : '',
+            addedLines: typeof change?.addedLines === 'number' ? change.addedLines : undefined,
+            deletedLines: typeof change?.deletedLines === 'number' ? change.deletedLines : undefined,
           }))
           : current?.changes,
         meta: message.delta ? [...(current?.meta || []), message.delta].slice(-8) : current?.meta,
         createdAt: message.startedAt,
+        partial: true,
       }));
       return;
     }
 
-    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'item_delta', {
-      id: entryId,
-      turnId: message.turnId,
-      itemId: message.itemId,
-      title: message.method || 'Item update',
-      text: message.delta || current?.text || '',
-      status: 'running',
-      patch: typeof message.patch === 'string' ? message.patch : current?.patch,
-      changes: Array.isArray(message.changes)
-        ? message.changes.map((change: any) => ({
-          path: typeof change?.path === 'string' ? change.path : '',
-          kind: typeof change?.kind === 'string' ? change.kind : '',
-        }))
-        : current?.changes,
-      createdAt: message.startedAt,
-    }));
     return;
   }
 
   if (message.type === 'warning' || message.type === 'error_notice') {
-    if (!message.threadId) {
-      return;
-    }
-    const noticeId = message.noticeId || `${message.threadId}:${message.type}:${Date.now()}`;
-    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'notice', {
+    const threadId = message.threadId;
+    const noticeId = message.noticeId || `${threadId || 'global'}:${message.type}:${Date.now()}`;
+    store.pushNotification({
       id: `notice:${noticeId}`,
-      role: 'system',
-      title: message.noticeKind || (message.type === 'warning' ? 'Warning' : 'Error'),
-      text: message.message,
-      status: message.type === 'warning' ? 'warning' : 'error',
-      createdAt: message.createdAt,
-    }));
+      level: message.type === 'warning' ? 'warning' : 'error',
+      title: message.noticeKind || (message.type === 'warning' ? '警告' : '错误'),
+      message: message.message,
+      threadId,
+      createdAt: normalizeTimestamp(message.createdAt),
+    });
     return;
   }
 
@@ -1193,10 +1652,46 @@ export function mapServerMessageToStore(message: ServerMessage) {
     store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'notice', {
       id: `codex-error:${message.threadId}:${Date.now()}`,
       role: 'system',
-      title: 'Codex Error',
-      text: typeof message.error === 'string' ? message.error : compactText(JSON.stringify(message.error)),
+      title: 'Codex 错误',
+      text: typeof message.error === 'string'
+        ? message.error
+        : summarizeUnknownObject(message.error) || '发生了 Codex 错误',
       status: 'error',
     }));
+    return;
+  }
+
+  if (message.type === 'backend_error') {
+    const activeThreadId = store.sessions.activeSessionId;
+    if (!activeThreadId) {
+      return;
+    }
+    store.upsertTimelineEntry(activeThreadId, buildSystemTimelineEntry(activeThreadId, 'notice', {
+      id: `backend-error:${Date.now()}`,
+      role: 'system',
+      title: '后端错误',
+      text: message.message,
+      status: 'error',
+    }));
+    return;
+  }
+
+  if (message.type === 'error') {
+    if (!message.threadId) {
+      return;
+    }
+    store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'notice', {
+      id: `request-error:${message.threadId}:${Date.now()}`,
+      role: 'system',
+      title: '请求错误',
+      text: message.message,
+      status: 'error',
+    }));
+    return;
+  }
+
+  if (message.type === 'notification') {
+    return;
   }
 }
 
@@ -1207,9 +1702,5 @@ function currentDiffToText(value: unknown): string {
   if (!value) {
     return '';
   }
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
+  return summarizeUnknownObject(value) || '差异快照已更新';
 }

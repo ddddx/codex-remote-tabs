@@ -18,6 +18,37 @@ function getApprovalTime(request: ServerRequestItem): number {
   return typeof request.createdAt === 'number' ? request.createdAt : 0;
 }
 
+function getEntryRank(entry: TimelineEntry): number {
+  if (entry.role === 'user') {
+    return 0;
+  }
+  if (entry.type === 'reasoning' || entry.type === 'plan' || entry.type === 'turn_plan') {
+    return 1;
+  }
+  if (entry.role === 'assistant' && entry.type === 'message') {
+    return 2;
+  }
+  if (entry.type === 'command' || entry.type === 'mcp_tool' || entry.type === 'dynamic_tool' || entry.type === 'web_search') {
+    return 3;
+  }
+  if (entry.type === 'file_change' || entry.type === 'turn_diff') {
+    return 4;
+  }
+  return 5;
+}
+
+function compareEntries(left: TimelineEntry, right: TimelineEntry): number {
+  const timeDiff = getEntryTime(left) - getEntryTime(right);
+  if (timeDiff !== 0) {
+    return timeDiff;
+  }
+  const rankDiff = getEntryRank(left) - getEntryRank(right);
+  if (rankDiff !== 0) {
+    return rankDiff;
+  }
+  return left.id.localeCompare(right.id);
+}
+
 function defaultGroupStatus(entries: TimelineEntry[], approvals: ServerRequestItem[]): 'running' | 'completed' | 'pending' {
   if (approvals.some((item) => item.status !== 'submitting')) {
     return 'pending';
@@ -35,7 +66,7 @@ export function buildTimelineGroups(
 ): TimelineGroup[] {
   const entryGroups = new Map<string, TimelineGroup>();
 
-  const sortedEntries = [...entries].sort((left, right) => getEntryTime(left) - getEntryTime(right));
+  const sortedEntries = [...entries].sort(compareEntries);
   for (const entry of sortedEntries) {
     const key = entry.turnId ? `turn:${entry.turnId}` : `entry:${entry.id}`;
     const existing = entryGroups.get(key);
@@ -47,7 +78,7 @@ export function buildTimelineGroups(
     entryGroups.set(key, {
       id: key,
       turnId: entry.turnId,
-      label: entry.turnId ? 'Turn' : 'Session Event',
+      label: entry.turnId ? '轮次' : '会话事件',
       status: entry.status === 'running' ? 'running' : 'completed',
       entries: [entry],
       approvals: [],
@@ -66,7 +97,7 @@ export function buildTimelineGroups(
     entryGroups.set(key, {
       id: key,
       turnId: request.turnId,
-      label: request.turnId ? 'Turn' : 'Pending Approval',
+      label: request.turnId ? '轮次' : '待处理审批',
       status: request.status === 'submitting' ? 'running' : 'pending',
       entries: [],
       approvals: [request],
@@ -79,39 +110,18 @@ export function buildTimelineGroups(
   const turnIndexById = new Map(turnGroups.map((group, index) => [group.turnId || '', index + 1]));
 
   for (const group of groups) {
-    group.entries.sort((left, right) => getEntryTime(left) - getEntryTime(right));
+    group.entries.sort(compareEntries);
     group.approvals.sort((left, right) => getApprovalTime(left) - getApprovalTime(right));
     group.status = defaultGroupStatus(group.entries, group.approvals);
     if (group.turnId) {
       const turnNumber = turnIndexById.get(group.turnId) || 0;
-      group.label = `Turn ${turnNumber}`;
+      group.label = `第 ${turnNumber} 轮`;
       if (turnState?.turnId === group.turnId && turnState.active) {
         group.status = 'running';
       }
     } else if (group.approvals.length) {
-      group.label = 'Approval';
+      group.label = '审批';
     }
-  }
-
-  if (turnState?.active && turnState.turnId && !entryGroups.has(`turn:${turnState.turnId}`)) {
-    groups.push({
-      id: `turn:${turnState.turnId}`,
-      turnId: turnState.turnId,
-      label: `Turn ${groups.filter((group) => group.turnId).length + 1}`,
-      status: 'running',
-      entries: [{
-        id: `thinking:${turnState.turnId}`,
-        type: 'reasoning',
-        role: 'assistant',
-        turnId: turnState.turnId,
-        title: 'Thinking',
-        text: 'Waiting for streamed reasoning or tool output…',
-        status: 'running',
-        createdAt: turnState.startedAt || Date.now(),
-      }],
-      approvals: [],
-      createdAt: turnState.startedAt || Date.now(),
-    });
   }
 
   return groups.sort((left, right) => left.createdAt - right.createdAt);

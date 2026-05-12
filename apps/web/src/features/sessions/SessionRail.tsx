@@ -1,42 +1,65 @@
+import { formatSessionStatus, formatWindowStatus } from '../../app/view-helpers.js';
 import { useAppStore } from '../../store/appStore.js';
 
-export function SessionRail() {
+type SessionRailProps = {
+  onNewSession: () => void;
+};
+
+function buildStatusDotClass(status: string | undefined): string {
+  const normalized = (status || '').trim().toLowerCase();
+  if (normalized === 'running' || normalized === 'active' || normalized === 'in_progress' || normalized === 'inprogress') {
+    return 'open';
+  }
+  if (normalized === 'pending') {
+    return 'waiting';
+  }
+  return 'closed';
+}
+
+export function SessionRail({ onNewSession }: SessionRailProps) {
   const sessions = useAppStore((state) => state.sessions.items);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const approvals = useAppStore((state) => state.approvals.items);
   const setActiveSession = useAppStore((state) => state.setActiveSession);
 
   return (
-    <aside className="panel session-rail">
-      <div className="panel-title">会话</div>
-      <div className="panel-body">
-        {sessions.length ? (
-          <div className="session-list">
-            {sessions.map((session) => {
-              const pendingCount = approvals.filter((request) => request.threadId === session.threadId).length;
-              return (
-                <button
-                  key={session.threadId}
-                  type="button"
-                  className={`session-item${session.threadId === activeSessionId ? ' active' : ''}`}
-                  onClick={() => setActiveSession(session.threadId)}
-                >
-                  <div className="session-item-row">
-                    <strong>{session.name}</strong>
-                    {pendingCount ? <span className="badge warning">{pendingCount}</span> : null}
-                  </div>
-                  <span>{session.cwd || '未设置工作区'}</span>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
+    <>
+      <div id="tabList" className="tab-list">
+        {sessions.length ? sessions.map((session) => {
+          const pendingCount = approvals.filter((request) => request.threadId === session.threadId).length;
+          const isActive = session.threadId === activeSessionId;
+          const isClosed = (session.status || '').trim().toLowerCase() === 'closed';
+          return (
+            <button
+              key={session.threadId}
+              className={`tab-item${isActive ? ' active' : ''}${isClosed ? ' closed' : ''}${pendingCount ? ' has-unread' : ''}`}
+              type="button"
+              onClick={() => setActiveSession(session.threadId)}
+            >
+              <span className="name">{session.name}</span>
+              <span className="workspace">{session.cwd || '未设置工作区'}</span>
+              <span className="meta">
+                <span className={`status-dot ${buildStatusDotClass(session.status)}`}></span>
+                <span>{formatSessionStatus(session.status)}</span>
+                {formatWindowStatus(session.windowStatus) ? (
+                  <>
+                    <span>·</span>
+                    <span>{formatWindowStatus(session.windowStatus)}</span>
+                  </>
+                ) : null}
+              </span>
+            </button>
+          );
+        }) : (
           <div className="empty-state">
             <strong>还没有会话</strong>
-            <span>在下方输入区发送第一条消息后会自动创建会话。</span>
+            <span>点下方按钮新建，或者直接在输入区发送第一条消息。</span>
           </div>
         )}
       </div>
-    </aside>
+      <button id="newTabBtn" className="btn" style={{ width: '100%', marginTop: 8 }} type="button" onClick={onNewSession}>
+        + 新建会话
+      </button>
+    </>
   );
 }

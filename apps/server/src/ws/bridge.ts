@@ -24,6 +24,7 @@ export function broadcastMessage(app: FastifyInstance, message: ServerMessage): 
 
 export async function ensureCodexReady(app: FastifyInstance): Promise<void> {
   if (!app.runtimeState.codexStarted) {
+    await app.appServerSupervisor.ensureStarted();
     await app.codexClient.start();
     app.runtimeState.codexStarted = true;
   }

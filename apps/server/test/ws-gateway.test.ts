@@ -68,6 +68,10 @@ function createAppStub() {
         listeners.set(event, existing);
       },
     },
+    appServerSupervisor: {
+      async ensureStarted() {},
+      async stop() {},
+    },
     get(path: string, options: any, handler: (socket: any, request: any) => void) {
       assert.equal(path, '/ws');
       assert.equal(options.websocket, true);

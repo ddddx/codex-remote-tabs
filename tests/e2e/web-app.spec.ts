@@ -1,7 +1,10 @@
 import { test, expect } from '@playwright/test';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import path from 'node:path';
 import { startMockBackend } from './support/mock-backend.js';
+
+test.setTimeout(120000);
 
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
@@ -19,11 +22,13 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   throw new Error('vite startup timeout');
 }
 
-test('web app handles session timeline approvals workspace and uploads', async ({ page }) => {
+test('web app matches current shell and conversation flow', async ({ page }) => {
   const backend = await startMockBackend();
+  await page.setViewportSize({ width: 1400, height: 1000 });
   await page.addInitScript(() => {
     window.localStorage.clear();
   });
+
   const web = spawn(process.execPath, [
     path.resolve('node_modules/vite/bin/vite.js'),
     '--host',
@@ -43,51 +48,92 @@ test('web app handles session timeline approvals workspace and uploads', async (
   try {
     await waitForServer('http://127.0.0.1:4173', 30000);
 
-    page.on('console', (message) => {
-      process.stdout.write(`[browser:${message.type()}] ${message.text()}\n`);
-    });
-    page.on('pageerror', (error) => {
-      process.stdout.write(`[pageerror] ${error.stack || error.message}\n`);
-    });
-
     await page.goto('http://127.0.0.1:4173');
-    process.stdout.write(`[body] ${await page.locator('body').innerText()}\n`);
-    await expect(page.getByRole('heading', { name: 'Codex Remote Console' })).toBeVisible();
 
-    await page.getByPlaceholder('WebSocket token').fill('secret-token');
-    await expect(page.locator('.inspector-card').filter({ hasText: 'Tokenconfigured' })).toBeVisible();
-    await expect(page.locator('.status-chip.small').filter({ hasText: 'connected' })).toBeVisible();
+    await expect(page.locator('#activeTitle')).toHaveText('Codex Remote Control');
+    await expect(page.locator('#activeStatus')).toHaveText('服务正常');
+    await expect(page.locator('#contextUsage')).toContainText('用量');
+    await expect(page.locator('.sidebar')).toBeVisible();
+    await page.locator('#sidebarClose').click();
+    await expect(page.locator('.sidebar')).toBeVisible();
 
-    await expect(page.getByText('Mock Session')).toBeVisible();
-    await expect(page.getByText('Recovered warning')).toBeVisible();
-    await expect(page.getByText('Execution Plan')).toBeVisible();
-    await expect(page.locator('.approval-summary').filter({ hasText: 'npm test' })).toBeVisible();
+    await page.locator('#tokenBtn').click();
+    await page.locator('#tokenInput').fill('secret-token');
+    await page.getByRole('button', { name: '保存并重连' }).click();
 
-    await page.getByPlaceholder('Type a prompt…').fill('Ship the refactor');
-    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.locator('#activeStatus')).toHaveText('已连接');
+    await expect(page.locator('#tabList')).toContainText('Mock Session');
+    await page.locator('#menuBtn').click();
+    await expect(page.locator('.sidebar')).not.toHaveClass(/hidden/);
+    await page.getByRole('button', { name: /Mock Session/ }).click();
+    await expect(page.locator('#activeTitle')).toHaveText('Mock Session');
+    await expect(page.locator('#contextUsage')).toContainText('22');
+    await expect.poll(async () => page.locator('#messages').evaluate((element) => {
+      const node = element as HTMLDivElement;
+      return node.scrollTop + node.clientHeight >= node.scrollHeight - 4;
+    })).toBe(true);
+    await page.locator('#sidebarClose').click();
+    await expect(page.locator('.sidebar')).toBeVisible();
 
-    await expect(page.getByText('Thinking through the patch')).toBeVisible();
-    await expect(page.getByText('Run tests')).toBeVisible();
-    await expect(page.locator('.timeline-chip').filter({ hasText: 'update: app.tsx' })).toBeVisible();
+    await page.locator('#promptInput').fill('Ship the refactor');
+    await page.locator('#promptInput').press('Enter');
 
-    await page.getByRole('button', { name: 'Approve' }).first().click();
-    await expect(page.getByText('No pending approvals')).toBeVisible();
+    await expect(page.locator('.messages')).toContainText('Ship the refactor');
+    await expect(page.locator('.messages')).toContainText('npm test');
+    await expect(page.locator('.messages')).toContainText('文件变更');
+    await expect(page.locator('.messages')).toContainText('app.tsx');
+    await expect(page.locator('.messages')).not.toContainText('Run tests');
 
-    await page.locator('.workspace-entry').filter({ hasText: 'demo' }).click();
-    await expect(page.locator('.workspace-path')).toHaveText('C:\\workspace\\demo');
+    const taskToggle = page.locator('.task-panel-toggle');
+    await expect(taskToggle).toBeVisible();
+    await expect(taskToggle).toContainText('任务列表');
+    await taskToggle.click();
+    await expect(page.locator('.task-panel-body')).toContainText('Inspect and patch');
+    await expect(page.locator('.task-panel-body')).toContainText('Inspect');
+    await expect(page.locator('.task-panel-body')).toContainText('Patch');
 
-    await page.getByPlaceholder('New folder name').fill('next-folder');
-    await page.getByRole('button', { name: 'Create folder' }).click();
-    await expect(page.locator('.workspace-path')).toHaveText('C:\\workspace\\demo\\next-folder');
+    const commandCard = page.locator('.timeline-event').filter({ hasText: 'npm test' }).first();
+    await expect(commandCard).toBeVisible();
+    await expect(commandCard).not.toContainText('All green');
+    await commandCard.locator('.timeline-process-summary').click();
+    await expect(commandCard).toContainText('All green');
 
-    await page.setInputFiles('input[type="file"]', {
+    const fileCard = page.locator('.timeline-event').filter({ hasText: 'app.tsx' }).first();
+    await expect(fileCard).toBeVisible();
+    await fileCard.locator('.timeline-process-summary').click();
+    await expect(fileCard).toContainText('*** Update File: app.tsx');
+
+    await expect(page.locator('.approval-banner')).toContainText('npm test');
+    await page.getByRole('button', { name: '批准' }).first().click();
+    await expect(page.locator('.approval-banner')).toHaveCount(0);
+
+    await page.locator('#imageInput').setInputFiles({
       name: 'demo.png',
       mimeType: 'image/png',
       buffer: Buffer.from([137, 80, 78, 71]),
     });
-    await expect(page.getByText('demo.png')).toBeVisible();
+    await expect(page.locator('#composerAttachmentList')).toContainText('demo.png');
+
+    await page.locator('#menuBtn').click();
+    await expect(page.locator('.sidebar')).not.toHaveClass(/hidden/);
+    await page.locator('#newTabBtn').click();
+    await expect(page.locator('#sessionModalTitle')).toHaveText('新建会话');
+    await expect(page.locator('.workspace-browser-path')).toContainText('C:\\workspace');
+    await page.locator('.workspace-browser-item').filter({ hasText: 'demo' }).click();
+    await expect(page.locator('.workspace-browser-path')).toContainText('C:\\workspace\\demo');
+    const sessionModal = page.locator('.session-modal-card');
+    await sessionModal.getByPlaceholder('新文件夹名称').fill('next-folder');
+    await sessionModal.locator('.session-workspace-actions').last().getByRole('button', { name: '新建文件夹' }).click();
+    await expect(page.locator('.workspace-browser-path')).toContainText('C:\\workspace\\demo\\next-folder');
   } finally {
-    web.kill();
-    await backend.close();
+    web.kill('SIGKILL');
+    await Promise.race([
+      once(web, 'exit').then(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    await Promise.race([
+      backend.close(),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
   }
 });

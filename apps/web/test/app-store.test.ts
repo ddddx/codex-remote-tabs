@@ -11,6 +11,7 @@ function resetStore() {
     sessions: { items: [], activeSessionId: null },
     timeline: { entriesBySessionId: {} },
     approvals: { items: [] },
+    notifications: { items: [] },
     turns: { activeBySessionId: {} },
     tokenUsage: { bySessionId: {} },
     workspace: {
@@ -96,7 +97,7 @@ test('mcp progress and file change delta update rich timeline entries', () => {
     itemId: 'file-1',
     method: 'item/fileChange/patchUpdated',
     patch: '*** Begin Patch\n*** End Patch',
-    changes: [{ path: 'apps/web/src/app/App.tsx', kind: 'update' }],
+    changes: [{ path: 'apps/web/src/app/App.tsx', kind: 'update', addedLines: 5, deletedLines: 2 }],
   } as any);
 
   const entries = useAppStore.getState().timeline.entriesBySessionId['thread-2'] || [];
@@ -106,6 +107,8 @@ test('mcp progress and file change delta update rich timeline entries', () => {
   assert.deepEqual(mcpEntry?.meta, ['Searching docs']);
   assert.equal(fileEntry?.patch, '*** Begin Patch\n*** End Patch');
   assert.equal(fileEntry?.changes?.[0]?.path, 'apps/web/src/app/App.tsx');
+  assert.equal(fileEntry?.changes?.[0]?.addedLines, 5);
+  assert.equal(fileEntry?.changes?.[0]?.deletedLines, 2);
 });
 
 test('item started and completed map command entries without duplicating ids', () => {
@@ -180,11 +183,9 @@ test('thread sync restores plan diff supplemental and notice entries', () => {
   } as any);
 
   const entries = useAppStore.getState().timeline.entriesBySessionId['thread-restore'] || [];
-  assert.equal(entries.length, 4);
+  assert.equal(entries.length, 2);
   assert.ok(entries.some((entry) => entry.type === 'turn_plan'));
   assert.ok(entries.some((entry) => entry.type === 'turn_diff'));
-  assert.ok(entries.some((entry) => entry.type === 'hook'));
-  assert.ok(entries.some((entry) => entry.type === 'notice'));
 });
 
 test('reasoning, turn updates and notices are normalized into timeline semantics', () => {
@@ -224,10 +225,11 @@ test('reasoning, turn updates and notices are normalized into timeline semantics
   } as any);
 
   const entries = useAppStore.getState().timeline.entriesBySessionId['thread-live'] || [];
+  const notifications = useAppStore.getState().notifications.items;
   assert.ok(entries.some((entry) => entry.type === 'reasoning' && entry.text === 'Thinking'));
   assert.ok(entries.some((entry) => entry.type === 'turn_plan' && entry.turnId === 'turn-live'));
   assert.ok(entries.some((entry) => entry.type === 'turn_diff' && entry.patch === '*** Begin Patch\n*** End Patch'));
-  assert.ok(entries.some((entry) => entry.type === 'notice' && entry.text === 'Watch out'));
+  assert.ok(notifications.some((entry) => entry.message === 'Watch out' && entry.level === 'warning'));
 });
 
 test('timeline groups combine turn entries and inline approvals', () => {
@@ -270,4 +272,136 @@ test('timeline groups combine turn entries and inline approvals', () => {
   assert.equal(groups[0]?.entries.length, 2);
   assert.equal(groups[0]?.approvals.length, 1);
   assert.equal(groups[0]?.status, 'running');
+});
+
+test('thread sync keeps visible user and assistant messages when a turn also contains tool items', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-mixed',
+    turns: [{
+      id: 'turn-mixed',
+      createdAt: 1,
+      updatedAt: 2,
+      input: [{ type: 'text', text: '用户提问' }],
+      output: '助手回复',
+      items: [
+        {
+          id: 'cmd-1',
+          type: 'commandExecution',
+          command: 'npm test',
+          status: 'completed',
+          createdAt: 1.2,
+        },
+      ],
+    }],
+    tokenUsage: null,
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-mixed'] || [];
+  assert.ok(entries.some((entry) => entry.role === 'user' && entry.text === '用户提问'));
+  assert.ok(entries.some((entry) => entry.role === 'assistant' && entry.text === '助手回复'));
+  assert.ok(entries.some((entry) => entry.type === 'command' && entry.text === 'npm test'));
+});
+
+test('state and thread sync preserve usable token usage for active session header', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'state',
+    tabs: [{
+      threadId: 'thread-usage',
+      name: 'Usage Session',
+      cwd: 'C:\\workspace',
+      status: 'idle',
+      tokenUsage: { totalTokens: 77 },
+    }],
+    serverRequests: [],
+    globalSupplementalItems: [],
+  } as any);
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-usage',
+    turns: [],
+  } as any);
+
+  const usage = useAppStore.getState().tokenUsage.bySessionId['thread-usage'] as any;
+  assert.equal(usage?.totalTokens, 77);
+});
+
+test('tab updates can refresh token usage independently of thread sync payload', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'tab_updated',
+    tab: {
+      threadId: 'thread-usage-2',
+      name: 'Usage Session 2',
+      cwd: 'C:\\workspace',
+      status: 'idle',
+      usage: { prompt_tokens: 12, completion_tokens: 5 },
+    },
+  } as any);
+
+  const usage = useAppStore.getState().tokenUsage.bySessionId['thread-usage-2'] as any;
+  assert.equal(usage?.inputTokens, 12);
+  assert.equal(usage?.outputTokens, 5);
+});
+
+test('nested token usage payloads are normalized for header display', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'token_usage',
+    threadId: 'thread-usage-3',
+    usage: {
+      usage: {
+        total_tokens: 33,
+        prompt_tokens: 21,
+        completion_tokens: 12,
+      },
+    },
+  } as any);
+
+  const usage = useAppStore.getState().tokenUsage.bySessionId['thread-usage-3'] as any;
+  assert.equal(usage?.totalTokens, 33);
+  assert.equal(usage?.inputTokens, 21);
+  assert.equal(usage?.outputTokens, 12);
+});
+
+test('pending local user message is promoted when real turn output arrives after turn_started', () => {
+  resetStore();
+
+  useAppStore.getState().appendTimelineEntry('thread-promote', {
+    id: 'local-user-1',
+    type: 'message',
+    role: 'user',
+    turnId: 'thread-promote:pending-turn',
+    text: 'hello',
+    createdAt: 10,
+  });
+
+  mapServerMessageToStore({
+    type: 'turn_started',
+    threadId: 'thread-promote',
+    turnId: 'turn-real',
+    startedAt: 11,
+  } as any);
+
+  mapServerMessageToStore({
+    type: 'agent_delta',
+    threadId: 'thread-promote',
+    turnId: 'turn-real',
+    itemId: 'assistant-live-1',
+    delta: 'world',
+    startedAt: 12,
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-promote'] || [];
+  const userEntry = entries.find((entry) => entry.id === 'local-user-1');
+  const assistantEntry = entries.find((entry) => entry.id === 'assistant-live-1');
+  assert.equal(userEntry?.turnId, 'turn-real');
+  assert.equal(assistantEntry?.turnId, 'turn-real');
 });

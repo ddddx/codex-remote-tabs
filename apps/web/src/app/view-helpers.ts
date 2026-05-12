@@ -23,17 +23,140 @@ export function formatTokenUsageValue(value: unknown): string {
   const total = usage.totalTokens ?? usage.total_tokens;
   const input = usage.inputTokens ?? usage.input_tokens ?? usage.promptTokens ?? usage.prompt_tokens;
   const output = usage.outputTokens ?? usage.output_tokens ?? usage.completionTokens ?? usage.completion_tokens;
+  const nested = usage.usage && typeof usage.usage === 'object' ? usage.usage as Record<string, unknown> : null;
+  const nestedTotal = nested?.totalTokens ?? nested?.total_tokens;
+  const nestedInput = nested?.inputTokens ?? nested?.input_tokens ?? nested?.promptTokens ?? nested?.prompt_tokens;
+  const nestedOutput = nested?.outputTokens ?? nested?.output_tokens ?? nested?.completionTokens ?? nested?.completion_tokens;
 
   if (typeof total === 'number') {
     return String(total);
   }
+  if (typeof nestedTotal === 'number') {
+    return String(nestedTotal);
+  }
 
   const parts = [
-    typeof input === 'number' ? `in ${input}` : '',
-    typeof output === 'number' ? `out ${output}` : '',
+    typeof (typeof input === 'number' ? input : nestedInput) === 'number'
+      ? `输入 ${String(typeof input === 'number' ? input : nestedInput)}`
+      : '',
+    typeof (typeof output === 'number' ? output : nestedOutput) === 'number'
+      ? `输出 ${String(typeof output === 'number' ? output : nestedOutput)}`
+      : '',
   ].filter(Boolean);
 
   return parts.length ? parts.join(' / ') : '-';
+}
+
+export function formatHealthStatus(status: string | undefined): string {
+  if (status === 'ok') {
+    return '正常';
+  }
+  if (status === 'error') {
+    return '异常';
+  }
+  return status || '未知';
+}
+
+export function formatApprovalKind(kind: string | undefined): string {
+  if (!kind) {
+    return '审批';
+  }
+  if (kind === 'user_input') {
+    return '用户输入';
+  }
+  if (kind === 'dynamic_tool_call') {
+    return '动态工具';
+  }
+  if (kind === 'mcp_server_elicitation') {
+    return 'MCP 请求';
+  }
+  if (kind === 'command') {
+    return '命令审批';
+  }
+  return kind;
+}
+
+export function formatSessionStatus(status: string | undefined): string {
+  if (!status) {
+    return '空闲';
+  }
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'running' || normalized === 'active' || normalized === 'in_progress' || normalized === 'inprogress') {
+    return '运行中';
+  }
+  if (normalized === 'completed' || normalized === 'idle' || normalized === 'ready') {
+    return '空闲';
+  }
+  if (normalized === 'pending') {
+    return '待处理';
+  }
+  if (normalized === 'closed') {
+    return '已关闭';
+  }
+  if (normalized === 'failed' || normalized === 'error' || normalized === 'systemerror') {
+    return '异常';
+  }
+  if (normalized === 'cancelled' || normalized === 'aborted') {
+    return '已中断';
+  }
+  return status;
+}
+
+export function formatWindowStatus(status: string | undefined): string {
+  if (!status) {
+    return '';
+  }
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'attached') {
+    return '已附着';
+  }
+  if (normalized === 'detached') {
+    return '未附着';
+  }
+  return status;
+}
+
+export function describeTimelineType(entry: TimelineEntry): string {
+  if (entry.type === 'message') {
+    return entry.role === 'user' ? '用户消息' : entry.role === 'assistant' ? '助手消息' : '消息';
+  }
+  if (entry.type === 'reasoning') {
+    return '思考';
+  }
+  if (entry.type === 'plan' || entry.type === 'turn_plan') {
+    return '计划';
+  }
+  if (entry.type === 'command') {
+    return '命令执行';
+  }
+  if (entry.type === 'file_change') {
+    return '文件变更';
+  }
+  if (entry.type === 'mcp_tool') {
+    return 'MCP 工具';
+  }
+  if (entry.type === 'dynamic_tool') {
+    return '动态工具';
+  }
+  if (entry.type === 'web_search') {
+    return '网页搜索';
+  }
+  if (entry.type === 'hook') {
+    return '钩子';
+  }
+  if (entry.type === 'guardian_review') {
+    return 'Guardian 审查';
+  }
+  if (entry.type === 'turn_diff') {
+    return '轮次差异';
+  }
+  if (entry.type === 'notice') {
+    return '通知';
+  }
+  if (entry.type === 'item_delta') {
+    return '流式更新';
+  }
+  return entry.type || '事件';
 }
 
 export function buildApprovalSummary(request: {
@@ -58,10 +181,10 @@ export function buildApprovalSummary(request: {
     return request.message;
   }
   if (request.tool) {
-    return request.namespace ? `Tool: ${request.namespace}.${request.tool}` : `Tool: ${request.tool}`;
+    return request.namespace ? `工具：${request.namespace}.${request.tool}` : `工具：${request.tool}`;
   }
   if (request.serverName) {
-    return `Server: ${request.serverName}`;
+    return `服务：${request.serverName}`;
   }
   if (request.url) {
     return request.url;
@@ -75,36 +198,36 @@ export function buildApprovalSummary(request: {
   if (request.patch) {
     return request.patch.slice(0, 240);
   }
-  return request.kind || 'Pending approval';
+  return request.kind || '待处理审批';
 }
 
 export function getDecisionLabel(decision: string | Record<string, unknown>): string {
   if (typeof decision === 'string') {
     if (decision === 'accept' || decision === 'approved') {
-      return 'Approve';
+      return '批准';
     }
     if (decision === 'acceptForSession' || decision === 'approved_for_session') {
-      return 'Approve for session';
+      return '本会话内批准';
     }
     if (decision === 'decline' || decision === 'denied') {
-      return 'Reject';
+      return '拒绝';
     }
     if (decision === 'cancel') {
-      return 'Cancel';
+      return '取消';
     }
     return decision;
   }
 
   if (decision && typeof decision === 'object') {
     if ('acceptWithExecpolicyAmendment' in decision) {
-      return 'Approve with policy';
+      return '按策略批准';
     }
     if ('acceptWithNetworkPolicyAmendments' in decision) {
-      return 'Approve network';
+      return '批准网络权限';
     }
   }
 
-  return 'Respond';
+  return '提交';
 }
 
 export function summarizeTimelineEntry(entry: TimelineEntry): string {
@@ -117,7 +240,7 @@ export function summarizeTimelineEntry(entry: TimelineEntry): string {
   if (entry.meta?.length) {
     return entry.meta.join('\n');
   }
-  return 'No details';
+  return '没有详情';
 }
 
 export function formatTimelineLabel(entry: TimelineEntry): string {
@@ -125,9 +248,66 @@ export function formatTimelineLabel(entry: TimelineEntry): string {
     return entry.title;
   }
   if (entry.role) {
+    if (entry.role === 'user') {
+      return '用户';
+    }
+    if (entry.role === 'assistant') {
+      return '助手';
+    }
+    if (entry.role === 'system') {
+      return '系统';
+    }
     return entry.role;
   }
   return entry.type;
+}
+
+export function summarizeUnknownObject(value: unknown, max = 3): string {
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+
+  const objectValue = value as Record<string, unknown>;
+  const preferredKeys = [
+    'title',
+    'label',
+    'name',
+    'command',
+    'tool',
+    'server',
+    'namespace',
+    'query',
+    'url',
+    'path',
+    'phase',
+    'status',
+    'message',
+    'text',
+  ];
+
+  const parts: string[] = [];
+
+  for (const key of preferredKeys) {
+    const raw = objectValue[key];
+    if (typeof raw === 'string' && raw.trim()) {
+      parts.push(`${key}: ${raw.trim()}`);
+    } else if (typeof raw === 'number' || typeof raw === 'boolean') {
+      parts.push(`${key}: ${String(raw)}`);
+    }
+    if (parts.length >= max) {
+      break;
+    }
+  }
+
+  if (!parts.length) {
+    const keys = Object.keys(objectValue).slice(0, max);
+    if (!keys.length) {
+      return '';
+    }
+    return `字段: ${keys.join(', ')}`;
+  }
+
+  return parts.join(' · ');
 }
 
 export function buildUserInputResponse(

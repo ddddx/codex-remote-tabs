@@ -6,10 +6,20 @@ type InspectorPanelProps = {
   onRespond: (request: ServerRequestItem, response: unknown) => void;
 };
 
+function buildDecisionResponse(decision: string | Record<string, unknown>): unknown {
+  if (typeof decision === 'string') {
+    return { decision };
+  }
+  if (!decision || typeof decision !== 'object') {
+    return { decision };
+  }
+  if ('decision' in decision || 'action' in decision || 'content' in decision || '_meta' in decision) {
+    return decision;
+  }
+  return { decision };
+}
+
 export function InspectorPanel({ onRespond }: InspectorPanelProps) {
-  const health = useAppStore((state) => state.health.data);
-  const connection = useAppStore((state) => state.connection);
-  const token = useAppStore((state) => state.auth.token);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const approvals = useAppStore((state) => state.approvals.items);
 
@@ -26,44 +36,32 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
 
   return (
     <aside className="panel inspector-panel">
-      <div className="panel-title">Inspector</div>
+      <div className="panel-title">审批面板</div>
       <div className="panel-body inspector-body">
-        <div className="inspector-card-grid">
-          <div className="inspector-card">
-            <span className="label">HTTP</span>
-            <strong>{health?.status || 'unknown'}</strong>
-          </div>
-          <div className="inspector-card">
-            <span className="label">WS</span>
-            <strong>{connection.status}</strong>
-          </div>
-          <div className="inspector-card">
-            <span className="label">Token</span>
-            <strong>{token ? 'configured' : 'missing'}</strong>
-          </div>
-          <div className="inspector-card">
-            <span className="label">Approvals</span>
-            <strong>{visibleApprovals.length}</strong>
+        <div className="inspector-summary">
+          <div className="status-chip">{activeSessionId ? '当前会话' : '全部会话'}</div>
+          <div className={`badge${visibleApprovals.length ? ' warning' : ''}`}>
+            {visibleApprovals.length} 条待处理
           </div>
         </div>
         <div className="approval-section">
           <div className="section-head">
-            <strong>Pending approvals</strong>
-            <span className="muted">{activeSessionId ? 'Current session' : 'All sessions'}</span>
+            <strong>待处理审批</strong>
+            <span className="muted">{activeSessionId ? '当前会话' : '全部会话'}</span>
           </div>
           {visibleApprovals.length ? (
             <div className="approval-list">
               {visibleApprovals.map((request) => (
                 <article key={request.requestId} className="approval-item">
                   <div className="approval-item-row">
-                    <strong>{request.kind || 'request'}</strong>
+                    <strong>{request.kind || '请求'}</strong>
                     <span className={`badge${request.status === 'submitting' ? '' : ' warning'}`}>
-                      {request.status || 'pending'}
+                      {request.status === 'submitting' ? '提交中' : '待处理'}
                     </span>
                   </div>
                   <div className="approval-summary">{buildApprovalSummary(request)}</div>
                   <div className="approval-meta">
-                    <span>{request.threadId || 'global'}</span>
+                    <span>{request.threadId || '全局'}</span>
                     <span>{request.requestId}</span>
                   </div>
                   {request.kind === 'user_input' && request.questions?.length ? (
@@ -135,7 +133,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                   {request.kind === 'dynamic_tool_call' ? (
                     <div className="approval-question-list">
                       <div className="approval-question-card">
-                        <strong>{request.namespace ? `${request.namespace}.${request.tool || ''}` : request.tool || 'Dynamic tool'}</strong>
+                        <strong>{request.namespace ? `${request.namespace}.${request.tool || ''}` : request.tool || '动态工具'}</strong>
                         {request.arguments ? <pre className="timeline-entry-pre">{JSON.stringify(request.arguments, null, 2)}</pre> : null}
                         <textarea
                           className="composer-input approval-textarea"
@@ -157,7 +155,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                               [request.requestId]: event.target.checked,
                             }))}
                           />
-                          <span>Mark success</span>
+                          <span>标记为成功</span>
                         </label>
                       </div>
                     </div>
@@ -212,7 +210,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                           onRespond(request, buildUserInputResponse(request, stateForRequest));
                         }}
                       >
-                        Submit answers
+                        提交回答
                       </button>
                     ) : null}
                     {request.kind === 'dynamic_tool_call' ? (
@@ -227,11 +225,11 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                             try {
                               const parsed = JSON.parse(raw);
                               if (!Array.isArray(parsed)) {
-                                throw new Error('contentItems must be an array');
+                                throw new Error('contentItems 必须是数组');
                               }
                               contentItems = parsed;
                             } catch (error) {
-                              onRespond(request, { error: error instanceof Error ? error.message : 'Invalid JSON' });
+                              onRespond(request, { error: error instanceof Error ? error.message : 'JSON 无效' });
                               return;
                             }
                           }
@@ -241,7 +239,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                           });
                         }}
                       >
-                        Submit result
+                        提交结果
                       </button>
                     ) : null}
                     {request.kind === 'mcp_server_elicitation' ? (
@@ -253,7 +251,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                             disabled={request.status === 'submitting'}
                             onClick={() => onRespond(request, { action: 'accept', content: null, _meta: request.meta })}
                           >
-                            Accept
+                            允许
                           </button>
                           <button
                             type="button"
@@ -261,7 +259,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                             disabled={request.status === 'submitting'}
                             onClick={() => onRespond(request, { action: 'decline', content: null })}
                           >
-                            Reject
+                            拒绝
                           </button>
                           <button
                             type="button"
@@ -269,7 +267,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                             disabled={request.status === 'submitting'}
                             onClick={() => onRespond(request, { action: 'cancel', content: null })}
                           >
-                            Cancel
+                            取消
                           </button>
                         </>
                       ) : (
@@ -289,7 +287,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                               onRespond(request, { action: 'accept', content, _meta: request.meta });
                             }}
                           >
-                            Submit
+                            提交
                           </button>
                           <button
                             type="button"
@@ -297,7 +295,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                             disabled={request.status === 'submitting'}
                             onClick={() => onRespond(request, { action: 'decline', content: null })}
                           >
-                            Reject
+                            拒绝
                           </button>
                           <button
                             type="button"
@@ -305,7 +303,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                             disabled={request.status === 'submitting'}
                             onClick={() => onRespond(request, { action: 'cancel', content: null })}
                           >
-                            Cancel
+                            取消
                           </button>
                         </>
                       )
@@ -315,7 +313,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                       : ['accept', 'decline']).map((decision, index) => {
                         const key = typeof decision === 'string' ? decision : JSON.stringify(decision);
                         const isPrimary = index === 0;
-                        const response = typeof decision === 'string' ? { decision } : decision;
+                        const response = buildDecisionResponse(decision);
                         return (
                           <button
                             key={key}
@@ -334,8 +332,8 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
             </div>
           ) : (
             <div className="empty-state compact">
-              <strong>No pending approvals</strong>
-              <span>Requests from the server will appear here.</span>
+              <strong>当前没有待处理审批</strong>
+              <span>服务端发来的请求会显示在这里。</span>
             </div>
           )}
         </div>

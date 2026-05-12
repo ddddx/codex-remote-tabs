@@ -10,6 +10,15 @@ type MockBackend = {
 
 export async function startMockBackend(): Promise<MockBackend> {
   const uploadedFiles = new Map<string, Buffer>();
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  function later(delayMs: number, task: () => void) {
+    const timer = setTimeout(() => {
+      pendingTimers.delete(timer);
+      task();
+    }, delayMs);
+    pendingTimers.add(timer);
+  }
 
   function applyCors(response: http.ServerResponse) {
     response.setHeader('Access-Control-Allow-Origin', '*');
@@ -46,6 +55,28 @@ export async function startMockBackend(): Promise<MockBackend> {
         lastUsedPath: 'C:\\workspace',
         preferredPath: 'C:\\workspace',
         roots: ['C:\\workspace'],
+      }));
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/codex/options') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        models: [{
+          id: 'gpt-5-codex',
+          model: 'gpt-5-codex',
+          displayName: 'GPT-5 Codex',
+          description: 'Mock model for E2E',
+          isDefault: true,
+          defaultReasoningEffort: 'medium',
+          supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
+        }],
+        defaults: {
+          model: 'gpt-5-codex',
+          reasoningEffort: 'medium',
+          approvalPolicy: 'on-request',
+          sandboxMode: 'workspace-write',
+        },
       }));
       return;
     }
@@ -216,15 +247,25 @@ export async function startMockBackend(): Promise<MockBackend> {
           delta: 'Thinking through the patch',
           startedAt: 3,
         }));
-        socket.send(JSON.stringify({
+        later(25, () => socket.send(JSON.stringify({
           type: 'plan_delta',
           threadId: message.threadId,
           turnId: 'turn-2',
           itemId: 'plan-2',
           delta: 'Run tests',
           startedAt: 3,
-        }));
-        socket.send(JSON.stringify({
+        })));
+        later(35, () => socket.send(JSON.stringify({
+          type: 'turn_plan_updated',
+          threadId: message.threadId,
+          turnId: 'turn-2',
+          explanation: 'Inspect and patch',
+          plan: [
+            { step: 'Inspect', status: 'completed' },
+            { step: 'Patch', status: 'in_progress' },
+          ],
+        })));
+        later(50, () => socket.send(JSON.stringify({
           type: 'item_started',
           threadId: message.threadId,
           turnId: 'turn-2',
@@ -235,8 +276,8 @@ export async function startMockBackend(): Promise<MockBackend> {
             cwd: 'C:\\workspace',
             status: 'running',
           },
-        }));
-        socket.send(JSON.stringify({
+        })));
+        later(75, () => socket.send(JSON.stringify({
           type: 'item_delta',
           threadId: message.threadId,
           turnId: 'turn-2',
@@ -244,8 +285,8 @@ export async function startMockBackend(): Promise<MockBackend> {
           method: 'item/commandExecution/outputDelta',
           delta: 'All green',
           startedAt: 3,
-        }));
-        socket.send(JSON.stringify({
+        })));
+        later(100, () => socket.send(JSON.stringify({
           type: 'item_started',
           threadId: message.threadId,
           turnId: 'turn-2',
@@ -254,8 +295,8 @@ export async function startMockBackend(): Promise<MockBackend> {
             type: 'fileChange',
             status: 'running',
           },
-        }));
-        socket.send(JSON.stringify({
+        })));
+        later(125, () => socket.send(JSON.stringify({
           type: 'item_delta',
           threadId: message.threadId,
           turnId: 'turn-2',
@@ -264,8 +305,8 @@ export async function startMockBackend(): Promise<MockBackend> {
           patch: '*** Begin Patch\n*** Update File: app.tsx\n*** End Patch',
           changes: [{ path: 'app.tsx', kind: 'update' }],
           startedAt: 3,
-        }));
-        socket.send(JSON.stringify({
+        })));
+        later(150, () => socket.send(JSON.stringify({
           type: 'server_request_updated',
           request: {
             requestId: 'req-1',
@@ -277,12 +318,12 @@ export async function startMockBackend(): Promise<MockBackend> {
             status: 'pending',
             createdAt: 4,
           },
-        }));
-        socket.send(JSON.stringify({
+        })));
+        later(225, () => socket.send(JSON.stringify({
           type: 'turn_completed',
           threadId: message.threadId,
           turnId: 'turn-2',
-        }));
+        })));
         return;
       }
 
@@ -308,6 +349,10 @@ export async function startMockBackend(): Promise<MockBackend> {
       for (const client of wss.clients) {
         client.terminate();
       }
+      for (const timer of pendingTimers) {
+        clearTimeout(timer);
+      }
+      pendingTimers.clear();
       await new Promise<void>((resolve, reject) => {
         wss.close((error) => {
           if (error) {

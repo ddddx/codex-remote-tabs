@@ -23,6 +23,8 @@ function createAppStub() {
     startTurn: [] as unknown[],
     resumeThread: [] as unknown[],
     respond: [] as unknown[],
+    openWindowForThread: [] as unknown[],
+    refreshTabWindowStatus: [] as unknown[],
     upsertSession: [] as unknown[],
     upsertPendingRequest: [] as unknown[],
     removePendingRequest: [] as unknown[],
@@ -83,6 +85,20 @@ function createAppStub() {
           return null;
         },
         setAppState() {},
+      },
+    },
+    windowAttachments: {
+      async openWindowForThread(threadId: string) {
+        calls.openWindowForThread.push(threadId);
+        return null;
+      },
+      async refreshTabWindowStatus(threadId: string, options: unknown) {
+        calls.refreshTabWindowStatus.push({ threadId, options });
+        return null;
+      },
+      async refreshAllTabsWindowStatus() {},
+      async closeWindowForThread() {
+        return null;
       },
     },
     workspaceManager: {
@@ -151,6 +167,10 @@ function createAppStub() {
     config: {
       maxImageUploadBytes: 1024,
     },
+    appServerSupervisor: {
+      async ensureStarted() {},
+      async stop() {},
+    },
   };
 
   (app as any).services = createAppServices(app as any);
@@ -202,6 +222,7 @@ test('thread_sync returns tab update and thread snapshot', async () => {
   });
 
   assert.equal(calls.resumeThread.length, 1);
+  assert.equal(calls.refreshTabWindowStatus.length, 1);
   assert.equal(socket.sent.length, 2);
   assert.equal((socket.sent[0] as any).type, 'tab_updated');
   assert.equal((socket.sent[1] as any).type, 'thread_sync');
@@ -223,6 +244,7 @@ test('tab_create creates thread and replies with tab_created', async () => {
   });
 
   assert.equal(calls.startThread.length, 1);
+  assert.equal(calls.openWindowForThread.length, 1);
   assert.equal(socket.sent.length, 1);
   assert.equal((socket.sent[0] as any).type, 'tab_created');
   assert.equal(app.runtimeState.tabsById.size, 1);

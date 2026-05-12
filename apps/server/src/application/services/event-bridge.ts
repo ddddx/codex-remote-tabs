@@ -55,6 +55,15 @@ export function handleCodexNotification(
   }
 
   if (method === 'thread/tokenUsage/updated' && typeof params.threadId === 'string') {
+    const current = app.runtimeState.tabsById.get(params.threadId);
+    if (current) {
+      const tab = upsertRuntimeTab(app, {
+        ...current,
+        tokenUsage: params.tokenUsage ?? null,
+        updatedAt: nowUnix(),
+      });
+      broadcastMessage(app, { type: 'tab_updated', tab });
+    }
     broadcastMessage(app, {
       type: 'token_usage',
       threadId: params.threadId,

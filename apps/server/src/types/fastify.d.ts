@@ -1,6 +1,8 @@
 import type { ServerConfig } from '../config/env.js';
 import type { AppServices } from '../application/services/index.js';
 import type { RuntimeState } from '../state/runtime-state.js';
+import type { CodexAppServerSupervisor } from '../platform/app-server-supervisor.js';
+import type { CodexWindowManager } from '../platform/window-manager.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 import type {
@@ -55,6 +57,18 @@ type CodexClientLike = {
   on: (event: string, listener: (...args: any[]) => void) => void;
 };
 
+type WindowAttachmentServiceLike = {
+  refreshTabWindowStatus: (threadId: string, options?: {
+    allowDiscovery?: boolean;
+    allowLaunch?: boolean;
+    broadcastUpdate?: boolean;
+    touchUpdatedAt?: boolean;
+  }) => Promise<unknown>;
+  refreshAllTabsWindowStatus: () => Promise<void>;
+  openWindowForThread: (threadId: string) => Promise<unknown>;
+  closeWindowForThread: (threadId: string) => Promise<unknown>;
+};
+
 declare module 'fastify' {
   interface FastifyInstance {
     config: ServerConfig;
@@ -72,6 +86,9 @@ declare module 'fastify' {
     requireAuth: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     workspaceManager: WorkspaceManagerLike;
     codexClient: CodexClientLike;
+    appServerSupervisor: CodexAppServerSupervisor;
+    windowManager: CodexWindowManager;
+    windowAttachments: WindowAttachmentServiceLike;
     services: AppServices;
   }
 }

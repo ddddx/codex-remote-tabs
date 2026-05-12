@@ -6,10 +6,11 @@ type WorkspaceBrowserProps = {
   token: string;
   selectedPath: string;
   onSelectPath: (path: string) => void;
+  embedded?: boolean;
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
-  const { token, selectedPath, onSelectPath } = props;
+  const { token, selectedPath, onSelectPath, embedded = false } = props;
   const workspace = useAppStore((state) => state.workspace);
   const setWorkspaceLoading = useAppStore((state) => state.setWorkspaceLoading);
   const setWorkspaceReady = useAppStore((state) => state.setWorkspaceReady);
@@ -28,11 +29,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       getWorkspaceListing(token, selectedPath),
     ])
       .then(([shortcuts, listing]) => {
-        if (!cancelled) {
-          setWorkspaceReady(shortcuts, listing);
-          if (!selectedPath) {
-            onSelectPath(listing.path);
-          }
+        if (cancelled) {
+          return;
+        }
+        setWorkspaceReady(shortcuts, listing);
+        if (!selectedPath) {
+          onSelectPath(listing.path);
         }
       })
       .catch((error: Error) => {
@@ -47,94 +49,134 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
 
   const currentPath = workspace.listing?.path || selectedPath;
 
-  return (
-    <div className="workspace-browser">
-      <div className="section-head">
-        <strong>工作区</strong>
-        <span className="muted">{workspace.status}</span>
+  function refreshListing(nextPath: string) {
+    onSelectPath(nextPath);
+    setWorkspaceLoading(nextPath);
+    void getWorkspaceListing(token, nextPath)
+      .then((listing) => setWorkspaceListing(listing))
+      .catch((error: Error) => setWorkspaceError(error.message));
+  }
+
+  const browserNode = (
+    <>
+      <div className="workspace-browser-path">{currentPath || workspace.shortcuts?.preferredPath || '尚未选择路径'}</div>
+      <div className="workspace-browser-list">
+        {(workspace.listing?.entries || []).length ? (workspace.listing?.entries || []).map((entry) => (
+          <button
+            key={entry.path}
+            className="workspace-browser-item"
+            type="button"
+            onClick={() => refreshListing(entry.path)}
+          >
+            <span className="workspace-browser-item-icon">📁</span>
+            <span className="workspace-browser-item-label">{entry.name}</span>
+          </button>
+        )) : (
+          <div className="workspace-browser-item empty">当前目录为空</div>
+        )}
       </div>
-      {!token ? <div className="status">请先配置 WebSocket 令牌，再加载工作区。</div> : null}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <>
+        {workspace.error ? <div className="status error">{workspace.error}</div> : null}
+        <div className="workspace-shortcut-panel">
+          <label className="modal-label workspace-shortcut-label-block" htmlFor="workspaceShortcutSelect">快捷路径</label>
+          <select
+            id="workspaceShortcutSelect"
+            className="modal-input workspace-shortcut-select"
+            value=""
+            onChange={(event) => {
+              const value = event.target.value.trim();
+              if (value) {
+                refreshListing(value);
+              }
+            }}
+          >
+            <option value="">请选择快捷路径</option>
+            {[
+              workspace.shortcuts?.preferredPath,
+              workspace.shortcuts?.projectRoot,
+              workspace.shortcuts?.desktopPath,
+              workspace.shortcuts?.lastUsedPath,
+              ...(workspace.shortcuts?.roots || []),
+            ].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index).map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </select>
+        </div>
+        <div className="workspace-browser">{browserNode}</div>
+        <div className="session-workspace-actions" style={{ marginTop: 12 }}>
+          <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={!workspace.listing?.parentPath}
+            onClick={() => refreshListing(workspace.listing?.parentPath || '')}
+          >
+            上级目录
+          </button>
+          <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={!currentPath}
+            onClick={() => refreshListing(currentPath || '')}
+          >
+            刷新
+          </button>
+          <input
+            className="modal-input"
+            style={{ minWidth: 0, flex: 1 }}
+            placeholder="新文件夹名称"
+            value={nextFolderName}
+            onChange={(event) => setNextFolderName(event.target.value)}
+          />
+          <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={!currentPath || !nextFolderName.trim()}
+            onClick={() => {
+              void createWorkspaceDirectory(token, {
+                parentPath: currentPath,
+                folderName: nextFolderName.trim(),
+              })
+                .then((result) => {
+                  setNextFolderName('');
+                  refreshListing(result.path);
+                })
+                .catch((error: Error) => setWorkspaceError(error.message));
+            }}
+          >
+            新建文件夹
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="workspace-browser-panel">
       {workspace.error ? <div className="status error">{workspace.error}</div> : null}
-      <div className="workspace-path">{currentPath || workspace.shortcuts?.preferredPath || '尚未选择路径'}</div>
-      <div className="workspace-actions">
+      <div className="session-workspace-actions" style={{ marginTop: 0, marginBottom: 12 }}>
         <button
+          className="btn btn-secondary"
           type="button"
-          className="secondary-button"
           disabled={!workspace.shortcuts?.preferredPath}
-          onClick={() => {
-            const nextPath = workspace.shortcuts?.preferredPath || '';
-            onSelectPath(nextPath);
-            setWorkspaceLoading(nextPath);
-            void getWorkspaceListing(token, nextPath)
-              .then((listing) => setWorkspaceListing(listing))
-              .catch((error: Error) => setWorkspaceError(error.message));
-          }}
+          onClick={() => refreshListing(workspace.shortcuts?.preferredPath || '')}
         >
           常用目录
         </button>
         <button
+          className="btn btn-secondary"
           type="button"
-          className="secondary-button"
           disabled={!workspace.listing?.parentPath}
-          onClick={() => {
-            const nextPath = workspace.listing?.parentPath || '';
-            onSelectPath(nextPath);
-            setWorkspaceLoading(nextPath);
-            void getWorkspaceListing(token, nextPath)
-              .then((listing) => setWorkspaceListing(listing))
-              .catch((error: Error) => setWorkspaceError(error.message));
-          }}
+          onClick={() => refreshListing(workspace.listing?.parentPath || '')}
         >
-          上一级
+          上级目录
         </button>
       </div>
-      <div className="workspace-list">
-        {(workspace.listing?.entries || []).map((entry) => (
-          <button
-            key={entry.path}
-            type="button"
-            className="workspace-entry"
-            onClick={() => {
-              onSelectPath(entry.path);
-              setWorkspaceLoading(entry.path);
-              void getWorkspaceListing(token, entry.path)
-                .then((listing) => setWorkspaceListing(listing))
-                .catch((error: Error) => setWorkspaceError(error.message));
-            }}
-          >
-            <strong>{entry.name}</strong>
-            <span>{entry.path}</span>
-          </button>
-        ))}
-      </div>
-      <div className="workspace-create">
-        <input
-          className="token-input"
-          placeholder="新文件夹名称"
-          value={nextFolderName}
-          onChange={(event) => setNextFolderName(event.target.value)}
-        />
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={!currentPath || !nextFolderName.trim()}
-          onClick={() => {
-            void createWorkspaceDirectory(token, {
-              parentPath: currentPath,
-              folderName: nextFolderName.trim(),
-            })
-              .then((result) => {
-                setNextFolderName('');
-                onSelectPath(result.path);
-                return getWorkspaceListing(token, currentPath);
-              })
-              .then((listing) => setWorkspaceListing(listing))
-              .catch((error: Error) => setWorkspaceError(error.message));
-          }}
-        >
-          新建文件夹
-        </button>
-      </div>
+      <div className="workspace-browser">{browserNode}</div>
     </div>
   );
 }

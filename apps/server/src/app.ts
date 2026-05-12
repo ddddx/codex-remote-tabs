@@ -5,8 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSqliteDatabase, createSqliteRepositories } from '@codex-remote/adapters';
 import type { ServerConfig } from './config/env.js';
+import { createWindowAttachmentService } from './application/services/window-attachment.js';
 import { createAppServices } from './application/services/index.js';
+import { CodexAppServerSupervisor } from './platform/app-server-supervisor.js';
 import { CodexAppServerClient } from './platform/codex-client.js';
+import { CodexWindowManager } from './platform/window-manager.js';
 import { WorkspaceManager } from './platform/workspace-manager.js';
 import { buildRequireAuth, buildTokenVerifier } from './plugins/auth.js';
 import { registerRoutes } from './routes/index.js';
@@ -33,17 +36,22 @@ export async function createApp(config: ServerConfig) {
     app,
     projectRoot: process.cwd(),
   }));
+  app.decorate('appServerSupervisor', new CodexAppServerSupervisor({
+    cwd: process.cwd(),
+  }));
   app.decorate('codexClient', new CodexAppServerClient({
     cwd: process.cwd(),
   }));
+  app.decorate('windowManager', new CodexWindowManager());
+  app.decorate('windowAttachments', null as any);
   app.decorate('services', createAppServices(app));
+  app.windowAttachments = createWindowAttachmentService(app, app.windowManager) as any;
   app.runtimeState.repositories = repositories as any;
 
   await app.register(websocket);
   await app.register(fastifyStatic, {
     root: webDistRoot,
     prefix: '/',
-    wildcard: false,
   });
 
   const verifyRequestToken = buildTokenVerifier(config.wsToken);

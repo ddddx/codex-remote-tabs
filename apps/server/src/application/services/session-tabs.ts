@@ -11,6 +11,7 @@ export type RuntimeTab = {
   windowStatus: string;
   approvalPolicy?: string;
   sandboxMode?: string;
+  tokenUsage?: unknown;
 };
 
 function nowUnix(): number {
@@ -45,6 +46,7 @@ export function normalizeTab(source: Record<string, unknown>): RuntimeTab {
     windowStatus: typeof source.windowStatus === 'string' && source.windowStatus.trim() ? source.windowStatus : 'detached',
     approvalPolicy: typeof source.approvalPolicy === 'string' ? source.approvalPolicy : '',
     sandboxMode: typeof source.sandboxMode === 'string' ? source.sandboxMode : '',
+    tokenUsage: source.tokenUsage ?? source.token_usage ?? source.usage ?? source.tokenStats ?? source.token_stats ?? null,
   };
 }
 

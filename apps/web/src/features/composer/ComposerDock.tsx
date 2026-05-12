@@ -1,139 +1,367 @@
-import { useMemo } from 'react';
-import { writeStoredToken } from '../../lib/storage.js';
+import type { CodexOptionModel } from '@codex-remote/protocol';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useAppStore } from '../../store/appStore.js';
 import { uploadImage } from '../../transport/http/uploads.js';
+
+type ComposerPrefs = {
+  model: string;
+  reasoningEffort: string;
+  approvalPolicy: string;
+  sandboxMode: string;
+};
 
 type ComposerDockProps = {
   draft: string;
   setDraft: (value: string) => void;
   submit: () => void;
+  resetSignal: number;
   busy: boolean;
   composerError: string;
   workspacePath: string;
   setWorkspacePath: (value: string) => void;
+  tokenReady: boolean;
+  activeSessionId: string | null;
+  controlsOpen: boolean;
+  setControlsOpen: (value: boolean) => void;
+  prefs: ComposerPrefs;
+  composerControlsSummary: string;
+  onPrefsChange: (next: Partial<ComposerPrefs>) => void;
+  onPresetChange: (value: string) => void;
+  permissionPresetValue: string;
+  modelOptions: CodexOptionModel[];
+  defaults: ComposerPrefs;
+  optionsStatus: 'idle' | 'loading' | 'ready' | 'error';
 };
 
-export function ComposerDock({
-  draft,
-  setDraft,
-  submit,
-  busy,
-  composerError,
-  workspacePath,
-  setWorkspacePath,
-}: ComposerDockProps) {
-  const token = useAppStore((state) => state.auth.token);
-  const setToken = useAppStore((state) => state.setToken);
-  const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
-  const connectionStatus = useAppStore((state) => state.connection.status);
+const REASONING_OPTIONS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const APPROVAL_OPTIONS = ['', 'untrusted', 'on-request', 'never', 'on-failure'];
+const SANDBOX_OPTIONS = ['', 'read-only', 'workspace-write', 'danger-full-access'];
+const PRESET_OPTIONS = ['', 'read-only', 'auto', 'full-access', 'custom'];
+const MIN_TEXTAREA_HEIGHT = 42;
+const MAX_TEXTAREA_HEIGHT = 88;
+
+function formatReasoningLabel(value: string): string {
+  if (!value) {
+    return '跟随当前配置';
+  }
+  if (value === 'none') {
+    return '关闭';
+  }
+  if (value === 'minimal') {
+    return '极低';
+  }
+  if (value === 'low') {
+    return '低';
+  }
+  if (value === 'medium') {
+    return '中';
+  }
+  if (value === 'high') {
+    return '高';
+  }
+  if (value === 'xhigh') {
+    return '超高';
+  }
+  return value;
+}
+
+function formatApprovalLabel(value: string): string {
+  if (!value) {
+    return '跟随当前配置';
+  }
+  if (value === 'untrusted') {
+    return '仅不受信命令需批准';
+  }
+  if (value === 'on-request') {
+    return '按需批准';
+  }
+  if (value === 'never') {
+    return '从不询问';
+  }
+  if (value === 'on-failure') {
+    return '失败后询问';
+  }
+  return value;
+}
+
+function formatSandboxLabel(value: string): string {
+  if (!value) {
+    return '跟随当前配置';
+  }
+  if (value === 'read-only') {
+    return '只读';
+  }
+  if (value === 'workspace-write') {
+    return '工作区可写';
+  }
+  if (value === 'danger-full-access') {
+    return '完全权限';
+  }
+  return value;
+}
+
+function formatPresetLabel(value: string): string {
+  if (!value) {
+    return '跟随当前配置';
+  }
+  if (value === 'read-only') {
+    return 'Read Only';
+  }
+  if (value === 'auto') {
+    return 'Auto';
+  }
+  if (value === 'full-access') {
+    return 'Full Access';
+  }
+  if (value === 'custom') {
+    return '自定义';
+  }
+  return value;
+}
+
+function syncTextareaHeight(textarea: HTMLTextAreaElement, value: string) {
+  const normalized = value.trim();
+  textarea.style.height = `${MIN_TEXTAREA_HEIGHT}px`;
+  if (!normalized) {
+    textarea.style.overflowY = 'hidden';
+    textarea.scrollTop = 0;
+    return;
+  }
+  textarea.style.height = 'auto';
+  const nextHeight = Math.min(Math.max(textarea.scrollHeight, MIN_TEXTAREA_HEIGHT), MAX_TEXTAREA_HEIGHT);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = nextHeight >= MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
+}
+
+export function ComposerDock(props: ComposerDockProps) {
+  const {
+    draft,
+    setDraft,
+    submit,
+    resetSignal,
+    busy,
+    composerError,
+    workspacePath,
+    setWorkspacePath,
+    tokenReady,
+    activeSessionId,
+    controlsOpen,
+    setControlsOpen,
+    prefs,
+    composerControlsSummary,
+    onPrefsChange,
+    onPresetChange,
+    permissionPresetValue,
+    modelOptions,
+    defaults,
+    optionsStatus,
+  } = props;
+
   const attachmentsBySessionId = useAppStore((state) => state.composer.attachmentsBySessionId);
   const addAttachment = useAppStore((state) => state.addAttachment);
   const removeAttachment = useAppStore((state) => state.removeAttachment);
+  const token = useAppStore((state) => state.auth.token);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const attachments = useMemo(() => {
     const key = activeSessionId || '__new__';
     return attachmentsBySessionId[key] || [];
   }, [activeSessionId, attachmentsBySessionId]);
 
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    syncTextareaHeight(textarea, draft);
+  }, [draft]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = `${MIN_TEXTAREA_HEIGHT}px`;
+    textarea.style.overflowY = 'hidden';
+    textarea.scrollTop = 0;
+  }, [resetSignal]);
+
   return (
-    <footer className="panel composer-dock">
-      <div className="panel-title">输入区</div>
-      <div className="panel-body composer-body">
-        <div className="composer-topline">
+    <form
+      id="composer"
+      className={`composer${controlsOpen ? ' mobile-controls-open' : ''}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <button
+        id="composerControlsToggle"
+        className="btn btn-secondary composer-mobile-toggle"
+        type="button"
+        aria-expanded={controlsOpen ? 'true' : 'false'}
+        onClick={() => setControlsOpen(!controlsOpen)}
+      >
+        <span className="composer-mobile-toggle-title">会话参数</span>
+        <span id="composerControlsSummary" className="composer-mobile-toggle-summary">{composerControlsSummary}</span>
+      </button>
+
+      <div className="composer-controls">
+        <label className="composer-select-group">
+          <span>模型</span>
+          <select
+            id="modelSelect"
+            value={prefs.model}
+            disabled={optionsStatus === 'loading'}
+            onChange={(event) => onPrefsChange({ model: event.target.value })}
+          >
+            <option value="">{defaults.model ? `跟随当前配置（${defaults.model}）` : '跟随当前配置'}</option>
+            {modelOptions.map((item) => (
+              <option key={item.id || item.model} value={item.model}>{item.displayName || item.model}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="composer-select-group">
+          <span>思考等级</span>
+          <select
+            id="reasoningEffortSelect"
+            value={prefs.reasoningEffort}
+            onChange={(event) => onPrefsChange({ reasoningEffort: event.target.value })}
+          >
+            {REASONING_OPTIONS.map((value) => (
+              <option key={value || 'default'} value={value}>
+                {value ? formatReasoningLabel(value) : (defaults.reasoningEffort ? `跟随当前配置（${formatReasoningLabel(defaults.reasoningEffort)}）` : '跟随当前配置')}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="composer-select-group">
+          <span>权限预设</span>
+          <select
+            id="permissionPresetSelect"
+            value={permissionPresetValue}
+            onChange={(event) => onPresetChange(event.target.value)}
+          >
+            {PRESET_OPTIONS.map((value) => (
+              <option key={value || 'default'} value={value}>{formatPresetLabel(value)}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="composer-select-group">
+          <span>执行批准</span>
+          <select
+            id="approvalPolicySelect"
+            value={prefs.approvalPolicy}
+            onChange={(event) => onPrefsChange({ approvalPolicy: event.target.value })}
+          >
+            {APPROVAL_OPTIONS.map((value) => (
+              <option key={value || 'default'} value={value}>
+                {value ? formatApprovalLabel(value) : (defaults.approvalPolicy ? `跟随当前配置（${formatApprovalLabel(defaults.approvalPolicy)}）` : '跟随当前配置')}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="composer-select-group">
+          <span>权限范围</span>
+          <select
+            id="sandboxModeSelect"
+            value={prefs.sandboxMode}
+            onChange={(event) => onPrefsChange({ sandboxMode: event.target.value })}
+          >
+            {SANDBOX_OPTIONS.map((value) => (
+              <option key={value || 'default'} value={value}>
+                {value ? formatSandboxLabel(value) : (defaults.sandboxMode ? `跟随当前配置（${formatSandboxLabel(defaults.sandboxMode)}）` : '跟随当前配置')}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="composer-input-row">
+        <label className="btn btn-secondary composer-attach-btn">
+          图片
           <input
-            className="token-input"
-            placeholder="WebSocket 令牌"
-            value={token}
+            id="imageInput"
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
             onChange={(event) => {
-              const nextToken = writeStoredToken(event.target.value);
-              setToken(nextToken);
+              const file = event.target.files?.[0];
+              if (!file || !token) {
+                return;
+              }
+              const targetThreadId = activeSessionId || '__new__';
+              void uploadImage(token, file).then((result) => {
+                addAttachment(targetThreadId, {
+                  ...result,
+                  previewUrl: URL.createObjectURL(file),
+                });
+              });
+              event.currentTarget.value = '';
             }}
           />
-          <div className={`status-chip small${connectionStatus === 'connected' ? '' : ' warning'}`}>
-            {connectionStatus}
-          </div>
-        </div>
-        <textarea
-          className="composer-input"
-          placeholder={activeSessionId ? '输入提示词…' : '输入提示词，先创建新会话…'}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-              event.preventDefault();
-              submit();
-            }
-          }}
-        />
-        {!activeSessionId ? (
-          <input
-            className="token-input"
-            placeholder="新会话的工作区路径"
-            value={workspacePath}
-            onChange={(event) => setWorkspacePath(event.target.value)}
-          />
-        ) : null}
-        <div className="attachment-toolbar">
-          <label className="secondary-button file-button">
-            <input
-              type="file"
-              accept="image/*"
-              hidden
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (!file || !token) {
-                  return;
-                }
-                const targetThreadId = activeSessionId || '__new__';
-                void uploadImage(token, file)
-                  .then((result) => {
-                    addAttachment(targetThreadId, {
-                      ...result,
-                      previewUrl: URL.createObjectURL(file),
-                    });
-                  });
-                event.currentTarget.value = '';
-              }}
-            />
-            上传图片
-          </label>
-        </div>
-        {attachments.length ? (
-          <div className="attachment-list">
+        </label>
+
+        <div className="prompt-stack">
+          <div id="composerAttachmentList" className="composer-attachment-list" hidden={!attachments.length}>
             {attachments.map((attachment) => (
-              <article key={attachment.id} className="attachment-card">
-                <img src={attachment.previewUrl} alt={attachment.name} className="attachment-preview" />
-                <div className="attachment-meta">
-                  <strong>{attachment.name}</strong>
-                  <span>{attachment.contentType}</span>
+              <article key={attachment.id} className="composer-attachment-card">
+                <img src={attachment.previewUrl} alt={attachment.name} className="composer-attachment-thumb" />
+                <div className="composer-attachment-meta">
+                  <span className="composer-attachment-name">{attachment.name}</span>
+                  <button
+                    type="button"
+                    className="composer-attachment-remove"
+                    onClick={() => removeAttachment(activeSessionId || '__new__', attachment.id)}
+                  >
+                    移除
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => removeAttachment(activeSessionId || '__new__', attachment.id)}
-                >
-                  Remove
-                </button>
               </article>
             ))}
           </div>
-        ) : null}
-        <div className="composer-actions">
-          <div className="composer-hint">
-            <span className="muted">
-              {activeSessionId ? '将发送到当前会话' : '会先创建新会话再发送'}
-            </span>
-            {composerError ? <span className="composer-error">{composerError}</span> : null}
-          </div>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={submit}
-            disabled={busy || !draft.trim()}
-          >
-            {busy ? '发送中…' : activeSessionId ? '发送' : '创建并发送'}
-          </button>
+          <textarea
+            ref={textareaRef}
+            id="promptInput"
+            placeholder={activeSessionId ? '给当前会话发送指令...' : '输入内容，会先创建新会话再发送...'}
+            rows={1}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              syncTextareaHeight(event.currentTarget, event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                submit();
+              }
+            }}
+          />
+          <div id="slashMenu" className="slash-menu" hidden></div>
         </div>
+
+        <button type="submit" className="btn" disabled={busy || (!draft.trim() && !attachments.length) || !tokenReady}>
+          {busy ? '发送中…' : '发送'}
+        </button>
       </div>
-    </footer>
+
+      {!activeSessionId ? (
+        <label className="composer-select-group composer-new-session-path">
+          <span>工作区</span>
+          <input
+            className="modal-input"
+            placeholder="例如 C:\\Users\\Administrator\\Desktop\\cc-workspace"
+            value={workspacePath}
+            onChange={(event) => setWorkspacePath(event.target.value)}
+          />
+        </label>
+      ) : null}
+
+      {composerError ? <div className="status error">{composerError}</div> : null}
+    </form>
   );
 }

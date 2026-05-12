@@ -1,140 +1,911 @@
-import { useMemo } from 'react';
-import { buildApprovalSummary, formatTimelineLabel, formatTokenUsageValue, summarizeTimelineEntry } from '../../app/view-helpers.js';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  buildApprovalSummary,
+  describeTimelineType,
+  formatApprovalKind,
+  formatHealthStatus,
+  formatTimelineLabel,
+  getDecisionLabel,
+  normalizeSchemaFieldValue,
+  summarizeTimelineEntry,
+  buildUserInputResponse,
+} from '../../app/view-helpers.js';
 import { useAppStore, type ServerRequestItem, type TimelineEntry } from '../../store/appStore.js';
 import { buildTimelineGroups } from './model.js';
 
+type TimelineWorkspaceProps = {
+  onRespondApproval: (request: ServerRequestItem, response: unknown) => void;
+};
+
+type TaskStep = {
+  id: string;
+  status: string;
+  text: string;
+};
+
+type ExpandableTimelineRowProps = {
+  title: React.ReactNode;
+  summary?: React.ReactNode;
+  details?: React.ReactNode;
+  className?: string;
+};
+
+function ExpandableTimelineRow(props: ExpandableTimelineRowProps) {
+  const { title, summary, details, className = '' } = props;
+  const [open, setOpen] = useState(false);
+  const expandable = Boolean(details);
+
+  return (
+    <div className={`timeline-process-row ${className}${expandable ? ' is-expandable' : ''}${open ? ' is-open' : ''}`}>
+      <button
+        type="button"
+        className={`timeline-process-summary${expandable ? ' is-expandable' : ''}`}
+        onClick={() => {
+          if (!expandable) {
+            return;
+          }
+          setOpen((value) => !value);
+        }}
+      >
+        <div className="timeline-inline-title">{title}</div>
+        {summary ? <div className="timeline-inline-meta timeline-inline-summary">{summary}</div> : null}
+      </button>
+      {expandable && open ? <div className="timeline-inline-detail-body">{details}</div> : null}
+    </div>
+  );
+}
+
+function normalizePlanStepStatus(status: string | undefined): string {
+  const normalized = (status || '').replace(/[\s_-]/g, '').toLowerCase();
+  if (normalized === 'completed' || normalized === 'done' || normalized === 'success') {
+    return 'completed';
+  }
+  if (normalized === 'inprogress' || normalized === 'running' || normalized === 'active') {
+    return 'inProgress';
+  }
+  return 'pending';
+}
+
+function formatPlanStepStatus(status: string | undefined): string {
+  const normalized = normalizePlanStepStatus(status);
+  if (normalized === 'completed') {
+    return '已完成';
+  }
+  if (normalized === 'inProgress') {
+    return '进行中';
+  }
+  return '待处理';
+}
+
+function buildDecisionResponse(decision: string | Record<string, unknown>): unknown {
+  if (typeof decision === 'string') {
+    return { decision };
+  }
+  if (!decision || typeof decision !== 'object') {
+    return { decision };
+  }
+  if ('decision' in decision || 'action' in decision || 'content' in decision || '_meta' in decision) {
+    return decision;
+  }
+  return { decision };
+}
+
+function buildTaskSteps(entry: TimelineEntry): TaskStep[] {
+  const details = entry.details && typeof entry.details === 'object'
+    ? entry.details as Record<string, unknown>
+    : null;
+  const plan = Array.isArray(details?.plan) ? details.plan : [];
+  const structuredSteps = plan
+    .map((step, index) => {
+      const record = step && typeof step === 'object' ? step as Record<string, unknown> : null;
+      const text = typeof record?.step === 'string' ? record.step.trim() : '';
+      if (!text) {
+        return null;
+      }
+      return {
+        id: `${entry.id}:step:${index}`,
+        status: typeof record?.status === 'string' ? record.status : '',
+        text,
+      };
+    })
+    .filter((step): step is TaskStep => Boolean(step));
+  if (structuredSteps.length) {
+    return structuredSteps;
+  }
+
+  return (entry.meta || [])
+    .map((line, index) => {
+      const text = String(line || '').trim();
+      if (!text) {
+        return null;
+      }
+      const separatorIndex = text.indexOf(':');
+      if (separatorIndex > 0) {
+        return {
+          id: `${entry.id}:meta:${index}`,
+          status: text.slice(0, separatorIndex).trim(),
+          text: text.slice(separatorIndex + 1).trim(),
+        };
+      }
+      return {
+        id: `${entry.id}:meta:${index}`,
+        status: entry.status || '',
+        text,
+      };
+    })
+    .filter((step): step is TaskStep => Boolean(step?.text));
+}
+
+function buildTaskPanelModel(entries: TimelineEntry[]) {
+  const taskEntries = entries
+    .filter((entry) => entry.type === 'plan' || entry.type === 'turn_plan')
+    .sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  if (!taskEntries.length) {
+    return null;
+  }
+
+  const latest = taskEntries[taskEntries.length - 1];
+  const latestStructured = [...taskEntries].reverse().find((entry) => buildTaskSteps(entry).length > 0) || latest;
+  const steps = buildTaskSteps(latestStructured);
+  const draftEntry = [...taskEntries].reverse().find((entry) => entry.type === 'plan' && (entry.partial || entry.status === 'running'));
+
+  return {
+    summary: latestStructured.text || latest.text || '任务列表',
+    steps,
+    draftText: draftEntry?.text || '',
+    running: Boolean(draftEntry) || steps.some((step) => normalizePlanStepStatus(step.status) === 'inProgress'),
+    updatedAt: latest.createdAt || 0,
+  };
+}
+
+function buildTimelineKind(entry: TimelineEntry): string {
+  if (entry.type === 'reasoning' || entry.type === 'plan' || entry.type === 'turn_plan') {
+    return 'thinking';
+  }
+  if (entry.type === 'command' || entry.type === 'mcp_tool' || entry.type === 'dynamic_tool' || entry.type === 'web_search') {
+    return 'command';
+  }
+  if (entry.type === 'file_change' || entry.type === 'turn_diff') {
+    return 'fileChange';
+  }
+  if (entry.status === 'error') {
+    return '_error';
+  }
+  if (entry.status === 'warning') {
+    return '_warning';
+  }
+  return entry.type || 'generic';
+}
+
+function formatExecutionStatus(status: string | undefined): string {
+  const normalized = (status || '').trim().toLowerCase();
+  if (normalized === 'completed' || normalized === 'success' || normalized === 'succeeded') {
+    return '已完成';
+  }
+  if (normalized === 'failed' || normalized === 'error') {
+    return '失败';
+  }
+  if (normalized === 'declined' || normalized === 'cancelled' || normalized === 'aborted') {
+    return '已中断';
+  }
+  if (normalized === 'pendingapproval' || normalized === 'pending_approval') {
+    return '待批准';
+  }
+  return '进行中';
+}
+
+function buildStatusTone(status: string | undefined): string {
+  const normalized = (status || '').trim().toLowerCase();
+  if (normalized === 'completed' || normalized === 'success' || normalized === 'succeeded') {
+    return 'success';
+  }
+  if (normalized === 'failed' || normalized === 'error') {
+    return 'error';
+  }
+  if (normalized === 'declined' || normalized === 'cancelled' || normalized === 'aborted') {
+    return 'warning';
+  }
+  if (normalized === 'pendingapproval' || normalized === 'pending_approval') {
+    return 'warning';
+  }
+  return 'running';
+}
+
+function buildTimelineStateClass(entry: TimelineEntry): string {
+  if (entry.partial || entry.status === 'running') {
+    return 'state-running';
+  }
+  const tone = buildStatusTone(entry.status);
+  if (tone === 'success') {
+    return 'state-success';
+  }
+  if (tone === 'warning') {
+    return 'state-warning';
+  }
+  if (tone === 'error') {
+    return 'state-error';
+  }
+  return 'state-idle';
+}
+
+function getCommandDetails(entry: TimelineEntry): { command: string; cwd: string; output: string } {
+  const details = entry.details && typeof entry.details === 'object'
+    ? entry.details as Record<string, unknown>
+    : {};
+  const command = typeof details.command === 'string'
+    ? details.command
+    : typeof details.input === 'string'
+      ? details.input
+      : entry.text || '';
+  const cwd = typeof details.cwd === 'string' ? details.cwd : '';
+  const output = typeof details.output === 'string'
+    ? details.output
+    : typeof details.aggregatedOutput === 'string'
+      ? details.aggregatedOutput
+      : '';
+  return { command, cwd, output };
+}
+
+function classifyDiffLine(line: string): string {
+  if (line.startsWith('+++ ') || line.startsWith('--- ')) {
+    return 'file';
+  }
+  if (line.startsWith('*** Add File:') || line.startsWith('*** Delete File:') || line.startsWith('*** Update File:')) {
+    return 'file';
+  }
+  if (line.startsWith('diff --git ')) {
+    return 'file';
+  }
+  if (line.startsWith('@@')) {
+    return 'hunk';
+  }
+  if (line.startsWith('+')) {
+    return 'add';
+  }
+  if (line.startsWith('-')) {
+    return 'delete';
+  }
+  return 'context';
+}
+
+function renderDiffBlock(text: string) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  return (
+    <div className="timeline-inline-diff">
+      {lines.map((line, index) => (
+        <div key={`diff-${index}`} className={`timeline-diff-line kind-${classifyDiffLine(line)}`}>
+          {line || ' '}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatFileChangePrefix(kind: string | undefined): string {
+  const normalized = (kind || '').trim().toLowerCase();
+  if (normalized === 'add') {
+    return '+ 新增';
+  }
+  if (normalized === 'delete') {
+    return '- 删除';
+  }
+  return '~ 修改';
+}
+
+function buildProcessHeadline(entry: TimelineEntry): string {
+  const label = formatTimelineLabel(entry);
+  if (entry.partial || entry.status) {
+    return `${label} · ${formatExecutionStatus(entry.partial ? 'running' : entry.status)}`;
+  }
+  return label;
+}
+
+function buildProcessPreview(entry: TimelineEntry): string {
+  if (entry.type === 'command') {
+    const details = getCommandDetails(entry);
+    return (details.command || entry.text || '执行命令').replace(/\s+/g, ' ').trim();
+  }
+
+  if (entry.type === 'file_change' || entry.type === 'turn_diff') {
+    if (entry.changes?.length) {
+      const preview = entry.changes
+        .slice(0, 2)
+        .map((change) => `${formatFileChangePrefix(change.kind)} ${change.path || '未命名文件'}`.trim())
+        .join(' · ');
+      return entry.changes.length > 2 ? `${preview} 等 ${entry.changes.length} 项` : preview;
+    }
+  }
+
+  return summarizeTimelineEntry(entry).replace(/\s+/g, ' ').trim();
+}
+
+function renderFileChangeStats(change: { addedLines?: number; deletedLines?: number }) {
+  const addedLines = Math.max(0, Number(change.addedLines) || 0);
+  const deletedLines = Math.max(0, Number(change.deletedLines) || 0);
+  if (!addedLines && !deletedLines) {
+    return null;
+  }
+  return (
+    <span className="file-change-line-stats">
+      {' ('}
+      <span className="file-change-line-stats-add">+{addedLines}</span>
+      {' / '}
+      <span className="file-change-line-stats-delete">-{deletedLines}</span>
+      {')'}
+    </span>
+  );
+}
+
+function buildTurnActivityStatus(
+  entries: TimelineEntry[],
+  turnId: string | undefined,
+  approvals: ServerRequestItem[],
+): { tone: string; label: string } | null {
+  if (!turnId) {
+    return null;
+  }
+
+  const pendingApproval = approvals.find((item) => item.turnId === turnId && item.status !== 'submitting');
+  if (pendingApproval) {
+    return { tone: 'warning', label: '等待批准' };
+  }
+
+  const runningEntries = [...entries]
+    .filter((entry) => entry.turnId === turnId && (entry.partial || entry.status === 'running'))
+    .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
+
+  const reasoningEntry = runningEntries.find((entry) => entry.type === 'reasoning');
+  if (reasoningEntry) {
+    return { tone: 'thinking', label: '思考中' };
+  }
+
+  const commandEntry = runningEntries.find((entry) => entry.type === 'command');
+  if (commandEntry) {
+    return { tone: 'command', label: '执行命令中' };
+  }
+
+  const fileChangeEntry = runningEntries.find((entry) => entry.type === 'file_change');
+  if (fileChangeEntry) {
+    return { tone: 'file', label: '修改文件中' };
+  }
+
+  const toolEntry = runningEntries.find((entry) => (
+    entry.type === 'mcp_tool' || entry.type === 'dynamic_tool' || entry.type === 'web_search'
+  ));
+  if (toolEntry) {
+    return { tone: 'command', label: '工具处理中' };
+  }
+
+  const planEntry = runningEntries.find((entry) => entry.type === 'plan' || entry.type === 'turn_plan');
+  if (planEntry) {
+    return { tone: 'thinking', label: '规划中' };
+  }
+
+  return turnId && runningEntries.length ? { tone: 'command', label: '处理中' } : null;
+}
+
 function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
-  return (
-    <article className={`timeline-entry${entry.role ? ` ${entry.role}` : ''}${entry.type ? ` type-${entry.type}` : ''}`}>
-      <div className="timeline-entry-head">
-        <div className="label">{formatTimelineLabel(entry)}</div>
-        {entry.status ? <div className={`badge${entry.status === 'running' ? ' warning' : ''}`}>{entry.status}</div> : null}
+  if (entry.role === 'user' || entry.role === 'assistant') {
+    const role = entry.role === 'user' ? 'user' : 'assistant';
+    const bubbleClass = role === 'user'
+      ? 'msg-bubble msg-bubble-user'
+      : entry.type === 'reasoning'
+        ? 'msg-bubble msg-bubble-commentary'
+        : 'msg-bubble msg-bubble-assistant';
+    return (
+      <div className={`transcript-row transcript-row-${role}`}>
+        <div className="transcript-row-body">
+          <article className={`message ${role} ${bubbleClass}`}>
+            {entry.role === 'assistant' && entry.type === 'reasoning' ? (
+              <div className="item-phase">思考</div>
+            ) : null}
+            <div className="message-body">
+              <div className={entry.role === 'user' ? 'user-message-text' : 'timeline-entry-text'}>
+                {summarizeTimelineEntry(entry)}
+                {entry.partial ? <span className="cursor">▌</span> : null}
+              </div>
+              {entry.meta?.length ? (
+                <div className="timeline-entry-meta">
+                  {entry.meta.map((line, index) => <span key={`${entry.id}-meta-${index}`}>{line}</span>)}
+                </div>
+              ) : null}
+              {entry.patch ? <pre className="cmd-output">{entry.patch}</pre> : null}
+              {entry.changes?.length ? (
+                <div className="tool-calls-banner">
+                  {entry.changes.map((change, index) => (
+                    <span key={`${entry.id}-change-${index}`} className="tool-chip">
+                      {[change.kind, change.path].filter(Boolean).join(': ')}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </article>
+        </div>
       </div>
-      <div className="timeline-entry-text">{summarizeTimelineEntry(entry)}</div>
-      {entry.meta?.length ? (
-        <div className="timeline-entry-meta">
-          {entry.meta.map((line, index) => <span key={`${entry.id}-meta-${index}`}>{line}</span>)}
+    );
+  }
+
+  if (entry.role !== 'user' && entry.role !== 'assistant') {
+    const kind = buildTimelineKind(entry);
+    if (entry.type === 'command') {
+      const details = getCommandDetails(entry);
+      return (
+        <div className={`timeline-event kind-${kind} ${buildTimelineStateClass(entry)}`}>
+          <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true"></span></div>
+          <div className="timeline-content">
+            <ExpandableTimelineRow
+              className={`timeline-card-${kind}`}
+              title={buildProcessHeadline(entry)}
+              summary={buildProcessPreview(entry)}
+              details={
+                <>
+                  <div className="timeline-inline-meta">{describeTimelineType(entry)} · {formatExecutionStatus(entry.status)}</div>
+                  <pre className="timeline-inline-pre timeline-inline-pre-shell">{details.command || entry.text || '执行命令'}</pre>
+                  {details.cwd ? <div className="timeline-inline-meta timeline-inline-meta-code">cwd: {details.cwd}</div> : null}
+                  {details.output ? <pre className="timeline-inline-pre timeline-inline-pre-output">{details.output}</pre> : null}
+                </>
+              }
+            />
+          </div>
         </div>
-      ) : null}
-      {entry.changes?.length ? (
-        <div className="timeline-entry-changes">
-          {entry.changes.map((change, index) => (
-            <span key={`${entry.id}-change-${index}`} className="timeline-chip">
-              {[change.kind, change.path].filter(Boolean).join(': ')}
-            </span>
-          ))}
+      );
+    }
+    return (
+      <div className={`timeline-event kind-${kind} ${buildTimelineStateClass(entry)}`}>
+        <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true"></span></div>
+        <div className="timeline-content">
+          <ExpandableTimelineRow
+            className={`timeline-card-${kind}`}
+            title={buildProcessHeadline(entry)}
+            summary={buildProcessPreview(entry) || describeTimelineType(entry)}
+            details={(entry.meta?.length || entry.patch || entry.changes?.length) ? (
+              <>
+                <div className="timeline-inline-meta">{describeTimelineType(entry)}{entry.status ? ` · ${formatExecutionStatus(entry.status)}` : ''}</div>
+                {entry.meta?.length ? (
+                  <div className="timeline-inline-meta timeline-inline-meta-code">
+                    {entry.meta.join('\n')}
+                  </div>
+                ) : null}
+                {entry.changes?.length ? (
+                  <div className="file-change-list">
+                    {entry.changes.map((change, index) => (
+                      <div key={`${entry.id}-change-${index}`} className={`file-change-entry kind-${(change.kind || 'update').toLowerCase()}`}>
+                        <span>{`${formatFileChangePrefix(change.kind)} ${change.path || ''}`}</span>
+                        {renderFileChangeStats(change)}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {entry.patch ? renderDiffBlock(entry.patch) : null}
+              </>
+            ) : null}
+          />
         </div>
-      ) : null}
-      {entry.patch ? <pre className="timeline-entry-pre">{entry.patch}</pre> : null}
-    </article>
+      </div>
+    );
+  }
+  return null;
+}
+
+function ApprovalCard({
+  request,
+  onRespond,
+}: {
+  request: ServerRequestItem;
+  onRespond: (request: ServerRequestItem, response: unknown) => void;
+}) {
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
+  const [dynamicToolValue, setDynamicToolValue] = useState('');
+  const [dynamicToolSuccess, setDynamicToolSuccess] = useState(true);
+  const [mcpValues, setMcpValues] = useState<Record<string, string>>({});
+
+  return (
+    <div className="timeline-event kind-serverRequest">
+      <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true"></span></div>
+      <div className="timeline-content">
+        <article className="approval-banner">
+          <div className="item-label">{formatApprovalKind(request.kind)}</div>
+          <div className="timeline-inline-title">{buildApprovalSummary(request)}</div>
+          <div className="approval-meta">
+            {[request.threadId || '全局', request.requestId, request.command || '', request.cwd || ''].filter(Boolean).join(' · ')}
+          </div>
+          {request.patch ? <pre className="timeline-inline-pre timeline-inline-pre-output">{request.patch}</pre> : null}
+
+          {request.kind === 'user_input' && request.questions?.length ? (
+            <div className="approval-form">
+              {request.questions.map((question) => {
+                const questionId = question.id || '';
+                const options = Array.isArray(question.options) ? question.options : [];
+                const currentValue = questionAnswers[questionId] || '';
+                return (
+                  <div key={questionId} className="approval-question">
+                    <div className="approval-question-header">{question.header || question.question || questionId}</div>
+                    {options.length ? (
+                      <div className="approval-options approval-options-stacked">
+                        {options.map((option) => {
+                          const label = option.label || '';
+                          return (
+                            <label key={label} className="approval-option">
+                              <input
+                                type="radio"
+                                name={`${request.requestId}:${questionId}`}
+                                value={label}
+                                checked={currentValue === label}
+                                onChange={(event) => setQuestionAnswers((state) => ({ ...state, [questionId]: event.target.value }))}
+                              />
+                              <span>{label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {(question.isOther || question.isSecret || !options.length) ? (
+                      question.isSecret ? (
+                        <input
+                          className="approval-text-input"
+                          type="password"
+                          value={currentValue}
+                          onChange={(event) => setQuestionAnswers((state) => ({ ...state, [questionId]: event.target.value }))}
+                        />
+                      ) : (
+                        <textarea
+                          className="approval-text-input"
+                          value={currentValue}
+                          onChange={(event) => setQuestionAnswers((state) => ({ ...state, [questionId]: event.target.value }))}
+                        />
+                      )
+                    ) : null}
+                  </div>
+                );
+              })}
+              <div className="approval-actions">
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => onRespond(request, buildUserInputResponse(request, questionAnswers))}
+                >
+                  提交回答
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {request.kind === 'dynamic_tool_call' ? (
+            <div className="approval-form">
+              <textarea
+                className="approval-text-input"
+                placeholder='填写 JSON 数组，例如 [{"type":"inputText","text":"ok"}]'
+                value={dynamicToolValue}
+                onChange={(event) => setDynamicToolValue(event.target.value)}
+              />
+              <label className="approval-option">
+                <input type="checkbox" checked={dynamicToolSuccess} onChange={(event) => setDynamicToolSuccess(event.target.checked)} />
+                <span>标记为成功</span>
+              </label>
+              <div className="approval-actions">
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => {
+                    let contentItems: unknown[] = [];
+                    if (dynamicToolValue.trim()) {
+                      try {
+                        const parsed = JSON.parse(dynamicToolValue);
+                        if (!Array.isArray(parsed)) {
+                          throw new Error('contentItems 必须是数组');
+                        }
+                        contentItems = parsed;
+                      } catch (error) {
+                        onRespond(request, { error: error instanceof Error ? error.message : 'JSON 无效' });
+                        return;
+                      }
+                    }
+                    onRespond(request, { contentItems, success: dynamicToolSuccess });
+                  }}
+                >
+                  提交结果
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {request.kind === 'mcp_server_elicitation' ? (
+            <div className="approval-form">
+              {request.mode === 'url' && request.url ? (
+                <a className="approval-link" href={request.url} target="_blank" rel="noreferrer">{request.url}</a>
+              ) : null}
+              {request.mode !== 'url' && request.responseSchema && typeof request.responseSchema === 'object' ? (
+                <div className="approval-question">
+                  {Object.entries((((request.responseSchema as any)?.properties || {}) as Record<string, Record<string, unknown>>)).map(([fieldKey, fieldSpec]) => (
+                    <label key={fieldKey} className="modal-label">
+                      <span>{typeof fieldSpec?.title === 'string' ? fieldSpec.title : fieldKey}</span>
+                      <input
+                        className="approval-text-input"
+                        value={mcpValues[fieldKey] || ''}
+                        onChange={(event) => setMcpValues((state) => ({ ...state, [fieldKey]: event.target.value }))}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+              <div className="approval-actions">
+                {request.mode === 'url' ? (
+                  <>
+                    <button className="btn" type="button" onClick={() => onRespond(request, { action: 'accept', content: null, _meta: request.meta })}>允许</button>
+                    <button className="btn btn-secondary" type="button" onClick={() => onRespond(request, { action: 'decline', content: null })}>拒绝</button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => {
+                        const properties = (((request.responseSchema as any)?.properties || {}) as Record<string, Record<string, unknown>>);
+                        const content = Object.fromEntries(
+                          Object.entries(properties).map(([fieldKey, fieldSpec]) => [fieldKey, normalizeSchemaFieldValue(mcpValues[fieldKey] || '', fieldSpec)]),
+                        );
+                        onRespond(request, { action: 'accept', content, _meta: request.meta });
+                      }}
+                    >
+                      提交
+                    </button>
+                    <button className="btn btn-secondary" type="button" onClick={() => onRespond(request, { action: 'decline', content: null })}>拒绝</button>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {request.kind !== 'user_input' && request.kind !== 'dynamic_tool_call' && request.kind !== 'mcp_server_elicitation' ? (
+            <div className="approval-actions">
+              {(request.availableDecisions?.length ? request.availableDecisions : ['accept', 'decline']).map((decision, index) => {
+                const key = typeof decision === 'string' ? decision : JSON.stringify(decision);
+                const response = buildDecisionResponse(decision);
+                return (
+                  <button
+                    key={key}
+                    className={index === 0 ? 'btn' : 'btn btn-secondary'}
+                    type="button"
+                    onClick={() => onRespond(request, response)}
+                  >
+                    {getDecisionLabel(decision)}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </article>
+      </div>
+    </div>
   );
 }
 
-function InlineApprovalCard({ request }: { request: ServerRequestItem }) {
-  return (
-    <article className="timeline-approval-card">
-      <div className="timeline-entry-head">
-        <div className="label">{request.kind || 'approval'}</div>
-        <div className={`badge${request.status === 'submitting' ? '' : ' warning'}`}>{request.status || 'pending'}</div>
-      </div>
-      <div className="timeline-entry-text">{buildApprovalSummary(request)}</div>
-      <div className="timeline-entry-meta">
-        <span>{request.threadId || 'global'}</span>
-        <span>{request.requestId}</span>
-        {request.command ? <span>{request.command}</span> : null}
-        {request.cwd ? <span>{request.cwd}</span> : null}
-      </div>
-      {request.patch ? <pre className="timeline-entry-pre">{request.patch}</pre> : null}
-    </article>
-  );
-}
-
-export function TimelineWorkspace() {
+export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps) {
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const lastSignatureRef = useRef('');
+  const lastSessionIdRef = useRef<string | null>(null);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const entriesBySessionId = useAppStore((state) => state.timeline.entriesBySessionId);
   const health = useAppStore((state) => state.health.data);
   const error = useAppStore((state) => state.health.error || state.connection.error || '');
   const turnState = useAppStore((state) => activeSessionId ? state.turns.activeBySessionId[activeSessionId] : undefined);
-  const usage = useAppStore((state) => activeSessionId ? state.tokenUsage.bySessionId[activeSessionId] : null);
   const approvalItems = useAppStore((state) => state.approvals.items);
 
   const entries = useMemo(
     () => activeSessionId ? (entriesBySessionId[activeSessionId] || []) : [],
     [activeSessionId, entriesBySessionId],
   );
+  const visibleEntries = useMemo(
+    () => entries.filter((entry) => entry.type !== 'reasoning'),
+    [entries],
+  );
   const approvals = useMemo(
-    () => activeSessionId ? approvalItems.filter((item) => item.threadId === activeSessionId) : [],
+    () => activeSessionId ? approvalItems.filter((item) => item.threadId === activeSessionId) : approvalItems,
     [activeSessionId, approvalItems],
+  );
+  const activeTurnStatus = useMemo(
+    () => buildTurnActivityStatus(entries, turnState?.turnId, approvals),
+    [entries, turnState?.turnId, approvals],
+  );
+  const taskPanel = useMemo(
+    () => buildTaskPanelModel(entries),
+    [entries],
   );
 
   const groups = useMemo(
-    () => buildTimelineGroups(entries, approvals, turnState),
-    [approvals, entries, turnState],
+    () => buildTimelineGroups(visibleEntries.filter((entry) => entry.type !== 'plan' && entry.type !== 'turn_plan'), approvals, turnState),
+    [approvals, visibleEntries, turnState],
   );
 
+  const contentSignature = useMemo(
+    () => JSON.stringify(groups.map((group) => ({
+      id: group.id,
+      status: group.status,
+      entries: group.entries.map((entry) => ({
+        id: entry.id,
+        text: entry.text,
+        status: entry.status,
+        partial: entry.partial,
+        createdAt: entry.createdAt,
+      })),
+      approvals: group.approvals.map((request) => ({
+        id: request.requestId,
+        status: request.status,
+      })),
+    }))),
+    [groups],
+  );
+
+  useEffect(() => {
+    const body = messagesRef.current;
+    if (!body) {
+      return;
+    }
+    if (lastSessionIdRef.current !== activeSessionId) {
+      lastSessionIdRef.current = activeSessionId;
+      lastSignatureRef.current = '';
+      window.requestAnimationFrame(() => {
+        const currentBody = messagesRef.current;
+        if (!currentBody) {
+          return;
+        }
+        currentBody.scrollTop = currentBody.scrollHeight;
+        setShowJumpToBottom(false);
+        setHasUnreadBelow(false);
+      });
+      return;
+    }
+    const previousSignature = lastSignatureRef.current;
+    const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
+    const hasContentChanged = previousSignature !== contentSignature;
+    if (!previousSignature || (nearBottom && hasContentChanged)) {
+      body.scrollTop = body.scrollHeight;
+      setShowJumpToBottom(false);
+      setHasUnreadBelow(false);
+    } else if (hasContentChanged) {
+      setShowJumpToBottom(true);
+      setHasUnreadBelow(true);
+    }
+    lastSignatureRef.current = contentSignature;
+  }, [activeSessionId, contentSignature]);
+
   return (
-    <section className="panel timeline-workspace">
-      <div className="panel-title">时间线</div>
-      <div className="panel-body timeline-body">
+    <>
+      <div id="messages" ref={messagesRef} className="messages" onScroll={() => {
+        const body = messagesRef.current;
+        if (!body) {
+          return;
+        }
+        const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
+        setShowJumpToBottom(!nearBottom);
+        if (nearBottom) {
+          setHasUnreadBelow(false);
+        }
+      }}>
         {activeSessionId ? (
           <div className="timeline-toolbar">
             <div className={`status-chip${turnState?.active ? ' running' : ''}`}>
               {turnState?.active ? '运行中' : '空闲'}
             </div>
-            <div className="token-usage">
-              <span className="label">Tokens</span>
-              <strong>{formatTokenUsageValue(usage)}</strong>
-            </div>
           </div>
         ) : null}
+
         {error ? <div className="status error">{error}</div> : null}
         {!error && !health ? <div className="status">正在加载服务状态…</div> : null}
-        {activeSessionId && groups.length ? (
-          <div className="timeline-group-list">
-            {groups.map((group) => (
-              <section key={group.id} className={`timeline-group status-${group.status}`}>
-                <div className="timeline-group-head">
-                  <div>
-                    <strong>{group.label}</strong>
-                    {group.turnId ? <span className="timeline-group-id">{group.turnId}</span> : null}
-                  </div>
-                  <div className={`badge${group.status === 'running' || group.status === 'pending' ? ' warning' : ''}`}>{group.status}</div>
-                </div>
-                <div className="timeline-group-body">
-                  {group.entries.map((entry) => <TimelineEntryCard key={entry.id} entry={entry} />)}
-                  {group.approvals.map((request) => <InlineApprovalCard key={request.requestId} request={request} />)}
-                </div>
-              </section>
-            ))}
-          </div>
-        ) : null}
+
+        {activeSessionId && groups.length ? groups.map((group) => (
+          <section key={group.id} className={`timeline-group status-${group.status}`}>
+            <div className="timeline-group-head">
+              <div>
+                <strong>{group.label}</strong>
+              </div>
+              <div className={`badge${group.status === 'running' || group.status === 'pending' ? ' warning' : ''}`}>
+                {group.status === 'running' ? '运行中' : group.status === 'pending' ? '待处理' : '已完成'}
+              </div>
+            </div>
+            <div className="timeline-group-body">
+              {group.entries.map((entry) => <TimelineEntryCard key={entry.id} entry={entry} />)}
+              {group.approvals.map((request) => <ApprovalCard key={request.requestId} request={request} onRespond={onRespondApproval} />)}
+            </div>
+          </section>
+        )) : null}
+
         {activeSessionId && !groups.length ? (
           <div className="empty-state">
             <strong>还没有时间线记录</strong>
             <span>发送第一条消息后，这个会话的过程会显示在这里。</span>
           </div>
         ) : null}
+
         {!activeSessionId && health ? (
           <div className="health-grid">
             <div className="health-card">
               <span className="label">状态</span>
-              <strong>{health.status}</strong>
+              <strong>{formatHealthStatus(health.status)}</strong>
             </div>
             <div className="health-card">
               <span className="label">会话数</span>
               <strong>{health.tabs}</strong>
             </div>
             <div className="health-card">
-              <span className="label">WebSocket</span>
+              <span className="label">连接数</span>
               <strong>{health.websocketClients}</strong>
             </div>
             <div className="health-card">
               <span className="label">运行时长</span>
-              <strong>{health.uptimeSec}s</strong>
+              <strong>{health.uptimeSec} 秒</strong>
             </div>
           </div>
         ) : null}
       </div>
-    </section>
+
+      <button
+        id="jumpToBottomBtn"
+        className="jump-to-bottom-btn"
+        type="button"
+        hidden={!showJumpToBottom}
+        onClick={() => {
+          const body = messagesRef.current;
+          if (!body) {
+            return;
+          }
+          body.scrollTop = body.scrollHeight;
+          setShowJumpToBottom(false);
+          setHasUnreadBelow(false);
+        }}
+      >
+        {hasUnreadBelow ? '新消息 ︾' : '回到底部'}
+      </button>
+
+      {taskPanel ? (
+        <div className={`task-panel${taskPanelOpen ? ' is-open' : ''}`}>
+          <button
+            type="button"
+            className="task-panel-toggle"
+            onClick={() => setTaskPanelOpen((value) => !value)}
+          >
+            <span className={`task-panel-dot${taskPanel.running ? ' is-running' : ''}`} aria-hidden="true"></span>
+            <span className="task-panel-toggle-text">任务列表</span>
+            {taskPanel.steps.length ? <span className="task-panel-toggle-count">{taskPanel.steps.length}</span> : null}
+          </button>
+          {taskPanelOpen ? (
+            <div className="task-panel-body">
+              {taskPanel.summary ? <div className="task-panel-summary">{taskPanel.summary}</div> : null}
+              {taskPanel.steps.length ? (
+                <div className="task-step-list">
+                  {taskPanel.steps.map((step) => {
+                    const normalizedStatus = normalizePlanStepStatus(step.status);
+                    return (
+                      <div key={step.id} className={`task-step status-${normalizedStatus}`}>
+                        <span className="task-step-badge">{formatPlanStepStatus(step.status)}</span>
+                        <span className="task-step-text">{step.text}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {taskPanel.draftText ? (
+                <div className="task-panel-draft">
+                  <span className="task-panel-draft-label">规划中</span>
+                  <span className="task-panel-draft-text">{taskPanel.draftText}</span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {turnState?.active && activeTurnStatus ? (
+        <div className={`thinking-indicator tone-${activeTurnStatus.tone}`} aria-live="polite">
+          <span className="thinking-indicator-dot"></span>
+          <span className="thinking-indicator-text">{activeTurnStatus.label}</span>
+        </div>
+      ) : null}
+    </>
   );
 }
