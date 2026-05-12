@@ -223,6 +223,7 @@ test('thread_sync returns tab update and thread snapshot', async () => {
 
   assert.equal(calls.resumeThread.length, 1);
   assert.equal(calls.refreshTabWindowStatus.length, 1);
+  assert.equal((calls.refreshTabWindowStatus[0] as any).options.allowLaunch, true);
   assert.equal(socket.sent.length, 2);
   assert.equal((socket.sent[0] as any).type, 'tab_updated');
   assert.equal((socket.sent[1] as any).type, 'thread_sync');

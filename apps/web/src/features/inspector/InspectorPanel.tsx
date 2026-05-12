@@ -1,23 +1,16 @@
 import { useMemo, useState } from 'react';
-import { buildApprovalSummary, buildUserInputResponse, getDecisionLabel, normalizeSchemaFieldValue } from '../../app/view-helpers.js';
+import {
+  buildApprovalDecisionResponse,
+  buildApprovalSummary,
+  buildUserInputResponse,
+  getDecisionLabel,
+  normalizeSchemaFieldValue,
+} from '../../app/view-helpers.js';
 import { useAppStore, type ServerRequestItem } from '../../store/appStore.js';
 
 type InspectorPanelProps = {
   onRespond: (request: ServerRequestItem, response: unknown) => void;
 };
-
-function buildDecisionResponse(decision: string | Record<string, unknown>): unknown {
-  if (typeof decision === 'string') {
-    return { decision };
-  }
-  if (!decision || typeof decision !== 'object') {
-    return { decision };
-  }
-  if ('decision' in decision || 'action' in decision || 'content' in decision || '_meta' in decision) {
-    return decision;
-  }
-  return { decision };
-}
 
 export function InspectorPanel({ onRespond }: InspectorPanelProps) {
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
@@ -313,7 +306,7 @@ export function InspectorPanel({ onRespond }: InspectorPanelProps) {
                       : ['accept', 'decline']).map((decision, index) => {
                         const key = typeof decision === 'string' ? decision : JSON.stringify(decision);
                         const isPrimary = index === 0;
-                        const response = buildDecisionResponse(decision);
+                        const response = buildApprovalDecisionResponse(decision);
                         return (
                           <button
                             key={key}

@@ -108,10 +108,10 @@ export function formatWindowStatus(status: string | undefined): string {
   }
   const normalized = status.trim().toLowerCase();
   if (normalized === 'attached') {
-    return '已附着';
+    return '窗口已打开';
   }
   if (normalized === 'detached') {
-    return '未附着';
+    return '窗口未打开';
   }
   return status;
 }
@@ -228,6 +228,16 @@ export function getDecisionLabel(decision: string | Record<string, unknown>): st
   }
 
   return '提交';
+}
+
+export function buildApprovalDecisionResponse(decision: string | Record<string, unknown>): unknown {
+  if (typeof decision === 'string') {
+    return { decision };
+  }
+  if (!decision || typeof decision !== 'object') {
+    return { decision };
+  }
+  return decision;
 }
 
 export function summarizeTimelineEntry(entry: TimelineEntry): string {

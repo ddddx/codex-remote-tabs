@@ -26,9 +26,10 @@ export function createSessionService(app: FastifyInstance) {
         approvalPolicy: message.approvalPolicy || '',
         sandboxMode: message.sandboxMode || '',
       });
-      await app.windowAttachments.openWindowForThread(tab.threadId);
-      broadcastMessage(app, { type: 'tab_updated', tab });
-      return tab;
+      const attachedTab = await app.windowAttachments.openWindowForThread(tab.threadId) as RuntimeTab | null;
+      const nextTab = attachedTab || tab;
+      broadcastMessage(app, { type: 'tab_updated', tab: nextTab });
+      return nextTab;
     },
 
     async syncThread(threadId: string): Promise<{
@@ -38,14 +39,15 @@ export function createSessionService(app: FastifyInstance) {
       await ensureCodexReady(app);
       const thread = await app.codexClient.resumeThread(threadId);
       const tab = upsertRuntimeTab(app, thread);
-      await app.windowAttachments.refreshTabWindowStatus(threadId, {
+      const refreshedTab = await app.windowAttachments.refreshTabWindowStatus(threadId, {
         allowDiscovery: true,
-        allowLaunch: false,
+        allowLaunch: true,
         broadcastUpdate: false,
         touchUpdatedAt: false,
-      });
+      }) as RuntimeTab | null;
+      const nextTab = refreshedTab || tab;
       return {
-        tab,
+        tab: nextTab,
         message: buildThreadSyncMessage(app, threadId, thread),
       };
     },

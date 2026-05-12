@@ -1,4 +1,4 @@
-import { formatSessionStatus, formatWindowStatus } from '../../app/view-helpers.js';
+import { formatWindowStatus } from '../../app/view-helpers.js';
 import { useAppStore } from '../../store/appStore.js';
 
 type SessionRailProps = {
@@ -7,10 +7,10 @@ type SessionRailProps = {
 
 function buildStatusDotClass(status: string | undefined): string {
   const normalized = (status || '').trim().toLowerCase();
-  if (normalized === 'running' || normalized === 'active' || normalized === 'in_progress' || normalized === 'inprogress') {
+  if (normalized === 'attached') {
     return 'open';
   }
-  if (normalized === 'pending') {
+  if (normalized === 'opening' || normalized === 'pending') {
     return 'waiting';
   }
   return 'closed';
@@ -39,14 +39,8 @@ export function SessionRail({ onNewSession }: SessionRailProps) {
               <span className="name">{session.name}</span>
               <span className="workspace">{session.cwd || '未设置工作区'}</span>
               <span className="meta">
-                <span className={`status-dot ${buildStatusDotClass(session.status)}`}></span>
-                <span>{formatSessionStatus(session.status)}</span>
-                {formatWindowStatus(session.windowStatus) ? (
-                  <>
-                    <span>·</span>
-                    <span>{formatWindowStatus(session.windowStatus)}</span>
-                  </>
-                ) : null}
+                <span className={`status-dot ${buildStatusDotClass(session.windowStatus)}`}></span>
+                <span>{formatWindowStatus(session.windowStatus) || '窗口未打开'}</span>
               </span>
             </button>
           );

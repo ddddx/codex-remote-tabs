@@ -268,7 +268,9 @@ export function App() {
   const pendingApprovals = resolvedActiveSessionId
     ? approvals.filter((item) => item.threadId === resolvedActiveSessionId).length
     : approvals.length;
-  const activeUsage = resolvedActiveSessionId ? tokenUsageBySessionId[resolvedActiveSessionId] : null;
+  const activeUsage = resolvedActiveSessionId
+    ? (tokenUsageBySessionId[resolvedActiveSessionId] ?? activeSession?.tokenUsage ?? null)
+    : null;
   const activePrefs = useMemo(() => {
     if (!resolvedActiveSessionId) {
       return composerPrefsDraft;
@@ -657,32 +659,34 @@ export function App() {
               ☰
             </button>
             <h1 id="activeTitle">{activeTitle}</h1>
-            <label className="theme-select-group" htmlFor="themeSelect">
-              <span>主题</span>
-              <select id="themeSelect" value={theme} onChange={(event) => handleThemeChange(event.target.value)}>
-                {THEME_OPTIONS.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
-                ))}
-              </select>
-            </label>
-            <div id="contextUsage" className="context-usage">
-              <span className="context-usage-label">用量</span>
-              <strong>{formatTokenUsageValue(activeUsage)}</strong>
+            <div className="topbar-tools">
+              <label className="theme-select-group topbar-pill" htmlFor="themeSelect">
+                <span className="sr-only">主题</span>
+                <select id="themeSelect" aria-label="主题" value={theme} onChange={(event) => handleThemeChange(event.target.value)}>
+                  {THEME_OPTIONS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+              </label>
+              <div id="contextUsage" className="context-usage topbar-pill">
+                <span className="context-usage-label">用量</span>
+                <strong>{formatTokenUsageValue(activeUsage)}</strong>
+              </div>
+              <button
+                id="tokenBtn"
+                className="btn btn-secondary btn-inline topbar-pill topbar-action"
+                type="button"
+                onClick={() => {
+                  setTokenDraft(token);
+                  setTokenPromptOpen(true);
+                }}
+              >
+                Token
+              </button>
+              <span id="activeStatus" className={`status-badge topbar-pill${connectionStatus === 'connected' ? '' : ' waiting'}`}>
+                {connectionLabel}
+              </span>
             </div>
-            <button
-              id="tokenBtn"
-              className="btn btn-secondary btn-inline"
-              type="button"
-              onClick={() => {
-                setTokenDraft(token);
-                setTokenPromptOpen(true);
-              }}
-            >
-              Token
-            </button>
-            <span id="activeStatus" className={`status-badge${connectionStatus === 'connected' ? '' : ' waiting'}`}>
-              {connectionLabel}
-            </span>
           </header>
 
           <section className="panel">

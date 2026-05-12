@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  buildApprovalDecisionResponse,
   buildApprovalSummary,
   describeTimelineType,
   formatApprovalKind,
@@ -75,19 +76,6 @@ function formatPlanStepStatus(status: string | undefined): string {
     return '进行中';
   }
   return '待处理';
-}
-
-function buildDecisionResponse(decision: string | Record<string, unknown>): unknown {
-  if (typeof decision === 'string') {
-    return { decision };
-  }
-  if (!decision || typeof decision !== 'object') {
-    return { decision };
-  }
-  if ('decision' in decision || 'action' in decision || 'content' in decision || '_meta' in decision) {
-    return decision;
-  }
-  return { decision };
 }
 
 function buildTaskSteps(entry: TimelineEntry): TaskStep[] {
@@ -282,6 +270,104 @@ function renderDiffBlock(text: string) {
   );
 }
 
+function parsePatchChangeSummary(patch: string | undefined): Array<{
+  path: string;
+  kind: string;
+  addedLines: number;
+  deletedLines: number;
+}> {
+  const lines = String(patch || '').replace(/\r\n/g, '\n').split('\n');
+  const changes: Array<{ path: string; kind: string; addedLines: number; deletedLines: number }> = [];
+  let current: { path: string; kind: string; addedLines: number; deletedLines: number } | null = null;
+
+  const flush = () => {
+    if (!current?.path) {
+      return;
+    }
+    changes.push(current);
+  };
+
+  for (const line of lines) {
+    const addMatch = line.match(/^\*\*\* Add File:\s+(.+)$/);
+    const deleteMatch = line.match(/^\*\*\* Delete File:\s+(.+)$/);
+    const updateMatch = line.match(/^\*\*\* Update File:\s+(.+)$/);
+    const gitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    const plusPlusMatch = line.match(/^\+\+\+\s+(?:b\/)?(.+)$/);
+    const minusMinusMatch = line.match(/^---\s+(?:a\/)?(.+)$/);
+
+    if (addMatch || deleteMatch || updateMatch || gitMatch) {
+      flush();
+      current = {
+        path: (addMatch?.[1] || deleteMatch?.[1] || updateMatch?.[1] || gitMatch?.[2] || plusPlusMatch?.[1] || minusMinusMatch?.[1] || '').trim(),
+        kind: addMatch ? 'add' : deleteMatch ? 'delete' : 'update',
+        addedLines: 0,
+        deletedLines: 0,
+      };
+      continue;
+    }
+
+    if ((plusPlusMatch || minusMinusMatch) && !current) {
+      current = {
+        path: (plusPlusMatch?.[1] || minusMinusMatch?.[1] || '').trim(),
+        kind: 'update',
+        addedLines: 0,
+        deletedLines: 0,
+      };
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      current.addedLines += 1;
+      continue;
+    }
+    if (line.startsWith('-') && !line.startsWith('---')) {
+      current.deletedLines += 1;
+    }
+  }
+
+  flush();
+  return changes;
+}
+
+function buildRenderableChanges(entry: TimelineEntry): Array<{
+  path?: string;
+  kind?: string;
+  addedLines?: number;
+  deletedLines?: number;
+}> {
+  const explicit = Array.isArray(entry.changes) ? entry.changes : [];
+  const derived = parsePatchChangeSummary(entry.patch);
+  if (!explicit.length) {
+    return derived;
+  }
+  if (!derived.length) {
+    return explicit;
+  }
+
+  const derivedByPath = new Map(derived.map((change) => [change.path, change]));
+  const merged = explicit.map((change) => {
+    const fallback = change.path ? derivedByPath.get(change.path) : null;
+    return {
+      ...change,
+      kind: change.kind || fallback?.kind,
+      addedLines: typeof change.addedLines === 'number' ? change.addedLines : fallback?.addedLines,
+      deletedLines: typeof change.deletedLines === 'number' ? change.deletedLines : fallback?.deletedLines,
+    };
+  });
+
+  for (const change of derived) {
+    if (!merged.some((item) => item.path === change.path)) {
+      merged.push(change);
+    }
+  }
+
+  return merged;
+}
+
 function formatFileChangePrefix(kind: string | undefined): string {
   const normalized = (kind || '').trim().toLowerCase();
   if (normalized === 'add') {
@@ -308,12 +394,18 @@ function buildProcessPreview(entry: TimelineEntry): string {
   }
 
   if (entry.type === 'file_change' || entry.type === 'turn_diff') {
-    if (entry.changes?.length) {
-      const preview = entry.changes
+    const changes = buildRenderableChanges(entry);
+    if (changes.length) {
+      const preview = changes
         .slice(0, 2)
-        .map((change) => `${formatFileChangePrefix(change.kind)} ${change.path || '未命名文件'}`.trim())
+        .map((change) => {
+          const statsText = typeof change.addedLines === 'number' || typeof change.deletedLines === 'number'
+            ? ` (+${Math.max(0, Number(change.addedLines) || 0)} / -${Math.max(0, Number(change.deletedLines) || 0)})`
+            : '';
+          return `${formatFileChangePrefix(change.kind)} ${change.path || '未命名文件'}${statsText}`.trim();
+        })
         .join(' · ');
-      return entry.changes.length > 2 ? `${preview} 等 ${entry.changes.length} 项` : preview;
+      return changes.length > 2 ? `${preview} 等 ${changes.length} 项` : preview;
     }
   }
 
@@ -342,6 +434,14 @@ function buildTurnActivityStatus(
   turnId: string | undefined,
   approvals: ServerRequestItem[],
 ): { tone: string; label: string } | null {
+  function withDetail(prefix: string, detail: string): string {
+    const compact = detail.replace(/\s+/g, ' ').trim();
+    if (!compact) {
+      return prefix;
+    }
+    return `${prefix} · ${compact.slice(0, 42)}`;
+  }
+
   if (!turnId) {
     return null;
   }
@@ -357,32 +457,74 @@ function buildTurnActivityStatus(
 
   const reasoningEntry = runningEntries.find((entry) => entry.type === 'reasoning');
   if (reasoningEntry) {
-    return { tone: 'thinking', label: '思考中' };
+    return { tone: 'thinking', label: withDetail('思考中', summarizeTimelineEntry(reasoningEntry)) };
   }
 
   const commandEntry = runningEntries.find((entry) => entry.type === 'command');
   if (commandEntry) {
-    return { tone: 'command', label: '执行命令中' };
+    return { tone: 'command', label: withDetail('执行命令中', buildProcessPreview(commandEntry)) };
   }
 
   const fileChangeEntry = runningEntries.find((entry) => entry.type === 'file_change');
   if (fileChangeEntry) {
-    return { tone: 'file', label: '修改文件中' };
+    return { tone: 'file', label: withDetail('修改文件中', buildProcessPreview(fileChangeEntry)) };
   }
 
   const toolEntry = runningEntries.find((entry) => (
     entry.type === 'mcp_tool' || entry.type === 'dynamic_tool' || entry.type === 'web_search'
   ));
   if (toolEntry) {
-    return { tone: 'command', label: '工具处理中' };
+    return { tone: 'command', label: withDetail('工具处理中', buildProcessPreview(toolEntry)) };
   }
 
   const planEntry = runningEntries.find((entry) => entry.type === 'plan' || entry.type === 'turn_plan');
   if (planEntry) {
-    return { tone: 'thinking', label: '规划中' };
+    return { tone: 'thinking', label: withDetail('规划中', summarizeTimelineEntry(planEntry)) };
   }
 
-  return turnId && runningEntries.length ? { tone: 'command', label: '处理中' } : null;
+  return { tone: 'thinking', label: '等待响应中' };
+}
+
+function buildLatestGroupStatus(
+  groups: Array<{ status: string; label: string }>,
+): { tone: string; label: string } | null {
+  const latest = groups[groups.length - 1];
+  if (!latest) {
+    return null;
+  }
+  if (latest.status === 'pending') {
+    return { tone: 'warning', label: `等待处理 · ${latest.label}` };
+  }
+  if (latest.status === 'running') {
+    return { tone: 'command', label: `处理中 · ${latest.label}` };
+  }
+  return { tone: 'file', label: `已完成 · ${latest.label}` };
+}
+
+function buildTimelineMarkerSymbol(entry: TimelineEntry): string {
+  const stateClass = buildTimelineStateClass(entry);
+  if (stateClass === 'state-success') {
+    return '✓';
+  }
+  if (stateClass === 'state-error') {
+    return '×';
+  }
+  if (stateClass === 'state-warning') {
+    return '!';
+  }
+  if (stateClass === 'state-running') {
+    return '…';
+  }
+  if (entry.type === 'command' || entry.type === 'mcp_tool' || entry.type === 'dynamic_tool' || entry.type === 'web_search') {
+    return '›';
+  }
+  if (entry.type === 'file_change' || entry.type === 'turn_diff') {
+    return '+';
+  }
+  if (entry.type === 'reasoning' || entry.type === 'plan' || entry.type === 'turn_plan') {
+    return '~';
+  }
+  return '·';
 }
 
 function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
@@ -411,14 +553,14 @@ function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
                 </div>
               ) : null}
               {entry.patch ? <pre className="cmd-output">{entry.patch}</pre> : null}
-              {entry.changes?.length ? (
-                <div className="tool-calls-banner">
-                  {entry.changes.map((change, index) => (
+                {entry.changes?.length ? (
+                  <div className="tool-calls-banner">
+                  {buildRenderableChanges(entry).map((change, index) => (
                     <span key={`${entry.id}-change-${index}`} className="tool-chip">
                       {[change.kind, change.path].filter(Boolean).join(': ')}
                     </span>
                   ))}
-                </div>
+                  </div>
               ) : null}
             </div>
           </article>
@@ -429,11 +571,12 @@ function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
 
   if (entry.role !== 'user' && entry.role !== 'assistant') {
     const kind = buildTimelineKind(entry);
+    const renderableChanges = buildRenderableChanges(entry);
     if (entry.type === 'command') {
       const details = getCommandDetails(entry);
       return (
         <div className={`timeline-event kind-${kind} ${buildTimelineStateClass(entry)}`}>
-          <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true"></span></div>
+          <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true">{buildTimelineMarkerSymbol(entry)}</span></div>
           <div className="timeline-content">
             <ExpandableTimelineRow
               className={`timeline-card-${kind}`}
@@ -454,7 +597,7 @@ function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
     }
     return (
       <div className={`timeline-event kind-${kind} ${buildTimelineStateClass(entry)}`}>
-        <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true"></span></div>
+        <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true">{buildTimelineMarkerSymbol(entry)}</span></div>
         <div className="timeline-content">
           <ExpandableTimelineRow
             className={`timeline-card-${kind}`}
@@ -468,9 +611,9 @@ function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
                     {entry.meta.join('\n')}
                   </div>
                 ) : null}
-                {entry.changes?.length ? (
+                {renderableChanges.length ? (
                   <div className="file-change-list">
-                    {entry.changes.map((change, index) => (
+                    {renderableChanges.map((change, index) => (
                       <div key={`${entry.id}-change-${index}`} className={`file-change-entry kind-${(change.kind || 'update').toLowerCase()}`}>
                         <span>{`${formatFileChangePrefix(change.kind)} ${change.path || ''}`}</span>
                         {renderFileChangeStats(change)}
@@ -503,7 +646,7 @@ function ApprovalCard({
 
   return (
     <div className="timeline-event kind-serverRequest">
-      <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true"></span></div>
+      <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true">!</span></div>
       <div className="timeline-content">
         <article className="approval-banner">
           <div className="item-label">{formatApprovalKind(request.kind)}</div>
@@ -662,7 +805,7 @@ function ApprovalCard({
             <div className="approval-actions">
               {(request.availableDecisions?.length ? request.availableDecisions : ['accept', 'decline']).map((decision, index) => {
                 const key = typeof decision === 'string' ? decision : JSON.stringify(decision);
-                const response = buildDecisionResponse(decision);
+                const response = buildApprovalDecisionResponse(decision);
                 return (
                   <button
                     key={key}
@@ -686,9 +829,10 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const lastSignatureRef = useRef('');
   const lastSessionIdRef = useRef<string | null>(null);
+  const stickToBottomRef = useRef(true);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
-  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [taskPanelOpen, setTaskPanelOpen] = useState(true);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const entriesBySessionId = useAppStore((state) => state.timeline.entriesBySessionId);
   const health = useAppStore((state) => state.health.data);
@@ -741,6 +885,11 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
     [groups],
   );
 
+  const footerStatus = useMemo(
+    () => activeTurnStatus || buildLatestGroupStatus(groups),
+    [activeTurnStatus, groups],
+  );
+
   useEffect(() => {
     const body = messagesRef.current;
     if (!body) {
@@ -754,6 +903,7 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
         if (!currentBody) {
           return;
         }
+        stickToBottomRef.current = true;
         currentBody.scrollTop = currentBody.scrollHeight;
         setShowJumpToBottom(false);
         setHasUnreadBelow(false);
@@ -761,9 +911,8 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
       return;
     }
     const previousSignature = lastSignatureRef.current;
-    const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
     const hasContentChanged = previousSignature !== contentSignature;
-    if (!previousSignature || (nearBottom && hasContentChanged)) {
+    if (!previousSignature || (stickToBottomRef.current && hasContentChanged)) {
       body.scrollTop = body.scrollHeight;
       setShowJumpToBottom(false);
       setHasUnreadBelow(false);
@@ -774,14 +923,32 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
     lastSignatureRef.current = contentSignature;
   }, [activeSessionId, contentSignature]);
 
+  useEffect(() => {
+    const body = messagesRef.current;
+    if (!body || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      if (!stickToBottomRef.current) {
+        return;
+      }
+      body.scrollTop = body.scrollHeight;
+      setShowJumpToBottom(false);
+      setHasUnreadBelow(false);
+    });
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <>
+    <div className="timeline-shell">
       <div id="messages" ref={messagesRef} className="messages" onScroll={() => {
         const body = messagesRef.current;
         if (!body) {
           return;
         }
         const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
+        stickToBottomRef.current = nearBottom;
         setShowJumpToBottom(!nearBottom);
         if (nearBottom) {
           setHasUnreadBelow(false);
@@ -858,54 +1025,57 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
           setShowJumpToBottom(false);
           setHasUnreadBelow(false);
         }}
-      >
+        >
         {hasUnreadBelow ? '新消息 ︾' : '回到底部'}
       </button>
 
-      {taskPanel ? (
-        <div className={`task-panel${taskPanelOpen ? ' is-open' : ''}`}>
-          <button
-            type="button"
-            className="task-panel-toggle"
-            onClick={() => setTaskPanelOpen((value) => !value)}
-          >
-            <span className={`task-panel-dot${taskPanel.running ? ' is-running' : ''}`} aria-hidden="true"></span>
-            <span className="task-panel-toggle-text">任务列表</span>
-            {taskPanel.steps.length ? <span className="task-panel-toggle-count">{taskPanel.steps.length}</span> : null}
-          </button>
-          {taskPanelOpen ? (
-            <div className="task-panel-body">
-              {taskPanel.summary ? <div className="task-panel-summary">{taskPanel.summary}</div> : null}
-              {taskPanel.steps.length ? (
-                <div className="task-step-list">
-                  {taskPanel.steps.map((step) => {
-                    const normalizedStatus = normalizePlanStepStatus(step.status);
-                    return (
-                      <div key={step.id} className={`task-step status-${normalizedStatus}`}>
-                        <span className="task-step-badge">{formatPlanStepStatus(step.status)}</span>
-                        <span className="task-step-text">{step.text}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-              {taskPanel.draftText ? (
-                <div className="task-panel-draft">
-                  <span className="task-panel-draft-label">规划中</span>
-                  <span className="task-panel-draft-text">{taskPanel.draftText}</span>
+      {(taskPanel || footerStatus) ? (
+        <div className="timeline-status-dock">
+          {footerStatus ? (
+            <div className={`thinking-indicator tone-${footerStatus.tone}`} aria-live="polite">
+              <span className="thinking-indicator-dot"></span>
+              <span className="thinking-indicator-text">{footerStatus.label}</span>
+            </div>
+          ) : null}
+          {taskPanel ? (
+            <div className={`task-panel${taskPanelOpen ? ' is-open' : ''}`}>
+              <button
+                type="button"
+                className="task-panel-toggle"
+                onClick={() => setTaskPanelOpen((value) => !value)}
+              >
+                <span className={`task-panel-dot${taskPanel.running ? ' is-running' : ''}`} aria-hidden="true"></span>
+                <span className="task-panel-toggle-text">任务列表</span>
+                {taskPanel.steps.length ? <span className="task-panel-toggle-count">{taskPanel.steps.length}</span> : null}
+              </button>
+              {taskPanelOpen ? (
+                <div className="task-panel-body">
+                  {taskPanel.summary ? <div className="task-panel-summary">{taskPanel.summary}</div> : null}
+                  {taskPanel.steps.length ? (
+                    <div className="task-step-list">
+                      {taskPanel.steps.map((step) => {
+                        const normalizedStatus = normalizePlanStepStatus(step.status);
+                        return (
+                          <div key={step.id} className={`task-step status-${normalizedStatus}`}>
+                            <span className="task-step-badge">{formatPlanStepStatus(step.status)}</span>
+                            <span className="task-step-text">{step.text}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {taskPanel.draftText ? (
+                    <div className="task-panel-draft">
+                      <span className="task-panel-draft-label">规划中</span>
+                      <span className="task-panel-draft-text">{taskPanel.draftText}</span>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
           ) : null}
         </div>
       ) : null}
-
-      {turnState?.active && activeTurnStatus ? (
-        <div className={`thinking-indicator tone-${activeTurnStatus.tone}`} aria-live="polite">
-          <span className="thinking-indicator-dot"></span>
-          <span className="thinking-indicator-text">{activeTurnStatus.label}</span>
-        </div>
-      ) : null}
-    </>
+    </div>
   );
 }
