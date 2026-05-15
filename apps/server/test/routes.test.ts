@@ -90,6 +90,201 @@ async function buildTestApp() {
   return app;
 }
 
+async function createAuthCookie(app: Awaited<ReturnType<typeof buildTestApp>>): Promise<string> {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/auth/session',
+    headers: {
+      'x-codex-remote-token': 'secret-token',
+      'content-type': 'application/json',
+    },
+    payload: {
+      token: 'secret-token',
+      deviceName: 'test-device',
+    },
+  });
+  assert.equal(response.statusCode, 200);
+  const setCookie = response.headers['set-cookie'];
+  assert.ok(setCookie);
+  return String(Array.isArray(setCookie) ? setCookie[0] : setCookie).split(';')[0];
+}
+
+test('POST /api/auth/session reuses current session and online list stays socket-based', async () => {
+  const app = await buildTestApp();
+
+  const first = await app.inject({
+    method: 'POST',
+    url: '/api/auth/session',
+    headers: {
+      'x-codex-remote-token': 'secret-token',
+      'content-type': 'application/json',
+    },
+    payload: {
+      token: 'secret-token',
+      deviceName: 'test-device',
+    },
+  });
+  assert.equal(first.statusCode, 200);
+  const firstCookie = String(first.headers['set-cookie']).split(';')[0];
+  const firstSessionId = first.json().session.sessionId;
+
+  const second = await app.inject({
+    method: 'POST',
+    url: '/api/auth/session',
+    headers: {
+      'x-codex-remote-token': 'secret-token',
+      'content-type': 'application/json',
+      cookie: firstCookie,
+    },
+    payload: {
+      token: 'secret-token',
+      deviceName: 'test-device',
+    },
+  });
+
+  assert.equal(second.statusCode, 200);
+  assert.equal(second.json().session.sessionId, firstSessionId);
+
+  const listed = await app.inject({
+    method: 'GET',
+    url: '/api/auth/sessions',
+    headers: {
+      cookie: firstCookie,
+    },
+  });
+
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().sessions.length, 0);
+  await app.close();
+});
+
+test('POST /api/auth/session reuses existing session for the same deviceId and does not count offline sessions', async () => {
+  const app = await buildTestApp();
+
+  const first = await app.inject({
+    method: 'POST',
+    url: '/api/auth/session',
+    headers: {
+      'x-codex-remote-token': 'secret-token',
+      'content-type': 'application/json',
+    },
+    payload: {
+      token: 'secret-token',
+      deviceName: 'browser-a',
+      deviceId: 'device-1',
+    },
+  });
+  assert.equal(first.statusCode, 200);
+  const firstSessionId = first.json().session.sessionId;
+  const firstCookie = String(first.headers['set-cookie']).split(';')[0];
+
+  const second = await app.inject({
+    method: 'POST',
+    url: '/api/auth/session',
+    headers: {
+      'x-codex-remote-token': 'secret-token',
+      'content-type': 'application/json',
+    },
+    payload: {
+      token: 'secret-token',
+      deviceName: 'browser-a',
+      deviceId: 'device-1',
+    },
+  });
+  assert.equal(second.statusCode, 200);
+  assert.equal(second.json().session.sessionId, firstSessionId);
+
+  const listed = await app.inject({
+    method: 'GET',
+    url: '/api/auth/sessions',
+    headers: {
+      cookie: firstCookie,
+    },
+  });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().sessions.length, 0);
+  await app.close();
+});
+
+test('GET /api/auth/sessions only lists active websocket connections', async () => {
+  const app = await buildTestApp();
+  const cookie = await createAuthCookie(app);
+
+  const stored = Array.from(app.runtimeState.authSessionsById.values());
+  assert.equal(stored.length, 1);
+
+  const offline = await app.inject({
+    method: 'GET',
+    url: '/api/auth/sessions',
+    headers: {
+      cookie,
+    },
+  });
+  assert.equal(offline.statusCode, 200);
+  assert.equal(offline.json().sessions.length, 0);
+
+  app.runtimeState.clients.add({
+    authSessionId: stored[0]?.sessionId,
+    send() {},
+    close() {},
+  } as any);
+
+  const online = await app.inject({
+    method: 'GET',
+    url: '/api/auth/sessions',
+    headers: {
+      cookie,
+    },
+  });
+  assert.equal(online.statusCode, 200);
+  assert.equal(online.json().sessions.length, 1);
+  assert.equal(online.json().sessions[0].sessionId, stored[0]?.sessionId);
+  await app.close();
+});
+
+test('DELETE /api/auth/sessions revokes all sessions and rotates main token without returning it', async () => {
+  const app = await buildTestApp();
+  const cookie = await createAuthCookie(app);
+
+  const listBefore = await app.inject({
+    method: 'GET',
+    url: '/api/auth/sessions',
+    headers: {
+      cookie,
+    },
+  });
+  const sessionId = Array.from(app.runtimeState.authSessionsById.keys())[0];
+
+  const revoke = await app.inject({
+    method: 'DELETE',
+    url: '/api/auth/sessions',
+    headers: {
+      cookie,
+    },
+  });
+
+  assert.equal(revoke.statusCode, 200);
+  const revokePayload = revoke.json();
+  assert.equal(revokePayload.ok, true);
+  assert.deepEqual(revokePayload.removedSessionIds, [sessionId]);
+  assert.equal('nextToken' in revokePayload, false);
+
+  const oldTokenAttempt = await app.inject({
+    method: 'POST',
+    url: '/api/auth/session',
+    headers: {
+      'x-codex-remote-token': 'secret-token',
+      'content-type': 'application/json',
+    },
+    payload: {
+      token: 'secret-token',
+      deviceName: 'new-device',
+    },
+  });
+  assert.equal(oldTokenAttempt.statusCode, 401);
+  await app.close();
+});
+
 test('GET /health returns runtime status', async () => {
   const app = await buildTestApp();
   app.runtimeState.tabsById.set('thread-1', {
@@ -130,6 +325,7 @@ test('GET / serves rebuilt web shell', async () => {
 
 test('workspace shortcuts require auth token', async () => {
   const app = await buildTestApp();
+  const cookie = await createAuthCookie(app);
 
   const unauthorized = await app.inject({
     method: 'GET',
@@ -141,7 +337,7 @@ test('workspace shortcuts require auth token', async () => {
     method: 'GET',
     url: '/api/workspace/shortcuts',
     headers: {
-      'x-codex-remote-token': 'secret-token',
+      cookie,
     },
   });
 
@@ -153,11 +349,12 @@ test('workspace shortcuts require auth token', async () => {
 
 test('workspace create-directory proxies to workspace manager', async () => {
   const app = await buildTestApp();
+  const cookie = await createAuthCookie(app);
   const response = await app.inject({
     method: 'POST',
     url: '/api/workspace/create-directory',
     headers: {
-      'x-codex-remote-token': 'secret-token',
+      cookie,
       'content-type': 'application/json',
     },
     payload: {
@@ -174,6 +371,7 @@ test('workspace create-directory proxies to workspace manager', async () => {
 
 test('codex options fills effective defaults when config values are empty', async () => {
   const app = await buildTestApp();
+  const cookie = await createAuthCookie(app);
   app.codexClient = {
     ...app.codexClient,
     async listModels() {
@@ -198,7 +396,7 @@ test('codex options fills effective defaults when config values are empty', asyn
     method: 'GET',
     url: '/api/codex/options',
     headers: {
-      'x-codex-remote-token': 'secret-token',
+      cookie,
     },
   });
 

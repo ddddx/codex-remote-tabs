@@ -83,6 +83,7 @@ declare module 'fastify' {
       appState: AppStateRepository;
     };
     verifyRequestToken: (request: FastifyRequest) => boolean;
+    authorizeCookieSession: (cookieHeader: string | undefined) => { sessionId: string } | null;
     requireAuth: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     workspaceManager: WorkspaceManagerLike;
     codexClient: CodexClientLike;
@@ -90,5 +91,9 @@ declare module 'fastify' {
     windowManager: CodexWindowManager;
     windowAttachments: WindowAttachmentServiceLike;
     services: AppServices;
+  }
+
+  interface FastifyRequest {
+    authSessionId?: string;
   }
 }

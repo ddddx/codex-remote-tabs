@@ -24,13 +24,9 @@ export function buildApiUrl(pathname: string): string {
   return new URL(pathname, apiBaseUrl).toString();
 }
 
-export function buildWsUrl(token?: string): string {
+export function buildWsUrl(): string {
   const explicit = readImportMetaEnv('VITE_WS_URL');
   const base = explicit?.trim()
     || new URL('/ws', apiBaseUrl.replace(/^http/, 'ws')).toString();
-  const url = new URL(base);
-  if (token) {
-    url.searchParams.set('token', token);
-  }
-  return url.toString();
+  return new URL(base).toString();
 }

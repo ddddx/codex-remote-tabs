@@ -55,10 +55,12 @@ export async function createApp(config: ServerConfig) {
     prefix: '/',
   });
 
-  const verifyRequestToken = buildTokenVerifier(config.wsToken);
-  const requireAuth = buildRequireAuth(verifyRequestToken);
+  const verifyRequestToken = buildTokenVerifier(() => app.config.wsToken);
+  const authorizeCookieSession = (cookieHeader: string | undefined) => app.services.auth.authorizeCookie(cookieHeader);
+  const requireAuth = buildRequireAuth(authorizeCookieSession);
 
   app.decorate('verifyRequestToken', verifyRequestToken);
+  app.decorate('authorizeCookieSession', authorizeCookieSession);
   app.decorate('requireAuth', requireAuth);
 
   await registerRoutes(app);

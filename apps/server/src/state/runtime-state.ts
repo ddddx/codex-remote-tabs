@@ -10,6 +10,17 @@ type RuntimeTab = {
   sandboxMode?: string;
 };
 
+export type AuthSessionRecord = {
+  sessionId: string;
+  secret: string;
+  deviceName: string;
+  deviceId?: string;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+  revokedAt?: number | null;
+};
+
 type ServerRequestRecord = {
   requestId: string;
   rawRequestId: string | number;
@@ -154,14 +165,20 @@ export type RuntimeWsClient = {
   close: (code?: number, reason?: string) => void;
 };
 
+export type RuntimeAuthedWsClient = RuntimeWsClient & {
+  authSessionId?: string;
+  authDeviceName?: string;
+};
+
 export type RuntimeState = {
   startedAt: number;
   websocketClientCount: number;
   isShuttingDown: boolean;
   codexStarted: boolean;
   codexBridgeRegistered: boolean;
-  clients: Set<RuntimeWsClient>;
+  clients: Set<RuntimeAuthedWsClient>;
   tabsById: Map<string, RuntimeTab>;
+  authSessionsById: Map<string, AuthSessionRecord>;
   serverRequestsById: Map<string, ServerRequestRecord>;
   turnPlansByThread: Map<string, Map<string, TurnPlanSnapshot>>;
   turnDiffsByThread: Map<string, Map<string, TurnDiffSnapshot>>;
@@ -180,6 +197,7 @@ export function createRuntimeState(): RuntimeState {
     codexBridgeRegistered: false,
     clients: new Set(),
     tabsById: new Map(),
+    authSessionsById: new Map(),
     serverRequestsById: new Map(),
     turnPlansByThread: new Map(),
     turnDiffsByThread: new Map(),

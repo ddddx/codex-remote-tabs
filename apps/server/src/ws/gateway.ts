@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ClientMessage, ServerMessage } from '@codex-remote/protocol';
-import { isAuthorizedWsToken } from './auth.js';
+import { isAuthorizedWsSession } from './auth.js';
 import { routeClientMessage } from './message-router.js';
 import { ensureCodexReady } from './bridge.js';
 import { bootstrapTabs, buildInitialState, hydratePersistedRuntimeState } from '../application/services/thread-sync.js';
@@ -21,22 +21,25 @@ function normalizeIncomingMessage(raw: string): ClientMessage {
 
 export async function registerWsGateway(app: FastifyInstance): Promise<void> {
   app.get('/ws', { websocket: true }, (socket, request) => {
-    const token = typeof (request.query as Record<string, unknown> | undefined)?.token === 'string'
-      ? (request.query as Record<string, string>).token
-      : undefined;
+    const auth = app.authorizeCookieSession(typeof request.headers.cookie === 'string' ? request.headers.cookie : undefined);
 
-    if (!isAuthorizedWsToken(token, app.config.wsToken)) {
+    if (!auth || !isAuthorizedWsSession(auth.sessionId)) {
       sendMessage(socket, {
         type: 'error',
         code: 'AUTH_FAILED',
-        message: 'WebSocket 鉴权失败，请检查 token 是否正确。',
+        message: 'WebSocket 鉴权失败，请先重新登录。',
       });
       socket.close(4401, 'Unauthorized');
       return;
     }
 
+    const authSessionId = auth.sessionId;
+    const authRecord = app.runtimeState.authSessionsById.get(authSessionId);
+    const authedSocket = socket as typeof socket & { authSessionId?: string; authDeviceName?: string };
+    authedSocket.authSessionId = authSessionId;
+    authedSocket.authDeviceName = authRecord?.deviceName || '当前设备';
     app.runtimeState.websocketClientCount += 1;
-    app.runtimeState.clients.add(socket);
+    app.runtimeState.clients.add(authedSocket);
     hydratePersistedRuntimeState(app);
     sendMessage(socket, buildInitialState(app));
 
@@ -69,7 +72,7 @@ export async function registerWsGateway(app: FastifyInstance): Promise<void> {
 
     socket.on('close', () => {
       app.runtimeState.websocketClientCount = Math.max(0, app.runtimeState.websocketClientCount - 1);
-      app.runtimeState.clients.delete(socket);
+      app.runtimeState.clients.delete(authedSocket);
     });
   });
 }

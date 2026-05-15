@@ -52,7 +52,8 @@ test('socket client queues outbound messages until websocket opens', async () =>
       onStatusChange() {},
     });
 
-    await client.connect('token-1');
+    client.setAuthorized(true);
+    await client.connect();
     assert.equal(sockets.length, 1);
 
     const queued = client.send({

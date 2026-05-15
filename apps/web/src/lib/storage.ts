@@ -1,4 +1,5 @@
 const TOKEN_STORAGE_KEY = 'codex-remote-ws-token';
+const DEVICE_ID_STORAGE_KEY = 'codex-remote-device-id';
 
 function readTokenFromUrl(): string {
   try {
@@ -45,4 +46,25 @@ export function writeStoredToken(token: string): string {
     // Ignore storage failures.
   }
   return normalized;
+}
+
+function generateDeviceId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `device-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+export function readOrCreateDeviceId(): string {
+  try {
+    const existing = window.localStorage.getItem(DEVICE_ID_STORAGE_KEY) || '';
+    if (existing) {
+      return existing;
+    }
+    const created = generateDeviceId();
+    window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return generateDeviceId();
+  }
 }

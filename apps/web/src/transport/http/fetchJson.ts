@@ -1,5 +1,6 @@
 export async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
+    credentials: 'include',
     ...init,
     headers: {
       'content-type': 'application/json',

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { createApprovalService, type ApprovalService } from './approval-service.js';
+import { createAuthService, type AuthService } from './auth-service.js';
 import { createCodexOptionsService, type CodexOptionsService } from './codex-options-service.js';
 import { createSessionService, type SessionService } from './session-service.js';
 import { createTurnService, type TurnService } from './turn-service.js';
@@ -8,6 +9,7 @@ import { createWorkspaceService, type WorkspaceService } from './workspace-servi
 
 export type AppServices = {
   approvals: ApprovalService;
+  auth: AuthService;
   codexOptions: CodexOptionsService;
   sessions: SessionService;
   turns: TurnService;
@@ -18,6 +20,7 @@ export type AppServices = {
 export function createAppServices(app: FastifyInstance): AppServices {
   return {
     approvals: createApprovalService(app),
+    auth: createAuthService(app),
     codexOptions: createCodexOptionsService(app),
     sessions: createSessionService(app),
     turns: createTurnService(app),

@@ -12,7 +12,7 @@ export function createSocketClient(handlers: Handlers) {
   let socket: WebSocket | null = null;
   let reconnectTimer: number | null = null;
   let reconnectAttempt = 0;
-  let currentToken = '';
+  let authorized = false;
   let queuedMessages: ClientMessage[] = [];
   let hasConnectedOnce = false;
 
@@ -55,12 +55,11 @@ export function createSocketClient(handlers: Handlers) {
     notifyStatus('disconnected', buildReconnectMessage(delay));
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null;
-      void connect(currentToken);
+      void connect();
     }, delay);
   }
 
-  async function connect(token: string) {
-    currentToken = token;
+  async function connect() {
     clearReconnectTimer();
     if (socket) {
       socket.onopen = null;
@@ -71,7 +70,7 @@ export function createSocketClient(handlers: Handlers) {
     }
 
     notifyStatus('connecting', hasConnectedOnce || reconnectAttempt > 0 ? buildReconnectMessage() : undefined);
-    socket = new WebSocket(buildWsUrl(token));
+    socket = new WebSocket(buildWsUrl());
 
     socket.onopen = () => {
       reconnectAttempt = 0;
@@ -91,7 +90,7 @@ export function createSocketClient(handlers: Handlers) {
     };
 
     socket.onclose = () => {
-      if (!currentToken) {
+      if (!authorized) {
         notifyStatus('idle');
         return;
       }
@@ -108,18 +107,20 @@ export function createSocketClient(handlers: Handlers) {
       socket.send(JSON.stringify(message));
       return true;
     }
-    if (!currentToken) {
+    if (!authorized) {
       return false;
     }
     queuedMessages = [...queuedMessages, message].slice(-100);
     if (!socket) {
-      void connect(currentToken);
+      void connect();
     }
     return true;
   }
 
-  function disconnect() {
-    currentToken = '';
+  function disconnect(resetAuthorization = true) {
+    if (resetAuthorization) {
+      authorized = false;
+    }
     queuedMessages = [];
     clearReconnectTimer();
     reconnectAttempt = 0;
@@ -131,9 +132,18 @@ export function createSocketClient(handlers: Handlers) {
     notifyStatus('idle');
   }
 
+  function setAuthorized(nextAuthorized: boolean) {
+    authorized = nextAuthorized;
+    if (!nextAuthorized) {
+      disconnect(true);
+    }
+  }
+
   return {
     connect,
     disconnect,
     send,
+    setAuthorized,
+    isAuthorized: () => authorized,
   };
 }

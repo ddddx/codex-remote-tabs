@@ -1,7 +1,3 @@
-export function isAuthorizedWsToken(token: string | undefined, expectedToken: string): boolean {
-  if (!expectedToken) {
-    return true;
-  }
-
-  return token === expectedToken;
+export function isAuthorizedWsSession(sessionId: string | undefined): boolean {
+  return typeof sessionId === 'string' && sessionId.trim().length > 0;
 }

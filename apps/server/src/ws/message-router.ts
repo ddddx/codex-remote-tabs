@@ -59,6 +59,6 @@ export async function routeClientMessage(app: FastifyInstance, socket: WsLike, m
 
   sendMessage(socket, {
     type: 'error',
-    message: `Unsupported message type in scaffold: ${message.type}`,
+    message: 'Unsupported message type in scaffold',
   });
 }

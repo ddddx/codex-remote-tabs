@@ -1,4 +1,5 @@
 export * from './http/health.js';
+export * from './http/auth.js';
 export * from './http/workspace.js';
 export * from './http/uploads.js';
 export * from './http/codex.js';

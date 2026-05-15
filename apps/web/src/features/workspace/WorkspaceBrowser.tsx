@@ -3,14 +3,14 @@ import { useAppStore } from '../../store/appStore.js';
 import { createWorkspaceDirectory, getWorkspaceListing, getWorkspaceShortcuts } from '../../transport/http/workspace.js';
 
 type WorkspaceBrowserProps = {
-  token: string;
+  ready: boolean;
   selectedPath: string;
   onSelectPath: (path: string) => void;
   embedded?: boolean;
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
-  const { token, selectedPath, onSelectPath, embedded = false } = props;
+  const { ready, selectedPath, onSelectPath, embedded = false } = props;
   const workspace = useAppStore((state) => state.workspace);
   const setWorkspaceLoading = useAppStore((state) => state.setWorkspaceLoading);
   const setWorkspaceReady = useAppStore((state) => state.setWorkspaceReady);
@@ -19,14 +19,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const [nextFolderName, setNextFolderName] = useState('');
 
   useEffect(() => {
-    if (!token) {
+    if (!ready) {
       return;
     }
     let cancelled = false;
     setWorkspaceLoading(selectedPath);
     Promise.all([
-      getWorkspaceShortcuts(token),
-      getWorkspaceListing(token, selectedPath),
+      getWorkspaceShortcuts(),
+      getWorkspaceListing(selectedPath),
     ])
       .then(([shortcuts, listing]) => {
         if (cancelled) {
@@ -45,14 +45,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return () => {
       cancelled = true;
     };
-  }, [onSelectPath, selectedPath, setWorkspaceError, setWorkspaceLoading, setWorkspaceReady, token]);
+  }, [onSelectPath, ready, selectedPath, setWorkspaceError, setWorkspaceLoading, setWorkspaceReady]);
 
   const currentPath = workspace.listing?.path || selectedPath;
 
   function refreshListing(nextPath: string) {
     onSelectPath(nextPath);
     setWorkspaceLoading(nextPath);
-    void getWorkspaceListing(token, nextPath)
+    void getWorkspaceListing(nextPath)
       .then((listing) => setWorkspaceListing(listing))
       .catch((error: Error) => setWorkspaceError(error.message));
   }
@@ -137,7 +137,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             type="button"
             disabled={!currentPath || !nextFolderName.trim()}
             onClick={() => {
-              void createWorkspaceDirectory(token, {
+              void createWorkspaceDirectory({
                 parentPath: currentPath,
                 folderName: nextFolderName.trim(),
               })

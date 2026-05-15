@@ -1,13 +1,13 @@
 import type { UploadImageResponse } from '@codex-remote/protocol';
 import { buildApiUrl } from '../../lib/config.js';
 
-export async function uploadImage(token: string, file: File): Promise<UploadImageResponse> {
+export async function uploadImage(file: File): Promise<UploadImageResponse> {
   const response = await fetch(buildApiUrl('/api/uploads/image'), {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'content-type': file.type || 'application/octet-stream',
       'x-upload-filename': encodeURIComponent(file.name),
-      ...(token ? { 'x-codex-remote-token': token } : {}),
     },
     body: await file.arrayBuffer(),
   });

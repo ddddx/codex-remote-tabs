@@ -177,7 +177,6 @@ export function ComposerDock(props: ComposerDockProps) {
   const attachmentsBySessionId = useAppStore((state) => state.composer.attachmentsBySessionId);
   const addAttachment = useAppStore((state) => state.addAttachment);
   const removeAttachment = useAppStore((state) => state.removeAttachment);
-  const token = useAppStore((state) => state.auth.token);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const usagePopoverRef = useRef<HTMLDivElement | null>(null);
   const [usagePopoverOpen, setUsagePopoverOpen] = useState(false);
@@ -354,11 +353,11 @@ export function ComposerDock(props: ComposerDockProps) {
             hidden
             onChange={(event) => {
               const file = event.target.files?.[0];
-              if (!file || !token) {
+              if (!file) {
                 return;
               }
               const targetThreadId = activeSessionId || '__new__';
-              void uploadImage(token, file).then((result) => {
+              void uploadImage(file).then((result) => {
                 addAttachment(targetThreadId, {
                   ...result,
                   previewUrl: URL.createObjectURL(file),

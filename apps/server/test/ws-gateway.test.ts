@@ -36,6 +36,11 @@ function createAppStub() {
   const app = {
     config: { wsToken: 'secret-token' },
     runtimeState,
+    authorizeCookieSession(cookieHeader?: string) {
+      return cookieHeader === 'codex_remote_session=valid-session.cookie-secret'
+        ? { sessionId: 'valid-session' }
+        : null;
+    },
     repositories: {
       sessions: {
         listSessions() {
@@ -94,6 +99,14 @@ function createAppStub() {
   };
 }
 
+function createAuthorizedRequest() {
+  return {
+    headers: {
+      cookie: 'codex_remote_session=valid-session.cookie-secret',
+    },
+  };
+}
+
 test('ws gateway rejects unauthorized connection', async () => {
   const { app, routes } = createAppStub();
   await registerWsGateway(app);
@@ -102,7 +115,7 @@ test('ws gateway rejects unauthorized connection', async () => {
   const handler = routes.get('/ws');
   assert.ok(handler);
 
-  handler?.(socket, { query: { token: 'wrong-token' } });
+  handler?.(socket, { headers: { cookie: 'codex_remote_session=invalid' } });
 
   assert.equal(socket.sent.length, 1);
   assert.equal((socket.sent[0] as any).type, 'error');
@@ -117,7 +130,7 @@ test('ws gateway bootstraps and emits initial state for authorized connection', 
   const handler = routes.get('/ws');
   assert.ok(handler);
 
-  handler?.(socket, { query: { token: 'secret-token' } });
+  handler?.(socket, createAuthorizedRequest());
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(app.runtimeState.websocketClientCount, 1);
@@ -150,7 +163,7 @@ test('ws gateway sends persisted tabs immediately before codex bootstrap complet
   const handler = routes.get('/ws');
   assert.ok(handler);
 
-  handler?.(socket, { query: { token: 'secret-token' } });
+  handler?.(socket, createAuthorizedRequest());
 
   assert.equal(socket.sent.length, 1);
   assert.equal((socket.sent[0] as any).type, 'state');
@@ -187,7 +200,7 @@ test('ws gateway falls back to persisted tabs when codex thread listing fails', 
   const handler = routes.get('/ws');
   assert.ok(handler);
 
-  handler?.(socket, { query: { token: 'secret-token' } });
+  handler?.(socket, createAuthorizedRequest());
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(socket.sent.length, 2);
@@ -217,7 +230,7 @@ test('ws gateway bootstrap preserves persisted permission preset when codex thre
   const handler = routes.get('/ws');
   assert.ok(handler);
 
-  handler?.(socket, { query: { token: 'secret-token' } });
+  handler?.(socket, createAuthorizedRequest());
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(socket.sent.length, 2);

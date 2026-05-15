@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CodexOptionsResponse, HealthResponse } from '@codex-remote/protocol';
+import type { AuthSession, CodexOptionsResponse, HealthResponse } from '@codex-remote/protocol';
 import { ComposerDock } from '../features/composer/ComposerDock.js';
 import { SessionRail } from '../features/sessions/SessionRail.js';
 import { TimelineWorkspace } from '../features/timeline/TimelineWorkspace.js';
 import { WorkspaceBrowser } from '../features/workspace/WorkspaceBrowser.js';
 import { buildSessionNameFromPrompt, buildTokenUsageDisplay } from './view-helpers.js';
-import { readStoredToken, writeStoredToken } from '../lib/storage.js';
+import { readOrCreateDeviceId, readStoredToken, writeStoredToken } from '../lib/storage.js';
 import { useAppStore, mapServerMessageToStore, type ServerRequestItem } from '../store/appStore.js';
+import { createAuthSession, listAuthSessions, revokeAuthSession } from '../transport/http/auth.js';
 import { getHealth } from '../transport/http/health.js';
 import { getCodexOptions } from '../transport/http/codex.js';
 import { createSocketClient } from '../transport/ws/createSocketClient.js';
@@ -209,6 +210,24 @@ function buildConnectionStatusTone(status: string, healthStatus?: string): 'conn
   return 'waiting';
 }
 
+function buildDeviceName(): string {
+  if (typeof navigator === 'undefined') {
+    return '当前设备';
+  }
+  const platform = typeof navigator.platform === 'string' ? navigator.platform.trim() : '';
+  const userAgent = typeof navigator.userAgent === 'string' ? navigator.userAgent : '';
+  const browser = /Edg\//.test(userAgent)
+    ? 'Edge'
+    : /Chrome\//.test(userAgent)
+      ? 'Chrome'
+      : /Firefox\//.test(userAgent)
+        ? 'Firefox'
+        : /Safari\//.test(userAgent) && !/Chrome\//.test(userAgent)
+          ? 'Safari'
+          : '浏览器';
+  return [platform || '设备', browser].filter(Boolean).join(' · ');
+}
+
 function buildSessionCreatePayload(draft: SessionDraft, prefs: ComposerPrefs) {
   return {
     type: 'tab_create' as const,
@@ -296,12 +315,19 @@ export function App() {
   const [theme, setTheme] = useState(readThemePreference);
   const [tokenPromptOpen, setTokenPromptOpen] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
+  const [authReady, setAuthReady] = useState(false);
+  const [authPending, setAuthPending] = useState(false);
+  const [authSessions, setAuthSessions] = useState<AuthSession[]>([]);
+  const [authSessionsLoading, setAuthSessionsLoading] = useState(false);
+  const [authSessionsError, setAuthSessionsError] = useState('');
+  const [revokingSessions, setRevokingSessions] = useState(false);
   const [composerPrefsDraft, setComposerPrefsDraft] = useState<ComposerPrefs>(() => buildDefaultComposerPrefs(null));
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerResetSignal, setComposerResetSignal] = useState(0);
   const previousConnectionStatusRef = useRef(connectionStatus);
   const sessionNameInputRef = useRef<HTMLInputElement | null>(null);
   const tokenInputRef = useRef<HTMLInputElement | null>(null);
+  const deviceIdRef = useRef(readOrCreateDeviceId());
 
   const resolvedActiveSessionId = activeSessionId;
   const activeSession = sessions.find((item) => item.threadId === resolvedActiveSessionId) || null;
@@ -353,6 +379,27 @@ export function App() {
   }, [setToken]);
 
   useEffect(() => {
+    if (!token) {
+      setAuthReady(false);
+      socketClient.setAuthorized(false);
+      return;
+    }
+    setAuthPending(true);
+    setAuthSessionsError('');
+    createAuthSession(token, buildDeviceName(), deviceIdRef.current)
+      .then(() => {
+        setAuthReady(true);
+      })
+      .catch((error: Error) => {
+        setAuthReady(false);
+        setAuthSessionsError(error.message);
+      })
+      .finally(() => {
+        setAuthPending(false);
+      });
+  }, [socketClient, token]);
+
+  useEffect(() => {
     let cancelled = false;
     setHealthLoading();
     getHealth()
@@ -374,23 +421,23 @@ export function App() {
   useRefreshHealth(token, connectionStatus, setHealthLoading, setHealthReady, setHealthError);
 
   useEffect(() => {
-    if (!token) {
-      socketClient.disconnect();
+    socketClient.setAuthorized(authReady);
+    if (!authReady) {
       return;
     }
-    void socketClient.connect(token);
+    void socketClient.connect();
     return () => {
-      socketClient.disconnect();
+      socketClient.disconnect(false);
     };
-  }, [socketClient, token]);
+  }, [authReady, socketClient]);
 
   useEffect(() => {
-    if (!token) {
+    if (!authReady) {
       return;
     }
     let cancelled = false;
     setCodexOptionsLoading();
-    getCodexOptions(token, workspaceSelectedPath || workspacePath || undefined)
+    getCodexOptions(workspaceSelectedPath || workspacePath || undefined)
       .then((result) => {
         if (cancelled) {
           return;
@@ -411,7 +458,37 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [setCodexOptionsError, setCodexOptionsLoading, setCodexOptionsReady, token, workspacePath, workspaceSelectedPath]);
+  }, [authReady, setCodexOptionsError, setCodexOptionsLoading, setCodexOptionsReady, workspacePath, workspaceSelectedPath]);
+
+  useEffect(() => {
+    if (!authReady) {
+      setAuthSessions([]);
+      setAuthSessionsError('');
+      return;
+    }
+    let cancelled = false;
+    setAuthSessionsLoading(true);
+    setAuthSessionsError('');
+    listAuthSessions()
+      .then((result) => {
+        if (!cancelled) {
+          setAuthSessions(result.sessions || []);
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          setAuthSessionsError(error.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthSessionsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, connectionStatus]);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -430,11 +507,6 @@ export function App() {
     if (connectionStatus !== 'connected' || previousStatus === 'connected' || !activeSessionId) {
       return;
     }
-
-    socketClient.send({
-      type: 'thread_sync',
-      threadId: activeSessionId,
-    });
   }, [activeSessionId, connectionStatus, socketClient]);
 
   useEffect(() => {
@@ -544,7 +616,7 @@ export function App() {
       setTokenDraft(token);
       return;
     }
-    if (connectionStatus === 'auth_failed') {
+    if (!authReady || connectionStatus === 'auth_failed') {
       setComposerError('鉴权失败，请先更新 Token。');
       return;
     }
@@ -600,6 +672,10 @@ export function App() {
   function createSessionAndQueuePrompt() {
     if (!token) {
       setComposerError('请先设置访问 Token。');
+      return;
+    }
+    if (!authReady) {
+      setComposerError('请先完成登录。');
       return;
     }
     const payload = buildSessionCreatePayload({
@@ -662,7 +738,30 @@ export function App() {
   function handleTokenSave() {
     const nextToken = writeStoredToken(tokenDraft);
     setToken(nextToken);
+    if (!nextToken) {
+      setAuthReady(false);
+      setTokenPromptOpen(false);
+      return;
+    }
     setTokenPromptOpen(false);
+  }
+
+  function handleRevokeSessions() {
+    setRevokingSessions(true);
+    setAuthSessionsError('');
+    revokeAuthSession()
+      .then((result) => {
+        const removedSessionIds = new Set(result.removedSessionIds || (result.removedSessionId ? [result.removedSessionId] : []));
+        setAuthSessions((current) => current.filter((item) => !removedSessionIds.has(item.sessionId)));
+        setAuthReady(false);
+        setTokenPromptOpen(true);
+      })
+      .catch((error: Error) => {
+        setAuthSessionsError(error.message);
+      })
+      .finally(() => {
+        setRevokingSessions(false);
+      });
   }
 
   function updateComposerPrefs(next: Partial<ComposerPrefs>) {
@@ -710,6 +809,8 @@ export function App() {
     formatReasoningEffortLabel(effectiveReasoningEffort),
     formatPermissionPresetSummary(effectivePermissionPresetValue, effectiveApprovalPolicy, effectiveSandboxMode),
   ].join(' · ');
+
+  const authStatusLabel = authReady ? '已登录' : token ? '未登录' : '未设置 Token';
 
   return (
     <>
@@ -815,26 +916,64 @@ export function App() {
             <TimelineWorkspace
               onRespondApproval={respondApproval}
               homeAside={!resolvedActiveSessionId ? (
-                <article className="home-settings-card">
-                  <div className="home-settings-card-head">
-                    <strong>连接鉴权</strong>
-                    <span>{token ? '已设置 Token' : '未设置 Token'}</span>
-                  </div>
-                  <div className="home-settings-card-body">
-                    <span>Token 只在主页可修改，用于 WebSocket 和工作区接口鉴权。</span>
-                    <button
-                      id="tokenBtn"
-                      className="btn btn-secondary home-settings-card-action"
-                      type="button"
-                      onClick={() => {
-                        setTokenDraft(token);
-                        setTokenPromptOpen(true);
-                      }}
-                    >
-                      {token ? '修改 Token' : '设置 Token'}
-                    </button>
-                  </div>
-                </article>
+                <div className="home-settings-stack">
+                  <article className="home-settings-card">
+                    <div className="home-settings-card-head">
+                      <strong>连接鉴权</strong>
+                      <span>{authStatusLabel}</span>
+                    </div>
+                    <div className="home-settings-card-body">
+                      <span>Token 仅用于登录，连接会使用设备会话。</span>
+                      <button
+                        id="tokenBtn"
+                        className="btn btn-secondary home-settings-card-action"
+                        type="button"
+                        onClick={() => {
+                          setTokenDraft(token);
+                          setTokenPromptOpen(true);
+                        }}
+                      >
+                        {token ? '更新 Token' : '设置 Token'}
+                      </button>
+                    </div>
+                  </article>
+                  <article className="home-settings-card">
+                    <div className="home-settings-card-head">
+                      <strong>在线连接</strong>
+                      <span>{authSessionsLoading ? '同步中' : `${authSessions.length} 个连接`}</span>
+                    </div>
+                    <div className="home-settings-card-body">
+                      {authSessionsError ? <div className="status error">{authSessionsError}</div> : null}
+                      <span>全部踢下线会撤销所有设备会话，并使旧 Token 失效；之后需要手动填写新 Token。</span>
+                      {authReady && authSessions.length ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary home-settings-card-action"
+                          disabled={revokingSessions}
+                          onClick={handleRevokeSessions}
+                        >
+                          {revokingSessions ? '踢下线中…' : '全部踢下线'}
+                        </button>
+                      ) : null}
+                      {authReady ? (
+                        <div className="device-session-list">
+                          {authSessions.length ? authSessions.map((session) => (
+                            <div key={session.sessionId} className="device-session-item">
+                              <div className="device-session-copy">
+                                <strong>{session.deviceName}</strong>
+                                <span>{session.current ? '当前连接' : `最近活动 ${new Date(session.lastSeenAt).toLocaleString()}`}</span>
+                              </div>
+                            </div>
+                          )) : (
+                            <div className="status">暂无在线连接。</div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="status">登录后显示在线连接。</div>
+                      )}
+                    </div>
+                  </article>
+                </div>
               ) : null}
             />
             <ComposerDock
@@ -873,7 +1012,7 @@ export function App() {
             id="tokenInput"
             className="modal-input"
             type="password"
-            placeholder="请输入服务端配置的 WS_TOKEN"
+            placeholder="请输入服务端配置的主 Token"
             value={tokenDraft}
             onChange={(event) => setTokenDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -883,9 +1022,10 @@ export function App() {
               }
             }}
           />
+          {authSessionsError ? <div className="status error">{authSessionsError}</div> : null}
           <div className="modal-actions">
             <button className="btn btn-secondary" type="button" onClick={() => setTokenPromptOpen(false)}>取消</button>
-            <button className="btn" type="button" onClick={handleTokenSave}>保存并重连</button>
+            <button className="btn" type="button" onClick={handleTokenSave} disabled={authPending}>{authPending ? '登录中…' : '保存并登录'}</button>
           </div>
         </div>
       </div>
@@ -921,7 +1061,7 @@ export function App() {
               <label className="modal-label session-workspace-label">工作区目录</label>
 
               <WorkspaceBrowser
-                token={token}
+                ready={authReady}
                 selectedPath={sessionBrowserPath || sessionDraft.cwd || workspaceSelectedPath || workspacePath}
                 onSelectPath={(path) => {
                   setSessionBrowserPath(path);

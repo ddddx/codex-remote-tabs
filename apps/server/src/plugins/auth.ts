@@ -1,25 +1,27 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
-export function buildTokenVerifier(wsToken: string) {
+export function buildTokenVerifier(readToken: () => string) {
   return function verifyRequestToken(request: FastifyRequest): boolean {
+    const wsToken = readToken();
     if (!wsToken) {
       return true;
     }
 
-    const queryToken = typeof (request.query as Record<string, unknown> | undefined)?.token === 'string'
-      ? (request.query as Record<string, string>).token
-      : '';
     const headerToken = typeof request.headers['x-codex-remote-token'] === 'string'
       ? request.headers['x-codex-remote-token']
       : '';
 
-    return queryToken === wsToken || headerToken === wsToken;
+    return headerToken === wsToken;
   };
 }
 
-export function buildRequireAuth(verifyRequestToken: (request: FastifyRequest) => boolean) {
+export function buildRequireAuth(
+  authorizeCookie: (cookieHeader: string | undefined) => { sessionId: string } | null,
+) {
   return async function requireAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    if (verifyRequestToken(request)) {
+    const session = authorizeCookie(typeof request.headers.cookie === 'string' ? request.headers.cookie : undefined);
+    if (session) {
+      (request as FastifyRequest & { authSessionId?: string }).authSessionId = session.sessionId;
       return;
     }
 

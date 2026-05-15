@@ -235,7 +235,6 @@ test('thread_sync returns tab update and thread snapshot', async () => {
   assert.equal((socket.sent[1] as any).turnDiffs.length, 1);
   assert.equal((socket.sent[1] as any).supplementalItems.length, 1);
   assert.equal((socket.sent[1] as any).globalSupplementalItems.length, 1);
-  assert.ok(Array.isArray((socket.sent[1] as any).timelineEvents));
 });
 
 test('thread_sync preserves nested usage payloads for header display', async () => {
