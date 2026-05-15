@@ -317,13 +317,9 @@ export function ComposerDock(props: ComposerDockProps) {
                 className="context-usage-ring-visual"
                 style={{ ['--usage-ring-value' as string]: `${tokenUsage.percentRemaining}` }}
                 aria-hidden="true"
-              >
-                <span className="context-usage-ring-value">{tokenUsage.percentRemaining}%</span>
-              </div>
+              />
             ) : (
-              <div className="context-usage-ring-visual context-usage-ring-visual-fallback" aria-hidden="true">
-                <span className="context-usage-ring-value">-</span>
-              </div>
+              <div className="context-usage-ring-visual context-usage-ring-visual-fallback" aria-hidden="true" />
             )}
           </button>
           <div className={`context-usage-popover${usagePopoverOpen ? ' is-open' : ''}`} role="status">

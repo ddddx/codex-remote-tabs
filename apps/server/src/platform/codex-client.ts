@@ -340,8 +340,8 @@ export class CodexAppServerClient extends EventEmitter {
   private async initialize() {
     await this.request('initialize', {
       clientInfo: {
-        name: 'codex-remote-tabs',
-        title: 'Codex Remote Tabs',
+        name: 'codex-remote-windows',
+        title: 'codex-remote-windows',
         version: '0.1.0',
       },
       capabilities: {

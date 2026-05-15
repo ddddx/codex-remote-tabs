@@ -1462,7 +1462,7 @@ textarea {
 .context-usage-popover {
   position: absolute;
   right: 0;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 8px);
   z-index: 6;
   min-width: 116px;
   display: none;
@@ -1491,11 +1491,6 @@ textarea {
 .context-usage-popover span {
   font-size: 12px;
   line-height: 1.35;
-}
-
-.context-usage-ring.is-empty .context-usage-ring-value {
-  color: var(--muted);
-  font-weight: 600;
 }
 
 .composer-attach-btn,

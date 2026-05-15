@@ -50,7 +50,7 @@ test('web app matches current shell and conversation flow', async ({ page }) => 
 
     await page.goto('http://127.0.0.1:4173');
 
-    await expect(page.locator('#activeTitle')).toHaveText('Codex Remote Control');
+    await expect(page.locator('#activeTitle')).toHaveText('codex-remote-windows');
     await expect(page.locator('#activeStatus')).toHaveText('服务正常');
     await expect(page.locator('#contextUsage')).toContainText('用量');
     await expect(page.locator('.sidebar')).toBeVisible();

@@ -695,7 +695,7 @@ export function App() {
     });
   }
 
-  const activeTitle = activeSession?.name || 'Codex Remote Control';
+  const activeTitle = activeSession?.name || 'codex-remote-windows';
   const connectionTone = buildConnectionStatusTone(connectionStatus, health?.status);
   const unreadWarning = pendingApprovals > 0;
   const effectiveModel = activePrefs.model || normalizeModel(codexOptions?.defaults.model || '');
