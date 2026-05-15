@@ -864,6 +864,62 @@ test('tab updates can refresh token usage independently of thread sync payload',
   assert.equal(usage?.outputTokens, 5);
 });
 
+test('tab updates synchronize composer permission prefs for the session', () => {
+  resetStore();
+
+  useAppStore.getState().setComposerPrefs('thread-prefs-sync', {
+    model: 'old-model',
+    reasoningEffort: 'low',
+    approvalPolicy: 'never',
+    sandboxMode: 'read-only',
+  });
+
+  mapServerMessageToStore({
+    type: 'tab_updated',
+    tab: {
+      threadId: 'thread-prefs-sync',
+      name: 'Prefs Sync',
+      cwd: 'C:\\workspace',
+      status: 'idle',
+      model: 'gpt-5.5',
+      reasoningEffort: 'high',
+      approvalPolicy: 'on-request',
+      sandboxMode: 'workspace-write',
+    },
+  } as any);
+
+  const prefs = useAppStore.getState().composer.prefsBySessionId['thread-prefs-sync'];
+  assert.equal(prefs?.model, 'gpt-5.5');
+  assert.equal(prefs?.reasoningEffort, 'high');
+  assert.equal(prefs?.approvalPolicy, 'on-request');
+  assert.equal(prefs?.sandboxMode, 'workspace-write');
+});
+
+test('state payload tabs initialize composer permission prefs by session', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'state',
+    tabs: [{
+      threadId: 'thread-state-prefs',
+      name: 'State Prefs',
+      cwd: 'C:\\workspace',
+      approvalPolicy: 'on-request',
+      sandboxMode: 'danger-full-access',
+      model: 'gpt-5.4',
+      reasoningEffort: 'medium',
+    }],
+    serverRequests: [],
+    globalSupplementalItems: [],
+  } as any);
+
+  const prefs = useAppStore.getState().composer.prefsBySessionId['thread-state-prefs'];
+  assert.equal(prefs?.model, 'gpt-5.4');
+  assert.equal(prefs?.reasoningEffort, 'medium');
+  assert.equal(prefs?.approvalPolicy, 'on-request');
+  assert.equal(prefs?.sandboxMode, 'danger-full-access');
+});
+
 test('nested token usage payloads are normalized for header display', () => {
   resetStore();
 

@@ -218,6 +218,48 @@ function normalizeTab(tab: any): SessionItem {
   };
 }
 
+function buildComposerPrefsFromSession(session: SessionItem): {
+  model: string;
+  reasoningEffort: string;
+  approvalPolicy: string;
+  sandboxMode: string;
+} {
+  return {
+    model: typeof session.model === 'string' ? session.model : '',
+    reasoningEffort: typeof session.reasoningEffort === 'string' ? session.reasoningEffort : '',
+    approvalPolicy: typeof session.approvalPolicy === 'string' ? session.approvalPolicy : '',
+    sandboxMode: typeof session.sandboxMode === 'string' ? session.sandboxMode : '',
+  };
+}
+
+function mergeComposerPrefsFromSessions(
+  current: Record<string, {
+    model: string;
+    reasoningEffort: string;
+    approvalPolicy: string;
+    sandboxMode: string;
+  }>,
+  sessions: SessionItem[],
+): Record<string, {
+  model: string;
+  reasoningEffort: string;
+  approvalPolicy: string;
+  sandboxMode: string;
+}> {
+  const next = { ...current };
+  for (const session of sessions) {
+    if (!session.threadId) {
+      continue;
+    }
+    next[session.threadId] = buildComposerPrefsFromSession({
+      ...session,
+      ...next[session.threadId],
+      ...buildComposerPrefsFromSession(session),
+    });
+  }
+  return next;
+}
+
 function extractTokenUsageValue(value: unknown): unknown {
   if (!value || typeof value !== 'object') {
     return null;
@@ -1643,6 +1685,10 @@ export const useAppStore = create<AppStore>((set) => ({
         ? state.sessions.activeSessionId
         : null,
     },
+    composer: {
+      ...state.composer,
+      prefsBySessionId: mergeComposerPrefsFromSessions(state.composer.prefsBySessionId, items),
+    },
     tokenUsage: {
       bySessionId: mergeTokenUsageFromSessions(state.tokenUsage.bySessionId, items),
     },
@@ -1662,6 +1708,15 @@ export const useAppStore = create<AppStore>((set) => ({
       sessions: {
         items: nextItems,
         activeSessionId: state.sessions.activeSessionId,
+      },
+      composer: {
+        ...state.composer,
+        prefsBySessionId: {
+          ...state.composer.prefsBySessionId,
+          [item.threadId]: buildComposerPrefsFromSession({
+            ...nextItems[index >= 0 ? index : 0],
+          }),
+        },
       },
       tokenUsage: {
         bySessionId: item.tokenUsage !== undefined && item.tokenUsage !== null
