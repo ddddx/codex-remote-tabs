@@ -197,11 +197,14 @@ function buildDefaultComposerPrefs(options: CodexOptionsResponse | null): Compos
 }
 
 function buildConnectionStatusTone(status: string, healthStatus?: string): 'connected' | 'waiting' | 'error' {
-  if (status === 'connected' || healthStatus === 'ok') {
+  if (status === 'connected') {
     return 'connected';
   }
-  if (status === 'auth_failed') {
+  if (status === 'auth_failed' || status === 'disconnected') {
     return 'error';
+  }
+  if (healthStatus === 'ok' && status === 'idle') {
+    return 'connected';
   }
   return 'waiting';
 }
