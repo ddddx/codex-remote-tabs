@@ -885,6 +885,46 @@ test('thread sync merges cached realtime timeline events after refresh', () => {
   assert.ok(entries.some((entry) => entry.id === 'notice:warn-refresh' && entry.text === '审批还在等待'));
 });
 
+test('thread sync skips stale replay events when the restored turn already has settled output', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-replay-dedupe',
+    turns: [{
+      id: 'turn-replay-dedupe',
+      createdAt: 1,
+      updatedAt: 3,
+      input: [{ type: 'text', text: '用户问题' }],
+      output: '已经恢复的完整回复',
+    }],
+    timelineEvents: [
+      {
+        type: 'agent_delta',
+        threadId: 'thread-replay-dedupe',
+        turnId: 'turn-replay-dedupe',
+        itemId: 'assistant-live-stale',
+        delta: '已经恢复的完整回复',
+        startedAt: 2,
+      },
+      {
+        type: 'item_completed',
+        threadId: 'thread-replay-dedupe',
+        turnId: 'turn-replay-dedupe',
+        item: {
+          id: 'assistant-final-stale',
+          type: 'agentMessage',
+          text: '已经恢复的完整回复',
+          createdAt: 3,
+        },
+      },
+    ],
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-replay-dedupe'] || [];
+  assert.equal(entries.filter((entry) => entry.role === 'assistant' && entry.text === '已经恢复的完整回复').length, 1);
+});
+
 test('thread sync can restore token usage from timeline events when top-level usage is null', () => {
   resetStore();
 

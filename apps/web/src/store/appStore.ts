@@ -699,6 +699,52 @@ function mergeTimelineEntryLists(existing: TimelineEntry[], incoming: TimelineEn
   return Array.from(merged.values()).sort(compareTimelineEntries);
 }
 
+function buildProtectedTurnIdsForThreadSync(
+  restoredEntries: TimelineEntry[],
+  turns: Array<Record<string, unknown>>,
+): Set<string> {
+  const restoredTurnIds = new Set(
+    turns
+      .map((turn) => (typeof turn?.id === 'string' ? turn.id : ''))
+      .filter(Boolean),
+  );
+
+  const protectedTurnIds = new Set<string>();
+  for (const turnId of restoredTurnIds) {
+    const hasAuthoritativeNonUserEntry = restoredEntries.some((entry) => (
+      entry.turnId === turnId
+      && entry.role !== 'user'
+      && !entry.partial
+      && entry.status !== 'running'
+    ));
+    if (hasAuthoritativeNonUserEntry) {
+      protectedTurnIds.add(turnId);
+    }
+  }
+
+  return protectedTurnIds;
+}
+
+function shouldReplayThreadSyncTimelineEvent(message: ServerMessage, protectedTurnIds: Set<string>): boolean {
+  const eventTurnId = typeof (message as { turnId?: unknown })?.turnId === 'string'
+    ? (message as { turnId?: string }).turnId
+    : '';
+  if (!eventTurnId || !protectedTurnIds.has(eventTurnId)) {
+    return true;
+  }
+
+  return !new Set([
+    'agent_delta',
+    'plan_delta',
+    'turn_plan_updated',
+    'turn_diff_updated',
+    'mcp_tool_progress',
+    'item_started',
+    'item_completed',
+    'item_delta',
+  ]).has(message.type);
+}
+
 function dedupeOptimisticUserEntries(entries: TimelineEntry[]): TimelineEntry[] {
   const authoritativeUsers = entries.filter((entry) => (
     entry.role === 'user'
@@ -1446,15 +1492,20 @@ function mergeThreadSyncEntries(
   currentEntries: TimelineEntry[],
   message: Extract<ServerMessage, { type: 'thread_sync' }>,
 ): TimelineEntry[] {
+  const restoredTurns = Array.isArray(message.turns) ? message.turns as Array<Record<string, unknown>> : [];
+  const restoredEntries = restoredTurns.flatMap((turn: any, index) => createEntriesFromThreadTurn(message.threadId, turn, index));
+  const protectedTurnIds = buildProtectedTurnIdsForThreadSync(restoredEntries, restoredTurns);
+
   let entries = mergeTimelineEntryLists(currentEntries, [
-    ...(Array.isArray(message.turns)
-      ? message.turns.flatMap((turn: any, index) => createEntriesFromThreadTurn(message.threadId, turn, index))
-      : []),
+    ...restoredEntries,
     ...createTimelineEntriesFromThreadSync(message),
   ]);
 
   for (const event of Array.isArray(message.timelineEvents) ? message.timelineEvents : []) {
     if (!event || typeof event !== 'object' || typeof (event as any).type !== 'string') {
+      continue;
+    }
+    if (!shouldReplayThreadSyncTimelineEvent(event as ServerMessage, protectedTurnIds)) {
       continue;
     }
     entries = applyThreadSyncTimelineEvent(entries, event as ServerMessage);
