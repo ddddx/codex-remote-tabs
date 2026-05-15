@@ -615,6 +615,20 @@ function normalizeTimelineEntry(entry: TimelineEntry): TimelineEntry {
   };
 }
 
+function mergeTimelineEntry(current: TimelineEntry, incoming: TimelineEntry): TimelineEntry {
+  const normalized = normalizeTimelineEntry(incoming);
+  return {
+    ...current,
+    ...normalized,
+    meta: normalized.meta ?? current.meta,
+    changes: normalized.changes ?? current.changes,
+    patch: normalized.patch ?? current.patch,
+    details: normalized.details ?? current.details,
+    text: normalized.text ?? current.text,
+    createdAt: Math.min(current.createdAt || normalized.createdAt || 0, normalized.createdAt || current.createdAt || 0),
+  };
+}
+
 function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): number {
   const leftTime = typeof left.createdAt === 'number' ? left.createdAt : 0;
   const rightTime = typeof right.createdAt === 'number' ? right.createdAt : 0;
@@ -636,18 +650,45 @@ function mergeTimelineEntryLists(existing: TimelineEntry[], incoming: TimelineEn
       merged.set(normalized.id, normalized);
       continue;
     }
-    merged.set(normalized.id, {
-      ...current,
-      ...normalized,
-      meta: normalized.meta ?? current.meta,
-      changes: normalized.changes ?? current.changes,
-      patch: normalized.patch ?? current.patch,
-      details: normalized.details ?? current.details,
-      text: normalized.text ?? current.text,
-      createdAt: Math.min(current.createdAt || normalized.createdAt || 0, normalized.createdAt || current.createdAt || 0),
-    });
+    merged.set(normalized.id, mergeTimelineEntry(current, normalized));
   }
   return Array.from(merged.values()).sort(compareTimelineEntries);
+}
+
+function extractPatchText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value.trim() ? value : undefined;
+  }
+
+  const structured = extractStructuredText(value);
+  if (structured.trim()) {
+    return structured;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const nestedCandidates = [
+    source.patch,
+    source.diff,
+    source.output,
+    source.outputText,
+    source.output_text,
+    source.aggregatedOutput,
+    source.content,
+    source.result,
+    source.data,
+  ];
+  for (const candidate of nestedCandidates) {
+    const text = extractPatchText(candidate);
+    if (text) {
+      return text;
+    }
+  }
+
+  return undefined;
 }
 
 function mergeTurnDiffIntoFileChangeEntry(
@@ -836,16 +877,15 @@ function createTimelineEntryFromItemEvent(
         deletedLines: typeof (change as any)?.deletedLines === 'number' ? (change as any).deletedLines : undefined,
       }))
       : undefined;
+    const patch = extractPatchText(item.patch)
+      ?? extractPatchText(item.diff)
+      ?? extractPatchText(item.output)
+      ?? extractPatchText(item.aggregatedOutput);
     const output = typeof item.output === 'string'
       ? item.output
       : typeof item.aggregatedOutput === 'string'
         ? item.aggregatedOutput
-        : '';
-    const patch = typeof item.patch === 'string'
-      ? item.patch
-      : output.trim()
-        ? output
-        : undefined;
+        : patch || '';
     return {
       id: itemId,
       type: 'file_change',
@@ -1866,10 +1906,7 @@ export const useAppStore = create<AppStore>((set) => ({
     ];
     const index = entries.findIndex((item) => item.id === entry.id);
     if (index >= 0) {
-      entries[index] = {
-        ...entries[index],
-        ...normalizeTimelineEntry(entry),
-      };
+      entries[index] = mergeTimelineEntry(entries[index], entry);
     } else {
       entries.push(normalizeTimelineEntry(entry));
     }

@@ -313,6 +313,66 @@ test('turn diff updates merge into the existing file change entry for the same t
   assert.equal(entries[0]?.patch, '*** Begin Patch\n*** Update File: src/a.ts\n+final\n*** End Patch');
 });
 
+test('file change completion without patch preserves previously streamed diff content', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'item_delta',
+    threadId: 'thread-file-complete-keep',
+    turnId: 'turn-file-complete-keep',
+    itemId: 'file-keep-1',
+    method: 'item/fileChange/patchUpdated',
+    patch: '*** Begin Patch\n*** Update File: src/keep.ts\n+live diff\n*** End Patch',
+    changes: [{ path: 'src/keep.ts', kind: 'update', addedLines: 1, deletedLines: 0 }],
+    startedAt: 1,
+  } as any);
+
+  mapServerMessageToStore({
+    type: 'item_completed',
+    threadId: 'thread-file-complete-keep',
+    turnId: 'turn-file-complete-keep',
+    item: {
+      id: 'file-keep-1',
+      type: 'fileChange',
+      status: 'completed',
+      changes: [{ path: 'src/keep.ts', kind: 'update', addedLines: 1, deletedLines: 0 }],
+    },
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-file-complete-keep'] || [];
+  const fileEntry = entries.find((entry) => entry.id === 'file-keep-1');
+  assert.equal(fileEntry?.status, 'completed');
+  assert.equal(fileEntry?.patch, '*** Begin Patch\n*** Update File: src/keep.ts\n+live diff\n*** End Patch');
+});
+
+test('thread sync restores file change diff from structured output fields', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-structured-file-diff',
+    turns: [{
+      id: 'turn-structured-file-diff',
+      createdAt: 1,
+      items: [
+        {
+          id: 'file-structured-1',
+          type: 'fileChange',
+          status: 'completed',
+          output: [
+            { type: 'output_text', text: '*** Begin Patch\n*** Update File: src/structured.ts\n+restored\n*** End Patch' },
+          ],
+          changes: [{ path: 'src/structured.ts', kind: 'update', addedLines: 1, deletedLines: 0 }],
+        },
+      ],
+    }],
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-structured-file-diff'] || [];
+  const fileEntry = entries.find((entry) => entry.id === 'file-structured-1');
+  assert.equal(fileEntry?.patch, '*** Begin Patch\n*** Update File: src/structured.ts\n+restored\n*** End Patch');
+});
+
 test('thread sync merges turn diff into restored file change entry for the same turn', () => {
   resetStore();
 

@@ -18,12 +18,6 @@ type TimelineWorkspaceProps = {
   onRespondApproval: (request: ServerRequestItem, response: unknown) => void;
 };
 
-type TaskStep = {
-  id: string;
-  status: string;
-  text: string;
-};
-
 type FooterStatus = {
   tone: string;
   label: string;
@@ -111,85 +105,6 @@ function normalizePlanStepStatus(status: string | undefined): string {
     return 'inProgress';
   }
   return 'pending';
-}
-
-function formatPlanStepStatus(status: string | undefined): string {
-  const normalized = normalizePlanStepStatus(status);
-  if (normalized === 'completed') {
-    return '已完成';
-  }
-  if (normalized === 'inProgress') {
-    return '进行中';
-  }
-  return '待处理';
-}
-
-function buildTaskSteps(entry: TimelineEntry): TaskStep[] {
-  const details = entry.details && typeof entry.details === 'object'
-    ? entry.details as Record<string, unknown>
-    : null;
-  const plan = Array.isArray(details?.plan) ? details.plan : [];
-  const structuredSteps = plan
-    .map((step, index) => {
-      const record = step && typeof step === 'object' ? step as Record<string, unknown> : null;
-      const text = typeof record?.step === 'string' ? record.step.trim() : '';
-      if (!text) {
-        return null;
-      }
-      return {
-        id: `${entry.id}:step:${index}`,
-        status: typeof record?.status === 'string' ? record.status : '',
-        text,
-      };
-    })
-    .filter((step): step is TaskStep => Boolean(step));
-  if (structuredSteps.length) {
-    return structuredSteps;
-  }
-
-  return (entry.meta || [])
-    .map((line, index) => {
-      const text = String(line || '').trim();
-      if (!text) {
-        return null;
-      }
-      const separatorIndex = text.indexOf(':');
-      if (separatorIndex > 0) {
-        return {
-          id: `${entry.id}:meta:${index}`,
-          status: text.slice(0, separatorIndex).trim(),
-          text: text.slice(separatorIndex + 1).trim(),
-        };
-      }
-      return {
-        id: `${entry.id}:meta:${index}`,
-        status: entry.status || '',
-        text,
-      };
-    })
-    .filter((step): step is TaskStep => Boolean(step?.text));
-}
-
-function buildTaskPanelModel(entries: TimelineEntry[]) {
-  const taskEntries = entries
-    .filter((entry) => entry.type === 'plan' || entry.type === 'turn_plan')
-    .sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
-  if (!taskEntries.length) {
-    return null;
-  }
-
-  const latest = taskEntries[taskEntries.length - 1];
-  const latestStructured = [...taskEntries].reverse().find((entry) => buildTaskSteps(entry).length > 0) || latest;
-  const steps = buildTaskSteps(latestStructured);
-  const draftEntry = [...taskEntries].reverse().find((entry) => entry.type === 'plan' && (entry.partial || entry.status === 'running'));
-
-  return {
-    summary: latestStructured.text || latest.text || '任务列表',
-    steps,
-    draftText: draftEntry?.text || '',
-    running: Boolean(draftEntry) || steps.some((step) => normalizePlanStepStatus(step.status) === 'inProgress'),
-    updatedAt: latest.createdAt || 0,
-  };
 }
 
 function buildTimelineKind(entry: TimelineEntry): string {
@@ -517,6 +432,9 @@ function buildTurnActivityStatus(
     if (!compact) {
       return prefix;
     }
+    if (compact === prefix || compact.startsWith(`${prefix} ·`) || compact.startsWith(`${prefix}:`) || compact.startsWith(prefix)) {
+      return compact.slice(0, 42);
+    }
     return `${prefix} · ${compact.slice(0, 42)}`;
   }
 
@@ -576,12 +494,12 @@ function buildLatestGroupStatus(
     return null;
   }
   if (latest.status === 'pending') {
-    return { tone: 'warning', label: `等待处理 · ${latest.label}`, active: false };
+    return { tone: 'warning', label: '等待处理', active: false };
   }
   if (latest.status === 'running') {
-    return { tone: 'command', label: `处理中 · ${latest.label}`, active: true };
+    return { tone: 'command', label: '处理中', active: true };
   }
-  return { tone: 'success', label: `已完成 · ${latest.label}`, active: false };
+  return null;
 }
 
 function buildRenderableTimeline(
@@ -982,13 +900,13 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
   const stickToBottomRef = useRef(true);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
-  const [taskPanelOpen, setTaskPanelOpen] = useState(true);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const entriesBySessionId = useAppStore((state) => state.timeline.entriesBySessionId);
   const health = useAppStore((state) => state.health.data);
   const error = useAppStore((state) => state.health.error || state.connection.error || '');
   const turnState = useAppStore((state) => activeSessionId ? state.turns.activeBySessionId[activeSessionId] : undefined);
   const approvalItems = useAppStore((state) => state.approvals.items);
+  const workspaceSelectedPath = useAppStore((state) => state.workspace.selectedPath);
 
   const entries = useMemo(
     () => activeSessionId ? (entriesBySessionId[activeSessionId] || []) : [],
@@ -1005,10 +923,6 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
   const activeTurnStatus = useMemo(
     () => buildTurnActivityStatus(entries, turnState, approvals),
     [entries, turnState, approvals],
-  );
-  const taskPanel = useMemo(
-    () => buildTaskPanelModel(entries),
-    [entries],
   );
 
   const groups = useMemo(
@@ -1174,7 +1088,7 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
         {hasUnreadBelow ? '新消息 ︾' : '回到底部'}
       </button>
 
-      {(taskPanel || footerStatus) ? (
+      {(footerStatus || (!activeSessionId && workspaceSelectedPath)) ? (
         <div className="timeline-status-dock">
           {footerStatus ? (
             <div className={`thinking-indicator tone-${footerStatus.tone}`} aria-live="polite">
@@ -1182,41 +1096,9 @@ export function TimelineWorkspace({ onRespondApproval }: TimelineWorkspaceProps)
               <span className="thinking-indicator-text">{footerStatus.label}</span>
             </div>
           ) : null}
-          {taskPanel ? (
-            <div className={`task-panel${taskPanelOpen ? ' is-open' : ''}`}>
-              <button
-                type="button"
-                className="task-panel-toggle"
-                onClick={() => setTaskPanelOpen((value) => !value)}
-              >
-                <span className={`task-panel-dot${taskPanel.running ? ' is-running' : ''}`} aria-hidden="true"></span>
-                <span className="task-panel-toggle-text">任务列表</span>
-                {taskPanel.steps.length ? <span className="task-panel-toggle-count">{taskPanel.steps.length}</span> : null}
-              </button>
-              {taskPanelOpen ? (
-                <div className="task-panel-body">
-                  {taskPanel.summary ? <div className="task-panel-summary">{taskPanel.summary}</div> : null}
-                  {taskPanel.steps.length ? (
-                    <div className="task-step-list">
-                      {taskPanel.steps.map((step) => {
-                        const normalizedStatus = normalizePlanStepStatus(step.status);
-                        return (
-                          <div key={step.id} className={`task-step status-${normalizedStatus}`}>
-                            <span className="task-step-badge">{formatPlanStepStatus(step.status)}</span>
-                            <span className="task-step-text">{step.text}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                  {taskPanel.draftText ? (
-                    <div className="task-panel-draft">
-                      <span className="task-panel-draft-label">规划中</span>
-                      <span className="task-panel-draft-text">{taskPanel.draftText}</span>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
+          {!activeSessionId && workspaceSelectedPath ? (
+            <div className="thinking-indicator tone-command" aria-live="polite">
+              <span className="thinking-indicator-text">{`工作区：${workspaceSelectedPath}`}</span>
             </div>
           ) : null}
         </div>

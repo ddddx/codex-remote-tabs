@@ -186,23 +186,14 @@ function buildDefaultComposerPrefs(options: CodexOptionsResponse | null): Compos
   };
 }
 
-function buildConnectionStatusLabel(status: string, healthStatus?: string): string {
-  if (status === 'connected') {
-    return '已连接';
-  }
-  if (status === 'connecting') {
-    return '连接中';
+function buildConnectionStatusTone(status: string, healthStatus?: string): 'connected' | 'waiting' | 'error' {
+  if (status === 'connected' || healthStatus === 'ok') {
+    return 'connected';
   }
   if (status === 'auth_failed') {
-    return '鉴权失败';
+    return 'error';
   }
-  if (status === 'disconnected') {
-    return '已断开';
-  }
-  if (healthStatus === 'ok') {
-    return '服务正常';
-  }
-  return '空闲';
+  return 'waiting';
 }
 
 function buildSessionCreatePayload(draft: SessionDraft, prefs: ComposerPrefs) {
@@ -622,7 +613,7 @@ export function App() {
   }
 
   const activeTitle = activeSession?.name || 'Codex Remote Control';
-  const connectionLabel = buildConnectionStatusLabel(connectionStatus, health?.status);
+  const connectionTone = buildConnectionStatusTone(connectionStatus, health?.status);
   const unreadWarning = pendingApprovals > 0;
   const permissionPresetValue = inferPermissionPresetValue(activePrefs.approvalPolicy, activePrefs.sandboxMode);
   const composerControlsSummary = [
@@ -716,9 +707,12 @@ export function App() {
               >
                 Token
               </button>
-              <span id="activeStatus" className={`status-badge${connectionStatus === 'connected' ? '' : ' waiting'}`}>
-                {connectionLabel}
-              </span>
+              <span
+                id="activeStatus"
+                className={`status-badge status-badge-dot ${connectionTone === 'connected' ? '' : connectionTone === 'error' ? ' error' : ' waiting'}`}
+                aria-label={connectionStatus}
+                title={connectionStatus}
+              />
             </div>
           </header>
 
