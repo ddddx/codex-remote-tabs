@@ -299,6 +299,7 @@ export function App() {
   const [composerPrefsDraft, setComposerPrefsDraft] = useState<ComposerPrefs>(() => buildDefaultComposerPrefs(null));
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerResetSignal, setComposerResetSignal] = useState(0);
+  const previousConnectionStatusRef = useRef(connectionStatus);
   const sessionNameInputRef = useRef<HTMLInputElement | null>(null);
   const tokenInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -421,6 +422,43 @@ export function App() {
       threadId: activeSessionId,
     });
   }, [activeSessionId, socketClient]);
+
+  useEffect(() => {
+    const previousStatus = previousConnectionStatusRef.current;
+    previousConnectionStatusRef.current = connectionStatus;
+
+    if (connectionStatus !== 'connected' || previousStatus === 'connected' || !activeSessionId) {
+      return;
+    }
+
+    socketClient.send({
+      type: 'thread_sync',
+      threadId: activeSessionId,
+    });
+  }, [activeSessionId, connectionStatus, socketClient]);
+
+  useEffect(() => {
+    function syncActiveThreadOnForeground() {
+      if (document.hidden || connectionStatus !== 'connected') {
+        return;
+      }
+      const targetThreadId = useAppStore.getState().sessions.activeSessionId;
+      if (!targetThreadId) {
+        return;
+      }
+      socketClient.send({
+        type: 'thread_sync',
+        threadId: targetThreadId,
+      });
+    }
+
+    document.addEventListener('visibilitychange', syncActiveThreadOnForeground);
+    window.addEventListener('focus', syncActiveThreadOnForeground);
+    return () => {
+      document.removeEventListener('visibilitychange', syncActiveThreadOnForeground);
+      window.removeEventListener('focus', syncActiveThreadOnForeground);
+    };
+  }, [connectionStatus, socketClient]);
 
   useEffect(() => {
     if (!queuedPrompt.trim() || !activeSessionId) {
