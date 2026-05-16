@@ -22,7 +22,7 @@ function resetStore() {
       status: 'idle',
       error: null,
     },
-    composer: { attachmentsBySessionId: {} },
+    composer: { attachmentsBySessionId: {}, prefsBySessionId: {} },
   } as any);
 }
 
@@ -1046,6 +1046,74 @@ test('tab updates synchronize composer permission prefs for the session', () => 
   assert.equal(prefs?.sandboxMode, 'workspace-write');
 });
 
+test('tab updates with unchanged payload preserve session array reference', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'tab_updated',
+    tab: {
+      threadId: 'thread-stable-session',
+      name: 'Stable Session',
+      cwd: 'C:\\workspace',
+      status: 'idle',
+      windowStatus: 'attached',
+    },
+  } as any);
+
+  const firstItems = useAppStore.getState().sessions.items;
+
+  mapServerMessageToStore({
+    type: 'tab_updated',
+    tab: {
+      threadId: 'thread-stable-session',
+      name: 'Stable Session',
+      cwd: 'C:\\workspace',
+      status: 'idle',
+      windowStatus: 'attached',
+    },
+  } as any);
+
+  const secondItems = useAppStore.getState().sessions.items;
+  assert.equal(secondItems, firstItems);
+});
+
+test('replacing server requests with equivalent items preserves approvals reference', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'state',
+    tabs: [],
+    serverRequests: [{
+      requestId: 'req-stable',
+      threadId: 'thread-1',
+      kind: 'command',
+      command: 'npm test',
+      status: 'pending',
+      createdAt: 1,
+    }],
+    globalSupplementalItems: [],
+  } as any);
+
+  const firstApprovals = useAppStore.getState().approvals.items;
+
+  mapServerMessageToStore({
+    type: 'state',
+    tabs: [],
+    serverRequests: [{
+      requestId: 'req-stable',
+      threadId: 'thread-1',
+      kind: 'command',
+      command: 'npm test',
+      status: 'pending',
+      createdAt: 1,
+    }],
+    globalSupplementalItems: [],
+  } as any);
+
+  const secondApprovals = useAppStore.getState().approvals.items;
+  assert.equal(secondApprovals, firstApprovals);
+});
+
 test('state payload tabs initialize composer permission prefs by session', () => {
   resetStore();
 
@@ -1181,6 +1249,59 @@ test('assistant deltas update stream cache without replacing timeline entries af
   assert.equal(secondEntries, firstEntries);
   assert.equal(assistantEntry?.text, '');
   assert.equal(state.assistantStreams.bySessionId['thread-stream-cache']?.['assistant-stream-cache'], 'hello world');
+});
+
+test('thread sync with equivalent restored content preserves timeline reference', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-stable-sync',
+    turns: [{
+      id: 'turn-stable-sync',
+      createdAt: 1,
+      updatedAt: 2,
+      items: [
+        {
+          id: 'user-stable-sync',
+          type: 'userMessage',
+          text: 'hello',
+        },
+        {
+          id: 'assistant-stable-sync',
+          type: 'agentMessage',
+          text: 'world',
+        },
+      ],
+    }],
+  } as any);
+
+  const firstEntries = useAppStore.getState().timeline.entriesBySessionId['thread-stable-sync'];
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-stable-sync',
+    turns: [{
+      id: 'turn-stable-sync',
+      createdAt: 1,
+      updatedAt: 2,
+      items: [
+        {
+          id: 'user-stable-sync',
+          type: 'userMessage',
+          text: 'hello',
+        },
+        {
+          id: 'assistant-stable-sync',
+          type: 'agentMessage',
+          text: 'world',
+        },
+      ],
+    }],
+  } as any);
+
+  const secondEntries = useAppStore.getState().timeline.entriesBySessionId['thread-stable-sync'];
+  assert.equal(secondEntries, firstEntries);
 });
 
 test('completed assistant message persists stream text and clears stream cache', () => {

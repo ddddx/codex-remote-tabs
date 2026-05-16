@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
@@ -43,6 +43,8 @@ const EMPTY_TIMELINE_ENTRIES: TimelineEntry[] = [];
 const EMPTY_APPROVAL_ITEMS: ServerRequestItem[] = [];
 const INITIAL_RENDERABLE_LIMIT = 120;
 const RENDERABLE_PAGE_SIZE = 120;
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+const MARKDOWN_REHYPE_PLUGINS = [rehypeHighlight];
 
 type ExpandableTimelineRowProps = {
   title: React.ReactNode;
@@ -51,7 +53,7 @@ type ExpandableTimelineRowProps = {
   className?: string;
 };
 
-function MarkdownMessage({
+const MarkdownMessage = memo(function MarkdownMessage({
   text,
   className,
   partial,
@@ -60,11 +62,12 @@ function MarkdownMessage({
   className: string;
   partial?: boolean;
 }) {
+  const rehypePlugins = text.includes('```') ? MARKDOWN_REHYPE_PLUGINS : undefined;
   return (
     <div className={className}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={rehypePlugins}
         components={{
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
         }}
@@ -74,7 +77,7 @@ function MarkdownMessage({
       {partial ? <span className="cursor">▌</span> : null}
     </div>
   );
-}
+});
 
 function ExpandableTimelineRow(props: ExpandableTimelineRowProps) {
   const { title, summary, details, className = '' } = props;
@@ -551,33 +554,54 @@ function buildTurnActivityStatus(
     return { tone: 'warning', label: '等待批准', active: false };
   }
 
-  const runningEntries = [...entries]
-    .filter((entry) => entry.turnId === turnId && (entry.partial || entry.status === 'running'))
-    .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
+  let reasoningEntry: TimelineEntry | null = null;
+  let commandEntry: TimelineEntry | null = null;
+  let fileChangeEntry: TimelineEntry | null = null;
+  let toolEntry: TimelineEntry | null = null;
+  let planEntry: TimelineEntry | null = null;
 
-  const reasoningEntry = runningEntries.find((entry) => entry.type === 'reasoning');
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.turnId !== turnId || (!entry.partial && entry.status !== 'running')) {
+      continue;
+    }
+    if (!reasoningEntry && entry.type === 'reasoning') {
+      reasoningEntry = entry;
+      break;
+    }
+    if (!commandEntry && entry.type === 'command') {
+      commandEntry = entry;
+      continue;
+    }
+    if (!fileChangeEntry && entry.type === 'file_change') {
+      fileChangeEntry = entry;
+      continue;
+    }
+    if (!toolEntry && (entry.type === 'mcp_tool' || entry.type === 'dynamic_tool' || entry.type === 'web_search')) {
+      toolEntry = entry;
+      continue;
+    }
+    if (!planEntry && (entry.type === 'plan' || entry.type === 'turn_plan')) {
+      planEntry = entry;
+    }
+  }
+
   if (reasoningEntry) {
     return { tone: 'thinking', label: withDetail('思考中', summarizeTimelineEntry(reasoningEntry)), active: true };
   }
 
-  const commandEntry = runningEntries.find((entry) => entry.type === 'command');
   if (commandEntry) {
     return { tone: 'command', label: withDetail('执行命令中', buildProcessPreview(commandEntry)), active: true };
   }
 
-  const fileChangeEntry = runningEntries.find((entry) => entry.type === 'file_change');
   if (fileChangeEntry) {
     return { tone: 'file', label: withDetail('修改文件中', buildProcessPreview(fileChangeEntry)), active: true };
   }
 
-  const toolEntry = runningEntries.find((entry) => (
-    entry.type === 'mcp_tool' || entry.type === 'dynamic_tool' || entry.type === 'web_search'
-  ));
   if (toolEntry) {
     return { tone: 'command', label: withDetail('工具处理中', buildProcessPreview(toolEntry)), active: true };
   }
 
-  const planEntry = runningEntries.find((entry) => entry.type === 'plan' || entry.type === 'turn_plan');
   if (planEntry) {
     return { tone: 'thinking', label: withDetail('规划中', summarizeTimelineEntry(planEntry)), active: true };
   }
@@ -605,29 +629,85 @@ function buildLatestRenderableStatus(renderables: TimelineRenderable[]): FooterS
   return null;
 }
 
-function buildRenderableTimeline(
+function shouldRenderTimelineEntry(entry: TimelineEntry): boolean {
+  return entry.type !== 'reasoning' && entry.type !== 'plan' && entry.type !== 'turn_plan';
+}
+
+function buildRenderableEntry(entry: TimelineEntry): TimelineRenderable {
+  const renderableEntry = buildStructuralTimelineEntry(entry);
+  return {
+    kind: 'entry',
+    createdAt: typeof renderableEntry.createdAt === 'number' ? renderableEntry.createdAt : 0,
+    id: `entry:${renderableEntry.id}`,
+    entry: renderableEntry,
+  };
+}
+
+function buildRenderableApproval(request: ServerRequestItem): TimelineRenderable {
+  return {
+    kind: 'approval',
+    createdAt: typeof request.createdAt === 'number' ? request.createdAt : 0,
+    id: `approval:${request.requestId}`,
+    request,
+  };
+}
+
+function compareRenderableCandidates(entry: TimelineEntry, request: ServerRequestItem): number {
+  const entryTime = typeof entry.createdAt === 'number' ? entry.createdAt : 0;
+  const requestTime = typeof request.createdAt === 'number' ? request.createdAt : 0;
+  if (entryTime !== requestTime) {
+    return entryTime - requestTime;
+  }
+  return `entry:${entry.id}`.localeCompare(`approval:${request.requestId}`);
+}
+
+function buildVisibleRenderableTimeline(
   entries: TimelineEntry[],
   approvals: ServerRequestItem[],
-): TimelineRenderable[] {
-  return [
-    ...entries.map((entry) => ({
-      kind: 'entry' as const,
-      createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : 0,
-      id: `entry:${entry.id}`,
-      entry,
-    })),
-    ...approvals.map((request) => ({
-      kind: 'approval' as const,
-      createdAt: typeof request.createdAt === 'number' ? request.createdAt : 0,
-      id: `approval:${request.requestId}`,
-      request,
-    })),
-  ].sort((left, right) => {
-    if (left.createdAt !== right.createdAt) {
-      return left.createdAt - right.createdAt;
+  limit: number,
+): { visibleRenderables: TimelineRenderable[]; totalRenderableCount: number } {
+  let totalRenderableCount = approvals.length;
+  for (const entry of entries) {
+    if (shouldRenderTimelineEntry(entry)) {
+      totalRenderableCount += 1;
     }
-    return left.id.localeCompare(right.id);
-  });
+  }
+
+  const visibleRenderables: TimelineRenderable[] = [];
+  let entryIndex = entries.length - 1;
+  let approvalIndex = approvals.length - 1;
+
+  while (visibleRenderables.length < limit && (entryIndex >= 0 || approvalIndex >= 0)) {
+    while (entryIndex >= 0 && !shouldRenderTimelineEntry(entries[entryIndex])) {
+      entryIndex -= 1;
+    }
+
+    if (entryIndex < 0 && approvalIndex < 0) {
+      break;
+    }
+    if (entryIndex < 0) {
+      visibleRenderables.push(buildRenderableApproval(approvals[approvalIndex]));
+      approvalIndex -= 1;
+      continue;
+    }
+    if (approvalIndex < 0) {
+      visibleRenderables.push(buildRenderableEntry(entries[entryIndex]));
+      entryIndex -= 1;
+      continue;
+    }
+
+    if (compareRenderableCandidates(entries[entryIndex], approvals[approvalIndex]) > 0) {
+      visibleRenderables.push(buildRenderableEntry(entries[entryIndex]));
+      entryIndex -= 1;
+      continue;
+    }
+
+    visibleRenderables.push(buildRenderableApproval(approvals[approvalIndex]));
+    approvalIndex -= 1;
+  }
+
+  visibleRenderables.reverse();
+  return { visibleRenderables, totalRenderableCount };
 }
 
 function buildStructuralTimelineEntry(entry: TimelineEntry): TimelineEntry {
@@ -640,8 +720,11 @@ function buildStructuralTimelineEntry(entry: TimelineEntry): TimelineEntry {
   };
 }
 
-function buildRenderableSignature(renderables: TimelineRenderable[]): string {
+function buildRenderableSignature(renderables: TimelineRenderable[], totalRenderableCount: number): string {
   if (!renderables.length) {
+    return totalRenderableCount ? `${totalRenderableCount}:hidden` : 'empty';
+  }
+  if (!totalRenderableCount) {
     return 'empty';
   }
   const last = renderables[renderables.length - 1];
@@ -649,7 +732,7 @@ function buildRenderableSignature(renderables: TimelineRenderable[]): string {
   const lastState = last.kind === 'entry'
     ? `${last.entry.status || ''}:${last.entry.partial ? 'partial' : 'done'}:${last.entry.text?.length || 0}:${last.entry.meta?.length || 0}`
     : `${last.request.status || ''}`;
-  return `${renderables.length}:${first.id}:${last.id}:${last.createdAt}:${lastState}`;
+  return `${totalRenderableCount}:${first.id}:${last.id}:${last.createdAt}:${lastState}`;
 }
 
 function buildTimelineMarkerSymbol(entry: TimelineEntry): string {
@@ -678,7 +761,7 @@ function buildTimelineMarkerSymbol(entry: TimelineEntry): string {
   return '·';
 }
 
-function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; sessionId: string }) {
+const TimelineEntryCard = memo(function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; sessionId: string }) {
   const streamText = useAppStore((state) => (
     entry.role === 'assistant' && entry.partial
       ? state.assistantStreams.bySessionId[sessionId]?.[entry.id]
@@ -691,6 +774,11 @@ function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; session
       text: streamText,
     };
   entry = resolvedEntry;
+  const renderableChanges = useMemo(() => buildRenderableChanges(entry), [entry]);
+  const diffText = useMemo(() => buildRenderableDiffTextFromSource({
+    patch: entry.patch,
+    changes: entry.changes,
+  }), [entry]);
 
   if (entry.role === 'user' || entry.role === 'assistant') {
     const role = entry.role === 'user' ? 'user' : 'assistant';
@@ -699,7 +787,6 @@ function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; session
       : entry.type === 'reasoning'
         ? 'msg-bubble msg-bubble-commentary'
         : 'msg-bubble msg-bubble-assistant';
-    const renderableChanges = buildRenderableChanges(entry);
     return (
       <div className={`transcript-row transcript-row-${role}`}>
         <div className="transcript-row-body">
@@ -738,7 +825,6 @@ function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; session
 
   if (entry.role !== 'user' && entry.role !== 'assistant') {
     const kind = buildTimelineKind(entry);
-    const renderableChanges = buildRenderableChanges(entry);
     if (entry.type === 'command') {
       const details = getCommandDetails(entry);
       return (
@@ -776,10 +862,6 @@ function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; session
       );
     }
     if (entry.type === 'file_change' || entry.type === 'turn_diff') {
-      const diffText = buildRenderableDiffTextFromSource({
-        patch: entry.patch,
-        changes: entry.changes,
-      });
       return (
         <div className={`timeline-event kind-${kind} ${buildTimelineStateClass(entry)}`}>
           <div className="timeline-marker"><span className="timeline-marker-state" aria-hidden="true">{buildTimelineMarkerSymbol(entry)}</span></div>
@@ -841,9 +923,9 @@ function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; session
     );
   }
   return null;
-}
+});
 
-function ApprovalCard({
+const ApprovalCard = memo(function ApprovalCard({
   request,
   onRespond,
 }: {
@@ -854,14 +936,14 @@ function ApprovalCard({
   const [dynamicToolValue, setDynamicToolValue] = useState('');
   const [dynamicToolSuccess, setDynamicToolSuccess] = useState(true);
   const [mcpValues, setMcpValues] = useState<Record<string, string>>({});
-  const renderableChanges = buildRenderableChangesFromSource({
+  const renderableChanges = useMemo(() => buildRenderableChangesFromSource({
     changes: request.changes,
     patch: request.patch,
-  });
-  const diffText = buildRenderableDiffTextFromSource({
+  }), [request]);
+  const diffText = useMemo(() => buildRenderableDiffTextFromSource({
     patch: request.patch,
     changes: request.changes,
-  });
+  }), [request]);
 
   return (
     <div className="timeline-event kind-serverRequest">
@@ -1047,7 +1129,7 @@ function ApprovalCard({
       </div>
     </div>
   );
-}
+});
 
 export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWorkspaceProps) {
   const messagesRef = useRef<HTMLDivElement | null>(null);
@@ -1072,16 +1154,6 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
   const error = useAppStore((state) => state.health.error || state.connection.error || '');
   const turnState = useAppStore((state) => activeSessionId ? state.turns.activeBySessionId[activeSessionId] : undefined);
   const approvalItems = useAppStore((state) => state.approvals.items);
-  const visibleEntries = useMemo(
-    () => entries.filter((entry) => entry.type !== 'reasoning'),
-    [entries],
-  );
-  const timelineEntries = useMemo(
-    () => visibleEntries
-      .filter((entry) => entry.type !== 'plan' && entry.type !== 'turn_plan')
-      .map(buildStructuralTimelineEntry),
-    [visibleEntries],
-  );
   const approvals = useMemo(
     () => activeSessionId ? approvalItems.filter((item) => item.threadId === activeSessionId) : EMPTY_APPROVAL_ITEMS,
     [activeSessionId, approvalItems],
@@ -1090,25 +1162,20 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     () => buildTurnActivityStatus(entries, turnState, approvals),
     [entries, turnState, approvals],
   );
-
-  const renderables = useMemo(
-    () => buildRenderableTimeline(timelineEntries, approvals),
-    [approvals, timelineEntries],
+  const { visibleRenderables, totalRenderableCount } = useMemo(
+    () => buildVisibleRenderableTimeline(entries, approvals, renderLimit),
+    [approvals, entries, renderLimit],
   );
-  const visibleRenderables = useMemo(
-    () => renderables.slice(Math.max(0, renderables.length - renderLimit)),
-    [renderLimit, renderables],
-  );
-  const hiddenRenderableCount = Math.max(0, renderables.length - visibleRenderables.length);
+  const hiddenRenderableCount = Math.max(0, totalRenderableCount - visibleRenderables.length);
   const contentSignature = useMemo(
-    () => buildRenderableSignature(renderables),
-    [renderables],
+    () => buildRenderableSignature(visibleRenderables, totalRenderableCount),
+    [totalRenderableCount, visibleRenderables],
   );
   const firstVisibleRenderableId = visibleRenderables[0]?.id || null;
 
   const footerStatus = useMemo(
-    () => activeTurnStatus || buildLatestRenderableStatus(renderables),
-    [activeTurnStatus, renderables],
+    () => activeTurnStatus || buildLatestRenderableStatus(visibleRenderables),
+    [activeTurnStatus, visibleRenderables],
   );
 
   useEffect(() => {

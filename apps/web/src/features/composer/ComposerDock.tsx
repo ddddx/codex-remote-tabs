@@ -192,14 +192,11 @@ export function ComposerDock(props: ComposerDockProps) {
     effectiveSandboxMode,
   );
 
-  const attachmentsBySessionId = useAppStore((state) => state.composer.attachmentsBySessionId);
+  const attachmentSessionKey = activeSessionId || '__new__';
+  const attachments = useAppStore((state) => state.composer.attachmentsBySessionId[attachmentSessionKey] || []);
   const addAttachment = useAppStore((state) => state.addAttachment);
   const removeAttachment = useAppStore((state) => state.removeAttachment);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const attachments = useMemo(() => {
-    const key = activeSessionId || '__new__';
-    return attachmentsBySessionId[key] || [];
-  }, [activeSessionId, attachmentsBySessionId]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -333,7 +330,7 @@ export function ComposerDock(props: ComposerDockProps) {
               if (!file) {
                 return;
               }
-              const targetThreadId = activeSessionId || '__new__';
+              const targetThreadId = attachmentSessionKey;
               void uploadImage(file).then((result) => {
                 addAttachment(targetThreadId, {
                   ...result,
@@ -355,7 +352,7 @@ export function ComposerDock(props: ComposerDockProps) {
                   <button
                     type="button"
                     className="composer-attachment-remove"
-                    onClick={() => removeAttachment(activeSessionId || '__new__', attachment.id)}
+                    onClick={() => removeAttachment(attachmentSessionKey, attachment.id)}
                   >
                     移除
                   </button>

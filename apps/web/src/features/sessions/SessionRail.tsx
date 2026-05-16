@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { formatWindowStatus, formatWorkspaceLabel } from '../../app/view-helpers.js';
 import { useAppStore } from '../../store/appStore.js';
 
@@ -22,12 +23,22 @@ export function SessionRail({ onNewSession, onCloseSessionWindow }: SessionRailP
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const approvals = useAppStore((state) => state.approvals.items);
   const setActiveSession = useAppStore((state) => state.setActiveSession);
+  const pendingCountsBySessionId = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const request of approvals) {
+      if (!request.threadId) {
+        continue;
+      }
+      counts[request.threadId] = (counts[request.threadId] || 0) + 1;
+    }
+    return counts;
+  }, [approvals]);
 
   return (
     <>
       <div id="tabList" className="tab-list">
         {sessions.length ? sessions.map((session) => {
-          const pendingCount = approvals.filter((request) => request.threadId === session.threadId).length;
+          const pendingCount = pendingCountsBySessionId[session.threadId] || 0;
           const isActive = session.threadId === activeSessionId;
           const isClosed = (session.status || '').trim().toLowerCase() === 'closed';
           return (

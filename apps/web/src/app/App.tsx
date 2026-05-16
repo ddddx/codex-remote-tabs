@@ -297,9 +297,7 @@ export function App() {
   const token = useAppStore((state) => state.auth.token);
   const codexOptions = useAppStore((state) => state.codexOptions.data);
   const codexOptionsStatus = useAppStore((state) => state.codexOptions.status);
-  const sessions = useAppStore((state) => state.sessions.items);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
-  const approvals = useAppStore((state) => state.approvals.items);
   const connectionStatus = useAppStore((state) => state.connection.status);
   const connectionError = useAppStore((state) => state.connection.error);
   const appendTimelineEntry = useAppStore((state) => state.appendTimelineEntry);
@@ -307,8 +305,6 @@ export function App() {
   const notifications = useAppStore((state) => state.notifications.items);
   const dismissNotification = useAppStore((state) => state.dismissNotification);
   const workspaceSelectedPath = useAppStore((state) => state.workspace.selectedPath);
-  const composerPrefsBySessionId = useAppStore((state) => state.composer.prefsBySessionId);
-  const tokenUsageBySessionId = useAppStore((state) => state.tokenUsage.bySessionId);
 
   const [draft, setDraft] = useState('');
   const [queuedPrompt, setQueuedPrompt] = useState('');
@@ -339,13 +335,26 @@ export function App() {
   const deviceIdRef = useRef(readOrCreateDeviceId());
 
   const resolvedActiveSessionId = activeSessionId;
-  const activeSession = sessions.find((item) => item.threadId === resolvedActiveSessionId) || null;
-  const pendingApprovals = resolvedActiveSessionId
-    ? approvals.filter((item) => item.threadId === resolvedActiveSessionId).length
-    : approvals.length;
-  const activeUsage = resolvedActiveSessionId
-    ? (tokenUsageBySessionId[resolvedActiveSessionId] ?? activeSession?.tokenUsage ?? null)
-    : null;
+  const activeSession = useAppStore((state) => (
+    resolvedActiveSessionId
+      ? state.sessions.items.find((item) => item.threadId === resolvedActiveSessionId) || null
+      : null
+  ));
+  const pendingApprovals = useAppStore((state) => (
+    resolvedActiveSessionId
+      ? state.approvals.items.filter((item) => item.threadId === resolvedActiveSessionId).length
+      : state.approvals.items.length
+  ));
+  const activeSessionPrefs = useAppStore((state) => (
+    resolvedActiveSessionId
+      ? state.composer.prefsBySessionId[resolvedActiveSessionId]
+      : undefined
+  ));
+  const activeUsage = useAppStore((state) => (
+    resolvedActiveSessionId
+      ? (state.tokenUsage.bySessionId[resolvedActiveSessionId] ?? state.sessions.items.find((item) => item.threadId === resolvedActiveSessionId)?.tokenUsage ?? null)
+      : null
+  ));
   const activePrefs = useMemo(() => {
     const normalizePrefs = (prefs: ComposerPrefs): ComposerPrefs => ({
       ...prefs,
@@ -354,8 +363,8 @@ export function App() {
     if (!resolvedActiveSessionId) {
       return normalizePrefs(composerPrefsDraft);
     }
-    return normalizePrefs(composerPrefsBySessionId[resolvedActiveSessionId] || composerPrefsDraft);
-  }, [resolvedActiveSessionId, composerPrefsBySessionId, composerPrefsDraft, codexOptions]);
+    return normalizePrefs(activeSessionPrefs || composerPrefsDraft);
+  }, [resolvedActiveSessionId, activeSessionPrefs, composerPrefsDraft, codexOptions]);
 
   const socketClient = useMemo(() => createSocketClient({
     onMessage: (message) => {
@@ -608,8 +617,8 @@ export function App() {
     if (!activeSessionId) {
       return;
     }
-    if (!composerPrefsBySessionId[activeSessionId]) {
-      const session = sessions.find((item) => item.threadId === activeSessionId);
+    if (!activeSessionPrefs) {
+      const session = activeSession;
       setComposerPrefs(activeSessionId, {
         model: normalizeAvailableModel(session?.model || '', codexOptions),
         reasoningEffort: normalizeReasoningEffort(session?.reasoningEffort || ''),
@@ -617,7 +626,7 @@ export function App() {
         sandboxMode: normalizeSandboxMode(session?.sandboxMode || ''),
       });
     }
-  }, [activeSessionId, codexOptions, composerPrefsBySessionId, sessions, setComposerPrefs]);
+  }, [activeSession, activeSessionId, activeSessionPrefs, codexOptions, setComposerPrefs]);
 
   function submitComposer() {
     const text = draft.trim();
@@ -779,7 +788,7 @@ export function App() {
   }
 
   function updateComposerPrefs(next: Partial<ComposerPrefs>) {
-    const current = activeSessionId ? (composerPrefsBySessionId[activeSessionId] || composerPrefsDraft) : composerPrefsDraft;
+    const current = activeSessionId ? (activeSessionPrefs || composerPrefsDraft) : composerPrefsDraft;
     const merged: ComposerPrefs = {
       model: Object.prototype.hasOwnProperty.call(next, 'model') ? normalizeModel(next.model || '') : current.model,
       reasoningEffort: Object.prototype.hasOwnProperty.call(next, 'reasoningEffort') ? normalizeReasoningEffort(next.reasoningEffort || '') : current.reasoningEffort,

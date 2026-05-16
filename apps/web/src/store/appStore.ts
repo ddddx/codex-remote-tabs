@@ -669,9 +669,165 @@ function normalizeTimelineEntry(entry: TimelineEntry): TimelineEntry {
   };
 }
 
+function isEqualUnknown(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (typeof left !== typeof right) {
+    return false;
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    for (let index = 0; index < left.length; index += 1) {
+      if (!isEqualUnknown(left[index], right[index])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  const leftKeys = Object.keys(left as Record<string, unknown>);
+  const rightKeys = Object.keys(right as Record<string, unknown>);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(right, key)) {
+      return false;
+    }
+    if (!isEqualUnknown(
+      (left as Record<string, unknown>)[key],
+      (right as Record<string, unknown>)[key],
+    )) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areTimelineEntriesEqual(left: TimelineEntry, right: TimelineEntry): boolean {
+  return left.id === right.id
+    && left.type === right.type
+    && left.role === right.role
+    && left.turnId === right.turnId
+    && left.itemId === right.itemId
+    && left.title === right.title
+    && left.text === right.text
+    && left.status === right.status
+    && left.patch === right.patch
+    && left.createdAt === right.createdAt
+    && left.partial === right.partial
+    && isEqualUnknown(left.meta, right.meta)
+    && isEqualUnknown(left.changes, right.changes)
+    && isEqualUnknown(left.details, right.details);
+}
+
+function areTimelineEntryListsEqual(left: TimelineEntry[], right: TimelineEntry[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (!areTimelineEntriesEqual(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areComposerPrefsEqual(
+  left: { model: string; reasoningEffort: string; approvalPolicy: string; sandboxMode: string } | undefined,
+  right: { model: string; reasoningEffort: string; approvalPolicy: string; sandboxMode: string } | undefined,
+): boolean {
+  return (left?.model || '') === (right?.model || '')
+    && (left?.reasoningEffort || '') === (right?.reasoningEffort || '')
+    && (left?.approvalPolicy || '') === (right?.approvalPolicy || '')
+    && (left?.sandboxMode || '') === (right?.sandboxMode || '');
+}
+
+function areSessionsEqual(left: SessionItem, right: SessionItem): boolean {
+  return left.threadId === right.threadId
+    && left.name === right.name
+    && left.cwd === right.cwd
+    && left.status === right.status
+    && left.windowStatus === right.windowStatus
+    && left.approvalPolicy === right.approvalPolicy
+    && left.sandboxMode === right.sandboxMode
+    && left.model === right.model
+    && left.reasoningEffort === right.reasoningEffort
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt
+    && isEqualUnknown(left.tokenUsage, right.tokenUsage);
+}
+
+function areSessionListsEqual(left: SessionItem[], right: SessionItem[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (!areSessionsEqual(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areServerRequestsEqual(left: ServerRequestItem, right: ServerRequestItem): boolean {
+  return left.requestId === right.requestId
+    && left.threadId === right.threadId
+    && left.turnId === right.turnId
+    && left.itemId === right.itemId
+    && left.kind === right.kind
+    && left.status === right.status
+    && left.reason === right.reason
+    && left.message === right.message
+    && left.command === right.command
+    && left.cwd === right.cwd
+    && left.tool === right.tool
+    && left.namespace === right.namespace
+    && left.serverName === right.serverName
+    && left.patch === right.patch
+    && left.createdAt === right.createdAt
+    && left.mode === right.mode
+    && left.url === right.url
+    && left.elicitationId === right.elicitationId
+    && isEqualUnknown(left.changes, right.changes)
+    && isEqualUnknown(left.questions, right.questions)
+    && isEqualUnknown(left.permissions, right.permissions)
+    && isEqualUnknown(left.availableDecisions, right.availableDecisions)
+    && isEqualUnknown(left.responseSchema, right.responseSchema)
+    && isEqualUnknown(left.arguments, right.arguments)
+    && isEqualUnknown(left.meta, right.meta);
+}
+
+function areServerRequestListsEqual(left: ServerRequestItem[], right: ServerRequestItem[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (!areServerRequestsEqual(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function mergeTimelineEntry(current: TimelineEntry, incoming: TimelineEntry): TimelineEntry {
   const normalized = normalizeTimelineEntry(incoming);
-  return {
+  const merged = {
     ...current,
     ...normalized,
     meta: normalized.meta ?? current.meta,
@@ -681,6 +837,7 @@ function mergeTimelineEntry(current: TimelineEntry, incoming: TimelineEntry): Ti
     text: normalized.text ?? current.text,
     createdAt: Math.min(current.createdAt || normalized.createdAt || 0, normalized.createdAt || current.createdAt || 0),
   };
+  return areTimelineEntriesEqual(current, merged) ? current : merged;
 }
 
 function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): number {
@@ -695,7 +852,7 @@ function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): numb
 function mergeTimelineEntryLists(existing: TimelineEntry[], incoming: TimelineEntry[]): TimelineEntry[] {
   const merged = new Map<string, TimelineEntry>();
   for (const entry of existing) {
-    merged.set(entry.id, normalizeTimelineEntry(entry));
+    merged.set(entry.id, entry);
   }
   for (const entry of incoming) {
     const normalized = normalizeTimelineEntry(entry);
@@ -706,7 +863,8 @@ function mergeTimelineEntryLists(existing: TimelineEntry[], incoming: TimelineEn
     }
     merged.set(normalized.id, mergeTimelineEntry(current, normalized));
   }
-  return Array.from(merged.values()).sort(compareTimelineEntries);
+  const nextEntries = Array.from(merged.values()).sort(compareTimelineEntries);
+  return areTimelineEntryListsEqual(existing, nextEntries) ? existing : nextEntries;
 }
 
 function dedupeOptimisticUserEntries(entries: TimelineEntry[]): TimelineEntry[] {
@@ -842,21 +1000,24 @@ function promotePendingUserEntriesForTurn(
 ): TimelineEntry[] {
   const resolvedTurnId = turnId || `${threadId}:pending-turn`;
   const resolvedStartedAt = normalizeTimestamp(startedAt);
-  let changed = false;
+  let nextEntries: TimelineEntry[] | null = null;
 
-  const nextEntries = entries.map((entry) => {
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
     if (entry.role !== 'user' || entry.turnId !== `${threadId}:pending-turn`) {
-      return entry;
+      continue;
     }
-    changed = true;
-    return {
+    if (!nextEntries) {
+      nextEntries = [...entries];
+    }
+    nextEntries[index] = {
       ...entry,
       turnId: resolvedTurnId,
       createdAt: entry.createdAt || resolvedStartedAt,
     };
-  });
+  }
 
-  return changed
+  return nextEntries
     ? nextEntries.sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0))
     : entries;
 }
@@ -1523,21 +1684,34 @@ export const useAppStore = create<AppStore>((set) => ({
       error: message,
     },
   })),
-  setSessions: (items) => set((state) => ({
-    sessions: {
-      items,
-      activeSessionId: state.sessions.activeSessionId && items.some((item) => item.threadId === state.sessions.activeSessionId)
-        ? state.sessions.activeSessionId
-        : null,
-    },
-    composer: {
-      ...state.composer,
-      prefsBySessionId: mergeComposerPrefsFromSessions(state.composer.prefsBySessionId, items),
-    },
-    tokenUsage: {
-      bySessionId: mergeTokenUsageFromSessions(state.tokenUsage.bySessionId, items),
-    },
-  })),
+  setSessions: (items) => set((state) => {
+    const nextActiveSessionId = state.sessions.activeSessionId && items.some((item) => item.threadId === state.sessions.activeSessionId)
+      ? state.sessions.activeSessionId
+      : null;
+    const nextPrefs = mergeComposerPrefsFromSessions(state.composer.prefsBySessionId, items);
+    const nextUsage = mergeTokenUsageFromSessions(state.tokenUsage.bySessionId, items);
+    if (
+      areSessionListsEqual(state.sessions.items, items)
+      && state.sessions.activeSessionId === nextActiveSessionId
+      && isEqualUnknown(state.composer.prefsBySessionId, nextPrefs)
+      && isEqualUnknown(state.tokenUsage.bySessionId, nextUsage)
+    ) {
+      return state;
+    }
+    return {
+      sessions: {
+        items,
+        activeSessionId: nextActiveSessionId,
+      },
+      composer: {
+        ...state.composer,
+        prefsBySessionId: nextPrefs,
+      },
+      tokenUsage: {
+        bySessionId: nextUsage,
+      },
+    };
+  }),
   upsertSession: (item) => set((state) => {
     const nextItems = [...state.sessions.items];
     const index = nextItems.findIndex((entry) => entry.threadId === item.threadId);
@@ -1549,6 +1723,25 @@ export const useAppStore = create<AppStore>((set) => ({
     } else {
       nextItems.unshift(item);
     }
+    const nextPrefs = {
+      ...state.composer.prefsBySessionId,
+      [item.threadId]: buildComposerPrefsFromSession({
+        ...nextItems[index >= 0 ? index : 0],
+      }),
+    };
+    const nextUsage = item.tokenUsage !== undefined && item.tokenUsage !== null
+      ? {
+        ...state.tokenUsage.bySessionId,
+        [item.threadId]: normalizeTokenUsage(item.tokenUsage),
+      }
+      : state.tokenUsage.bySessionId;
+    if (
+      areSessionListsEqual(state.sessions.items, nextItems)
+      && isEqualUnknown(state.composer.prefsBySessionId, nextPrefs)
+      && isEqualUnknown(state.tokenUsage.bySessionId, nextUsage)
+    ) {
+      return state;
+    }
     return {
       sessions: {
         items: nextItems,
@@ -1556,20 +1749,10 @@ export const useAppStore = create<AppStore>((set) => ({
       },
       composer: {
         ...state.composer,
-        prefsBySessionId: {
-          ...state.composer.prefsBySessionId,
-          [item.threadId]: buildComposerPrefsFromSession({
-            ...nextItems[index >= 0 ? index : 0],
-          }),
-        },
+        prefsBySessionId: nextPrefs,
       },
       tokenUsage: {
-        bySessionId: item.tokenUsage !== undefined && item.tokenUsage !== null
-          ? {
-            ...state.tokenUsage.bySessionId,
-            [item.threadId]: normalizeTokenUsage(item.tokenUsage),
-          }
-          : state.tokenUsage.bySessionId,
+        bySessionId: nextUsage,
       },
     };
   }),
@@ -1606,29 +1789,45 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     };
   }),
-  setActiveSession: (threadId) => set((state) => ({
-    sessions: {
-      ...state.sessions,
-      activeSessionId: threadId,
-    },
-  })),
-  setComposerPrefs: (threadId, prefs) => set((state) => ({
-    composer: {
-      ...state.composer,
-      prefsBySessionId: {
-        ...state.composer.prefsBySessionId,
-        [threadId]: prefs,
+  setActiveSession: (threadId) => set((state) => {
+    if (state.sessions.activeSessionId === threadId) {
+      return state;
+    }
+    return {
+      sessions: {
+        ...state.sessions,
+        activeSessionId: threadId,
       },
-    },
-  })),
-  replaceServerRequests: (items) => set(() => ({
-    approvals: {
-      items: items
-        .map(normalizeServerRequest)
-        .filter((item): item is ServerRequestItem => item !== null)
-        .sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0)),
-    },
-  })),
+    };
+  }),
+  setComposerPrefs: (threadId, prefs) => set((state) => {
+    if (areComposerPrefsEqual(state.composer.prefsBySessionId[threadId], prefs)) {
+      return state;
+    }
+    return {
+      composer: {
+        ...state.composer,
+        prefsBySessionId: {
+          ...state.composer.prefsBySessionId,
+          [threadId]: prefs,
+        },
+      },
+    };
+  }),
+  replaceServerRequests: (items) => set((state) => {
+    const nextItems = items
+      .map(normalizeServerRequest)
+      .filter((item): item is ServerRequestItem => item !== null)
+      .sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+    if (areServerRequestListsEqual(state.approvals.items, nextItems)) {
+      return state;
+    }
+    return {
+      approvals: {
+        items: nextItems,
+      },
+    };
+  }),
   upsertServerRequest: (request) => set((state) => {
     const normalized = normalizeServerRequest(request);
     if (!normalized) {
@@ -1646,6 +1845,9 @@ export const useAppStore = create<AppStore>((set) => ({
       nextItems.push(normalized);
     }
     nextItems.sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+    if (areServerRequestListsEqual(state.approvals.items, nextItems)) {
+      return state;
+    }
 
     return {
       approvals: {
@@ -1653,15 +1855,26 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     };
   }),
-  removeServerRequest: (requestId) => set((state) => ({
-    approvals: {
-      items: state.approvals.items.filter((item) => item.requestId !== requestId),
-    },
-  })),
-  resetServerRequests: () => set({
-    approvals: {
-      items: [],
-    },
+  removeServerRequest: (requestId) => set((state) => {
+    const nextItems = state.approvals.items.filter((item) => item.requestId !== requestId);
+    if (nextItems.length === state.approvals.items.length) {
+      return state;
+    }
+    return {
+      approvals: {
+        items: nextItems,
+      },
+    };
+  }),
+  resetServerRequests: () => set((state) => {
+    if (!state.approvals.items.length) {
+      return state;
+    }
+    return {
+      approvals: {
+        items: [],
+      },
+    };
   }),
   pushNotification: (notice) => set((state) => ({
     notifications: {
@@ -1735,17 +1948,27 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     };
   }),
-  setTokenUsage: (threadId, usage) => set((state) => ({
-    tokenUsage: {
-      bySessionId: {
-        ...state.tokenUsage.bySessionId,
-        [threadId]: normalizeTokenUsage(usage),
+  setTokenUsage: (threadId, usage) => set((state) => {
+    const nextUsage = normalizeTokenUsage(usage);
+    if (isEqualUnknown(state.tokenUsage.bySessionId[threadId], nextUsage)) {
+      return state;
+    }
+    return {
+      tokenUsage: {
+        bySessionId: {
+          ...state.tokenUsage.bySessionId,
+          [threadId]: nextUsage,
+        },
       },
-    },
-  })),
+    };
+  }),
   setSessionModel: (threadId, model) => set((state) => {
     const nextModel = typeof model === 'string' ? model.trim() : '';
     if (!threadId || !nextModel) {
+      return state;
+    }
+    const currentSession = state.sessions.items.find((item) => item.threadId === threadId);
+    if (currentSession?.model === nextModel) {
       return state;
     }
     return {
@@ -1769,22 +1992,33 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     };
   }),
-  appendTimelineEntry: (threadId, entry) => set((state) => ({
-    timeline: {
-      entriesBySessionId: {
-        ...state.timeline.entriesBySessionId,
-        [threadId]: [...(state.timeline.entriesBySessionId[threadId] || []), normalizeTimelineEntry(entry)],
+  appendTimelineEntry: (threadId, entry) => set((state) => {
+    const currentEntries = state.timeline.entriesBySessionId[threadId] || [];
+    const nextEntries = [...currentEntries, normalizeTimelineEntry(entry)];
+    return {
+      timeline: {
+        entriesBySessionId: {
+          ...state.timeline.entriesBySessionId,
+          [threadId]: nextEntries,
+        },
       },
-    },
-  })),
-  removeTimelineEntry: (threadId, entryId) => set((state) => ({
-    timeline: {
-      entriesBySessionId: {
-        ...state.timeline.entriesBySessionId,
-        [threadId]: (state.timeline.entriesBySessionId[threadId] || []).filter((entry) => entry.id !== entryId),
+    };
+  }),
+  removeTimelineEntry: (threadId, entryId) => set((state) => {
+    const currentEntries = state.timeline.entriesBySessionId[threadId] || [];
+    const nextEntries = currentEntries.filter((entry) => entry.id !== entryId);
+    if (nextEntries.length === currentEntries.length) {
+      return state;
+    }
+    return {
+      timeline: {
+        entriesBySessionId: {
+          ...state.timeline.entriesBySessionId,
+          [threadId]: nextEntries,
+        },
       },
-    },
-  })),
+    };
+  }),
   appendAssistantDelta: (threadId, itemId, delta, options) => set((state) => {
     let entries = [
       ...promotePendingUserEntriesForTurn(
@@ -1842,6 +2076,10 @@ export const useAppStore = create<AppStore>((set) => ({
       entries = state.timeline.entriesBySessionId[threadId] || [];
     }
 
+    const currentStreams = state.assistantStreams.bySessionId[threadId] || {};
+    if (!entriesChanged && currentStreams[itemId] === nextStreamText) {
+      return state;
+    }
     return {
       ...(entriesChanged
         ? {
@@ -1857,7 +2095,7 @@ export const useAppStore = create<AppStore>((set) => ({
         bySessionId: {
           ...state.assistantStreams.bySessionId,
           [threadId]: {
-            ...(state.assistantStreams.bySessionId[threadId] || {}),
+            ...currentStreams,
             [itemId]: nextStreamText,
           },
         },
@@ -1865,9 +2103,10 @@ export const useAppStore = create<AppStore>((set) => ({
     };
   }),
   upsertTimelineEntry: (threadId, entry) => set((state) => {
+    const currentEntries = state.timeline.entriesBySessionId[threadId] || [];
     const entries = [
       ...promotePendingUserEntriesForTurn(
-        [...(state.timeline.entriesBySessionId[threadId] || [])],
+        [...currentEntries],
         threadId,
         entry.turnId,
         entry.createdAt,
@@ -1878,6 +2117,9 @@ export const useAppStore = create<AppStore>((set) => ({
       entries[index] = mergeTimelineEntry(entries[index], entry);
     } else {
       entries.push(normalizeTimelineEntry(entry));
+    }
+    if (areTimelineEntryListsEqual(currentEntries, entries)) {
+      return state;
     }
     return {
       timeline: {
@@ -1951,7 +2193,7 @@ export const useAppStore = create<AppStore>((set) => ({
   promotePendingUserEntries: (threadId, turnId, startedAt) => set((state) => {
     const currentEntries = state.timeline.entriesBySessionId[threadId] || [];
     const nextEntries = promotePendingUserEntriesForTurn([...currentEntries], threadId, turnId, startedAt);
-    if (nextEntries === currentEntries) {
+    if (nextEntries === currentEntries || areTimelineEntryListsEqual(currentEntries, nextEntries)) {
       return state;
     }
 
@@ -1965,7 +2207,8 @@ export const useAppStore = create<AppStore>((set) => ({
     };
   }),
   setThreadSync: (threadId, message) => set((state) => {
-    const mergedEntries = mergeThreadSyncEntries(state.timeline.entriesBySessionId[threadId] || [], message);
+    const currentEntries = state.timeline.entriesBySessionId[threadId] || [];
+    const mergedEntries = mergeThreadSyncEntries(currentEntries, message);
     const currentTurnState = state.turns.activeBySessionId[threadId];
     let nextTurns = state.turns.activeBySessionId;
 
@@ -1997,6 +2240,14 @@ export const useAppStore = create<AppStore>((set) => ({
       }
     }
 
+    const nextUsage = extractTokenUsageFromThreadSync(message) ?? state.tokenUsage.bySessionId[threadId] ?? null;
+    const entriesUnchanged = mergedEntries === currentEntries || areTimelineEntryListsEqual(currentEntries, mergedEntries);
+    const turnsUnchanged = nextTurns === state.turns.activeBySessionId;
+    const usageUnchanged = isEqualUnknown(state.tokenUsage.bySessionId[threadId], nextUsage);
+    if (entriesUnchanged && turnsUnchanged && usageUnchanged) {
+      return state;
+    }
+
     return {
       timeline: {
         entriesBySessionId: {
@@ -2007,7 +2258,7 @@ export const useAppStore = create<AppStore>((set) => ({
       tokenUsage: {
         bySessionId: {
           ...state.tokenUsage.bySessionId,
-          [threadId]: extractTokenUsageFromThreadSync(message) ?? state.tokenUsage.bySessionId[threadId] ?? null,
+          [threadId]: nextUsage,
         },
       },
       turns: {
