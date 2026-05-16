@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
+import remarkGfm from 'remark-gfm';
 import {
   buildApprovalDecisionResponse,
   buildApprovalSummary,
@@ -43,6 +46,31 @@ type ExpandableTimelineRowProps = {
   details?: React.ReactNode;
   className?: string;
 };
+
+function MarkdownMessage({
+  text,
+  className,
+  partial,
+}: {
+  text: string;
+  className: string;
+  partial?: boolean;
+}) {
+  return (
+    <div className={className}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={{
+          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+      {partial ? <span className="cursor">▌</span> : null}
+    </div>
+  );
+}
 
 function ExpandableTimelineRow(props: ExpandableTimelineRowProps) {
   const { title, summary, details, className = '' } = props;
@@ -641,10 +669,11 @@ function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
               <div className="item-phase">思考</div>
             ) : null}
             <div className="message-body">
-              <div className={entry.role === 'user' ? 'user-message-text' : 'timeline-entry-text'}>
-                {summarizeTimelineEntry(entry)}
-                {entry.partial ? <span className="cursor">▌</span> : null}
-              </div>
+              <MarkdownMessage
+                className={entry.role === 'user' ? 'user-message-text' : 'timeline-entry-text'}
+                text={summarizeTimelineEntry(entry)}
+                partial={entry.partial}
+              />
               {entry.meta?.length ? (
                 <div className="timeline-entry-meta">
                   {entry.meta.map((line, index) => <span key={`${entry.id}-meta-${index}`}>{line}</span>)}
