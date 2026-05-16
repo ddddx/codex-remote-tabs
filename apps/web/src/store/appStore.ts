@@ -179,6 +179,7 @@ type AppStore = {
   setTurnCompleted: (threadId: string, turnId?: string) => void;
   settleAssistantActivity: (threadId: string, turnId?: string) => void;
   setTokenUsage: (threadId: string, usage: unknown) => void;
+  setSessionModel: (threadId: string, model: string) => void;
   setThreadSync: (threadId: string, message: Extract<ServerMessage, { type: 'thread_sync' }>) => void;
   appendTimelineEntry: (threadId: string, entry: TimelineEntry) => void;
   removeTimelineEntry: (threadId: string, entryId: string) => void;
@@ -1698,6 +1699,32 @@ export const useAppStore = create<AppStore>((set) => ({
       },
     },
   })),
+  setSessionModel: (threadId, model) => set((state) => {
+    const nextModel = typeof model === 'string' ? model.trim() : '';
+    if (!threadId || !nextModel) {
+      return state;
+    }
+    return {
+      sessions: {
+        ...state.sessions,
+        items: state.sessions.items.map((item) => (
+          item.threadId === threadId ? { ...item, model: nextModel } : item
+        )),
+      },
+      composer: {
+        ...state.composer,
+        prefsBySessionId: {
+          ...state.composer.prefsBySessionId,
+          [threadId]: {
+            model: nextModel,
+            reasoningEffort: state.composer.prefsBySessionId[threadId]?.reasoningEffort || '',
+            approvalPolicy: state.composer.prefsBySessionId[threadId]?.approvalPolicy || '',
+            sandboxMode: state.composer.prefsBySessionId[threadId]?.sandboxMode || '',
+          },
+        },
+      },
+    };
+  }),
   appendTimelineEntry: (threadId, entry) => set((state) => ({
     timeline: {
       entriesBySessionId: {
@@ -1971,6 +1998,11 @@ export function mapServerMessageToStore(message: ServerMessage) {
 
   if (message.type === 'token_usage') {
     store.setTokenUsage(message.threadId, message.usage);
+    return;
+  }
+
+  if (message.type === 'model_rerouted') {
+    store.setSessionModel(message.threadId, message.toModel);
     return;
   }
 

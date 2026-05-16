@@ -1524,11 +1524,14 @@ textarea {
 }
 
 .composer-mobile-toggle {
+  position: relative;
   display: none;
   width: 100%;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-height: 44px;
+  padding-right: 52px;
   text-align: left;
 }
 
@@ -1540,7 +1543,7 @@ textarea {
 .composer-mobile-toggle-summary {
   min-width: 0;
   flex: 1;
-  text-align: right;
+  text-align: left;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
@@ -1550,16 +1553,25 @@ textarea {
 }
 
 .composer-mobile-toggle-usage {
-  flex: 0 0 auto;
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: color-mix(in srgb, var(--card-strong) 92%, transparent);
   color: var(--muted);
+  pointer-events: none;
+}
+
+.composer-mobile-toggle-usage .context-usage-ring-visual {
+  width: 24px;
+  height: 24px;
 }
 
 .composer-select-group {

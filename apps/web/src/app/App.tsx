@@ -59,6 +59,14 @@ function normalizeModel(value: string): string {
   return value.trim();
 }
 
+function normalizeAvailableModel(value: string, options: CodexOptionsResponse | null): string {
+  const normalized = normalizeModel(value);
+  if (!normalized || !options?.models?.length) {
+    return normalized;
+  }
+  return options.models.some((item) => item.model === normalized || item.id === normalized) ? normalized : '';
+}
+
 function normalizeReasoningEffort(value: string): string {
   const normalized = value.trim().toLowerCase();
   return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(normalized) ? normalized : '';
@@ -338,11 +346,15 @@ export function App() {
     ? (tokenUsageBySessionId[resolvedActiveSessionId] ?? activeSession?.tokenUsage ?? null)
     : null;
   const activePrefs = useMemo(() => {
+    const normalizePrefs = (prefs: ComposerPrefs): ComposerPrefs => ({
+      ...prefs,
+      model: normalizeAvailableModel(prefs.model, codexOptions),
+    });
     if (!resolvedActiveSessionId) {
-      return composerPrefsDraft;
+      return normalizePrefs(composerPrefsDraft);
     }
-    return composerPrefsBySessionId[resolvedActiveSessionId] || composerPrefsDraft;
-  }, [resolvedActiveSessionId, composerPrefsBySessionId, composerPrefsDraft]);
+    return normalizePrefs(composerPrefsBySessionId[resolvedActiveSessionId] || composerPrefsDraft);
+  }, [resolvedActiveSessionId, composerPrefsBySessionId, composerPrefsDraft, codexOptions]);
 
   const socketClient = useMemo(() => createSocketClient({
     onMessage: (message) => {
@@ -444,10 +456,10 @@ export function App() {
         }
         setCodexOptionsReady(result);
         setComposerPrefsDraft((current) => ({
-          model: current.model || normalizeModel(result.defaults.model || ''),
-          reasoningEffort: current.reasoningEffort || normalizeReasoningEffort(result.defaults.reasoningEffort || ''),
-          approvalPolicy: current.approvalPolicy || normalizeApprovalPolicy(result.defaults.approvalPolicy || ''),
-          sandboxMode: current.sandboxMode || normalizeSandboxMode(result.defaults.sandboxMode || ''),
+          model: normalizeAvailableModel(current.model, result),
+          reasoningEffort: current.reasoningEffort,
+          approvalPolicy: current.approvalPolicy,
+          sandboxMode: current.sandboxMode,
         }));
       })
       .catch((error: Error) => {
@@ -597,13 +609,13 @@ export function App() {
     if (!composerPrefsBySessionId[activeSessionId]) {
       const session = sessions.find((item) => item.threadId === activeSessionId);
       setComposerPrefs(activeSessionId, {
-        model: normalizeModel(session?.model || '') || composerPrefsDraft.model,
-        reasoningEffort: normalizeReasoningEffort(session?.reasoningEffort || '') || composerPrefsDraft.reasoningEffort,
-        approvalPolicy: normalizeApprovalPolicy(session?.approvalPolicy || '') || composerPrefsDraft.approvalPolicy,
-        sandboxMode: normalizeSandboxMode(session?.sandboxMode || '') || composerPrefsDraft.sandboxMode,
+        model: normalizeAvailableModel(session?.model || '', codexOptions),
+        reasoningEffort: normalizeReasoningEffort(session?.reasoningEffort || ''),
+        approvalPolicy: normalizeApprovalPolicy(session?.approvalPolicy || ''),
+        sandboxMode: normalizeSandboxMode(session?.sandboxMode || ''),
       });
     }
-  }, [activeSessionId, composerPrefsBySessionId, composerPrefsDraft, sessions, setComposerPrefs]);
+  }, [activeSessionId, codexOptions, composerPrefsBySessionId, sessions, setComposerPrefs]);
 
   function submitComposer() {
     const text = draft.trim();

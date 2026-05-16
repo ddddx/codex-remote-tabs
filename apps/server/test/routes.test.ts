@@ -31,6 +31,7 @@ function createWorkspaceStub() {
 
 function createCodexStub() {
   return {
+    setWsUrl() {},
     async start() {},
     async stop() {},
     async listThreads() {

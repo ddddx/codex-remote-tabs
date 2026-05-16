@@ -1,5 +1,5 @@
 import type { CodexOptionModel } from '@codex-remote/protocol';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { TokenUsageDisplay } from '../../app/view-helpers.js';
 import { useAppStore } from '../../store/appStore.js';
 import { uploadImage } from '../../transport/http/uploads.js';
@@ -139,78 +139,21 @@ function syncTextareaHeight(textarea: HTMLTextAreaElement, value: string) {
   textarea.style.overflowY = nextHeight >= MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
 }
 
-function ContextUsageControl({
-  tokenUsage,
-  className = '',
-}: {
-  tokenUsage: TokenUsageDisplay;
-  className?: string;
-}) {
-  const usagePopoverRef = useRef<HTMLDivElement | null>(null);
-  const [usagePopoverOpen, setUsagePopoverOpen] = useState(false);
-
-  useEffect(() => {
-    if (!usagePopoverOpen) {
-      return;
-    }
-
-    function handlePointerDown(event: MouseEvent | TouchEvent) {
-      if (!usagePopoverRef.current?.contains(event.target as Node)) {
-        setUsagePopoverOpen(false);
-      }
-    }
-
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('touchstart', handlePointerDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('touchstart', handlePointerDown);
-    };
-  }, [usagePopoverOpen]);
-
+function UsageRingVisual({ percentRemaining }: { percentRemaining: number | null }) {
   return (
-    <div
-      ref={usagePopoverRef}
-      className={`context-usage-anchor ${className}${usagePopoverOpen ? ' is-open' : ''}`}
-      onMouseEnter={() => setUsagePopoverOpen(true)}
-      onMouseLeave={() => setUsagePopoverOpen(false)}
-    >
-      <button
-        className={`context-usage-ring${tokenUsage.percentRemaining === null ? ' is-text-only' : ''}${tokenUsage.detail === '未统计' ? ' is-empty' : ''}`}
-        type="button"
-        aria-label={`${tokenUsage.label}：${tokenUsage.detail}`}
-        aria-expanded={usagePopoverOpen ? 'true' : 'false'}
-        onClick={() => setUsagePopoverOpen((value) => !value)}
-      >
-        {tokenUsage.percentRemaining !== null ? (
-          <svg className="context-usage-ring-visual" viewBox="0 0 28 28" aria-hidden="true">
-            <circle className="context-usage-ring-track" cx="14" cy="14" r="10" />
-            <circle
-              className="context-usage-ring-progress"
-              cx="14"
-              cy="14"
-              r="10"
-              pathLength="100"
-              style={{ ['--usage-ring-value' as string]: `${tokenUsage.percentRemaining}` }}
-            />
-          </svg>
-        ) : (
-          <div className="context-usage-ring-visual context-usage-ring-visual-fallback" aria-hidden="true" />
-        )}
-      </button>
-      <div className={`context-usage-popover${usagePopoverOpen ? ' is-open' : ''}`} role="status">
-        <strong>{tokenUsage.label}</strong>
-        {tokenUsage.percentRemaining !== null ? (
-          <>
-            <span>{`剩余 ${tokenUsage.percentRemaining}%`}</span>
-            <span>{`剩余 ${tokenUsage.remainingTokens} / ${tokenUsage.contextWindow} tokens`}</span>
-            <span>{`已用 ${tokenUsage.usedTokens} / ${tokenUsage.contextWindow} tokens`}</span>
-          </>
-        ) : (
-          <span>{tokenUsage.detail}</span>
-        )}
-      </div>
-    </div>
+    <svg className="context-usage-ring-visual" viewBox="0 0 28 28" aria-hidden="true">
+      <circle className="context-usage-ring-track" cx="14" cy="14" r="10" />
+      {percentRemaining !== null ? (
+        <circle
+          className="context-usage-ring-progress"
+          cx="14"
+          cy="14"
+          r="10"
+          pathLength="100"
+          style={{ ['--usage-ring-value' as string]: `${percentRemaining}` }}
+        />
+      ) : null}
+    </svg>
   );
 }
 
@@ -308,21 +251,7 @@ export function ComposerDock(props: ComposerDockProps) {
           aria-label={`${tokenUsage.label}：${tokenUsage.detail}`}
           title={`${tokenUsage.label}：${tokenUsage.detail}`}
         >
-          {tokenUsage.percentRemaining !== null ? (
-            <svg className="context-usage-ring-visual" viewBox="0 0 28 28" aria-hidden="true">
-              <circle className="context-usage-ring-track" cx="14" cy="14" r="10" />
-              <circle
-                className="context-usage-ring-progress"
-                cx="14"
-                cy="14"
-                r="10"
-                pathLength="100"
-                style={{ ['--usage-ring-value' as string]: `${tokenUsage.percentRemaining}` }}
-              />
-            </svg>
-          ) : (
-            <span className="context-usage-ring-visual context-usage-ring-visual-fallback" aria-hidden="true" />
-          )}
+          <UsageRingVisual percentRemaining={tokenUsage.percentRemaining} />
         </span>
       </button>
 
@@ -331,7 +260,7 @@ export function ComposerDock(props: ComposerDockProps) {
           <span>模型</span>
           <select
             id="modelSelect"
-            value={prefs.model}
+            value={prefs.model || effectiveModel}
             disabled={optionsStatus === 'loading'}
             onChange={(event) => onPrefsChange({ model: event.target.value })}
           >
@@ -346,7 +275,7 @@ export function ComposerDock(props: ComposerDockProps) {
           <span>思考等级</span>
           <select
             id="reasoningEffortSelect"
-            value={prefs.reasoningEffort}
+            value={prefs.reasoningEffort || effectiveReasoningEffort}
             onChange={(event) => onPrefsChange({ reasoningEffort: event.target.value })}
           >
             {REASONING_OPTIONS.map((value) => (
@@ -361,7 +290,7 @@ export function ComposerDock(props: ComposerDockProps) {
           <span>权限预设</span>
           <select
             id="permissionPresetSelect"
-            value={permissionPresetValue}
+            value={permissionPresetValue || resolvedPermissionPresetValue}
             onChange={(event) => onPresetChange(event.target.value)}
           >
             {PRESET_OPTIONS.map((value) => (
@@ -372,7 +301,6 @@ export function ComposerDock(props: ComposerDockProps) {
           </select>
         </label>
 
-        <ContextUsageControl tokenUsage={tokenUsage} className="composer-controls-usage" />
       </div>
 
       <div className="composer-input-row">

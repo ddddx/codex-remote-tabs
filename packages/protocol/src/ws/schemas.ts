@@ -207,6 +207,14 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
     usage: z.unknown(),
   }),
   z.object({
+    type: z.literal('model_rerouted'),
+    threadId: z.string(),
+    turnId: z.string().optional(),
+    fromModel: z.string(),
+    toModel: z.string(),
+    reason: z.unknown().optional(),
+  }),
+  z.object({
     type: z.literal('warning'),
     message: z.string(),
     threadId: z.string().optional(),

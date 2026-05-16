@@ -606,3 +606,40 @@ test('turn diff updates are cached and broadcast for timeline diff rendering', (
   assert.equal(messages[0]?.type, 'turn_diff_updated');
   assert.equal(messages[0]?.turnId, 'turn-diff-1');
 });
+
+test('model reroute notifications update runtime tab model and broadcast effective model', () => {
+  const { app } = createAppStub();
+  const socket = createSocket();
+  app.runtimeState.clients.add(socket as any);
+  app.runtimeState.tabsById.set('00000000-0000-0000-0000-000000000123', {
+    threadId: '00000000-0000-0000-0000-000000000123',
+    name: 'Existing',
+    cwd: 'C:\\workspace',
+    status: 'running',
+    createdAt: 1,
+    updatedAt: 1,
+    windowStatus: 'attached',
+    model: 'gpt-5.4',
+  });
+
+  handleCodexNotification(app, {
+    method: 'model/rerouted',
+    params: {
+      threadId: '00000000-0000-0000-0000-000000000123',
+      turnId: 'turn-1',
+      fromModel: 'gpt-5.4',
+      toModel: 'gpt-5.5',
+      reason: { type: 'server' },
+    },
+  });
+
+  assert.equal(app.runtimeState.tabsById.get('00000000-0000-0000-0000-000000000123')?.model, 'gpt-5.5');
+  assert.deepEqual(socket.sent.at(-1), {
+    type: 'model_rerouted',
+    threadId: '00000000-0000-0000-0000-000000000123',
+    turnId: 'turn-1',
+    fromModel: 'gpt-5.4',
+    toModel: 'gpt-5.5',
+    reason: { type: 'server' },
+  });
+});

@@ -299,6 +299,28 @@ export function handleCodexNotification(
     return;
   }
 
+  if (method === 'model/rerouted' && typeof params.threadId === 'string') {
+    const current = app.runtimeState.tabsById.get(params.threadId);
+    const toModel = typeof params.toModel === 'string' ? params.toModel : '';
+    if (current && toModel) {
+      const tab = upsertRuntimeTab(app, {
+        ...current,
+        model: toModel,
+        updatedAt: nowUnix(),
+      });
+      broadcastMessage(app, { type: 'tab_updated', tab });
+    }
+    broadcastThreadTimelineMessage(app, {
+      type: 'model_rerouted',
+      threadId: params.threadId,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+      fromModel: typeof params.fromModel === 'string' ? params.fromModel : '',
+      toModel,
+      reason: params.reason,
+    });
+    return;
+  }
+
   if (method === 'item/fileChange/patchUpdated') {
     if (typeof params.threadId === 'string' && typeof params.turnId === 'string' && typeof params.patch === 'string') {
       setCachedTurnDiff(app.runtimeState, params.threadId, params.turnId, params.patch);

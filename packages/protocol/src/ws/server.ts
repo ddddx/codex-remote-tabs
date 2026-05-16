@@ -27,6 +27,7 @@ export type ServerMessage =
   | { type: 'backend_error'; message: string }
   | { type: 'error'; message: string; code?: string; op?: string; threadId?: string; clientMessageId?: string }
   | { type: 'token_usage'; threadId: string; usage: unknown }
+  | { type: 'model_rerouted'; threadId: string; turnId?: string; fromModel: string; toModel: string; reason?: unknown }
   | { type: 'warning'; message: string; threadId?: string; noticeId?: string; createdAt?: number; noticeKind?: string }
   | { type: 'error_notice'; message: string; threadId?: string; noticeId?: string; createdAt?: number; noticeKind?: string }
   | { type: 'notification'; method: string; params: unknown };
