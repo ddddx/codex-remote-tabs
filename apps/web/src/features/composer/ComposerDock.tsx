@@ -1,7 +1,7 @@
 import type { CodexOptionModel } from '@codex-remote/protocol';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { TokenUsageDisplay } from '../../app/view-helpers.js';
-import { useAppStore } from '../../store/appStore.js';
+import { useAppStore, type AttachmentItem } from '../../store/appStore.js';
 import { uploadImage } from '../../transport/http/uploads.js';
 
 type ComposerPrefs = {
@@ -38,6 +38,7 @@ const REASONING_OPTIONS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhig
 const PRESET_OPTIONS = ['', 'read-only', 'auto', 'full-access'];
 const MIN_TEXTAREA_HEIGHT = 42;
 const MAX_TEXTAREA_HEIGHT = 88;
+const EMPTY_ATTACHMENTS: AttachmentItem[] = [];
 
 function formatReasoningLabel(value: string): string {
   if (!value) {
@@ -193,7 +194,7 @@ export function ComposerDock(props: ComposerDockProps) {
   );
 
   const attachmentSessionKey = activeSessionId || '__new__';
-  const attachments = useAppStore((state) => state.composer.attachmentsBySessionId[attachmentSessionKey] || []);
+  const attachments = useAppStore((state) => state.composer.attachmentsBySessionId[attachmentSessionKey] || EMPTY_ATTACHMENTS);
   const addAttachment = useAppStore((state) => state.addAttachment);
   const removeAttachment = useAppStore((state) => state.removeAttachment);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
