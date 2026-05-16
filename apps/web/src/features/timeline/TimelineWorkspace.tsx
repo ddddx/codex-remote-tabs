@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
@@ -39,9 +39,8 @@ type VirtualWindow = {
 };
 
 type ViewportState = {
-  scrollTop: number;
+  listScrollTop: number;
   viewportHeight: number;
-  listOffsetTop: number;
 };
 
 type RenderableFileChange = {
@@ -760,9 +759,8 @@ function readViewportState(
     ? (listNode.getBoundingClientRect().top - bodyRect.top) + body.scrollTop
     : 0;
   return {
-    scrollTop: body.scrollTop,
+    listScrollTop: Math.max(0, body.scrollTop - listOffsetTop),
     viewportHeight: body.clientHeight,
-    listOffsetTop,
   };
 }
 
@@ -1284,7 +1282,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
   const [renderLimit, setRenderLimit] = useState(INITIAL_RENDERABLE_LIMIT);
-  const [viewportState, setViewportState] = useState<ViewportState>({ scrollTop: 0, viewportHeight: 0, listOffsetTop: 0 });
+  const [viewportState, setViewportState] = useState<ViewportState>({ listScrollTop: 0, viewportHeight: 0 });
   const [heightVersion, setHeightVersion] = useState(0);
   const hideJumpNotice = () => {
     setShowJumpToBottom((value) => value ? false : value);
@@ -1321,10 +1319,9 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     () => visibleRenderables.map((item) => itemHeightsRef.current[item.id] || DEFAULT_RENDERABLE_HEIGHT),
     [heightVersion, visibleRenderables],
   );
-  const listScrollTop = Math.max(0, viewportState.scrollTop - viewportState.listOffsetTop);
   const virtualWindow = useMemo(
-    () => buildVirtualWindow(itemHeights, listScrollTop, viewportState.viewportHeight),
-    [itemHeights, listScrollTop, viewportState.viewportHeight],
+    () => buildVirtualWindow(itemHeights, viewportState.listScrollTop, viewportState.viewportHeight),
+    [itemHeights, viewportState.listScrollTop, viewportState.viewportHeight],
   );
   const virtualItems = useMemo(
     () => visibleRenderables.slice(virtualWindow.startIndex, virtualWindow.endIndex),
@@ -1336,6 +1333,20 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     () => activeTurnStatus || buildLatestRenderableStatus(visibleRenderables),
     [activeTurnStatus, visibleRenderables],
   );
+
+  const updateViewportState = useCallback(() => {
+    const body = messagesRef.current;
+    if (!body) {
+      return;
+    }
+    const nextViewport = readViewportState(body, renderablesRef.current);
+    setViewportState((current) => (
+      current.listScrollTop === nextViewport.listScrollTop
+      && current.viewportHeight === nextViewport.viewportHeight
+        ? current
+        : nextViewport
+    ));
+  }, []);
 
   useEffect(() => {
     const body = messagesRef.current;
@@ -1357,7 +1368,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         }
         stickToBottomRef.current = true;
         currentBody.scrollTop = currentBody.scrollHeight;
-        setViewportState(readViewportState(currentBody, renderablesRef.current));
+        updateViewportState();
         hideJumpNotice();
       });
       return;
@@ -1370,14 +1381,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         if (delta) {
           body.scrollTop += delta;
         }
-        const nextViewport = readViewportState(body, renderablesRef.current);
-        setViewportState((current) => (
-          current.scrollTop === nextViewport.scrollTop
-          && current.viewportHeight === nextViewport.viewportHeight
-          && current.listOffsetTop === nextViewport.listOffsetTop
-            ? current
-            : nextViewport
-        ));
+        updateViewportState();
       }
       prependAnchorRef.current = null;
     }
@@ -1403,7 +1407,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     }
     previousFirstRenderedIdRef.current = firstRenderedId;
     lastSignatureRef.current = contentSignature;
-  }, [activeSessionId, contentSignature, firstVisibleRenderableId]);
+  }, [activeSessionId, contentSignature, firstVisibleRenderableId, updateViewportState]);
 
   useEffect(() => {
     const body = messagesRef.current;
@@ -1411,7 +1415,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
       return;
     }
     const observer = new ResizeObserver(() => {
-      setViewportState(readViewportState(body, renderablesRef.current));
+      updateViewportState();
       if (!stickToBottomRef.current) {
         return;
       }
@@ -1420,22 +1424,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     });
     observer.observe(body);
     return () => observer.disconnect();
-  }, []);
-
-  useLayoutEffect(() => {
-    const body = messagesRef.current;
-    if (!body) {
-      return;
-    }
-    setViewportState((current) => {
-      const nextViewport = readViewportState(body, renderablesRef.current);
-      return current.scrollTop === nextViewport.scrollTop
-        && current.viewportHeight === nextViewport.viewportHeight
-        && current.listOffsetTop === nextViewport.listOffsetTop
-        ? current
-        : nextViewport;
-    });
-  }, [activeSessionId, error, health, visibleRenderables.length, hiddenRenderableCount]);
+  }, [updateViewportState]);
 
   const handleRenderableMeasure = (id: string, height: number) => {
     const normalizedHeight = Math.max(1, Math.round(height));
@@ -1458,14 +1447,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         }
         const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
         stickToBottomRef.current = nearBottom;
-        const nextViewport = readViewportState(body, renderablesRef.current);
-        setViewportState((current) => (
-          current.scrollTop === nextViewport.scrollTop
-          && current.viewportHeight === nextViewport.viewportHeight
-          && current.listOffsetTop === nextViewport.listOffsetTop
-            ? current
-            : nextViewport
-        ));
+        updateViewportState();
         setShowJumpToBottom((value) => value === !nearBottom ? value : !nearBottom);
         if (nearBottom) {
           setHasUnreadBelow((value) => value ? false : value);
