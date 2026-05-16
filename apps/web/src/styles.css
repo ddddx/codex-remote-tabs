@@ -669,6 +669,11 @@ textarea {
   margin-bottom: 2px;
 }
 
+.timeline-load-more {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .token-usage {
   display: inline-flex;
   align-items: center;

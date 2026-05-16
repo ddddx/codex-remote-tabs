@@ -15,7 +15,6 @@ import {
   buildUserInputResponse,
 } from '../../app/view-helpers.js';
 import { useAppStore, type ServerRequestItem, type TimelineEntry } from '../../store/appStore.js';
-import { buildTimelineGroups } from './model.js';
 
 type TimelineWorkspaceProps = {
   onRespondApproval: (request: ServerRequestItem, response: unknown) => void;
@@ -39,6 +38,11 @@ type RenderableFileChange = {
   deletedLines?: number;
   diff?: string;
 };
+
+const EMPTY_TIMELINE_ENTRIES: TimelineEntry[] = [];
+const EMPTY_APPROVAL_ITEMS: ServerRequestItem[] = [];
+const INITIAL_RENDERABLE_LIMIT = 120;
+const RENDERABLE_PAGE_SIZE = 120;
 
 type ExpandableTimelineRowProps = {
   title: React.ReactNode;
@@ -585,17 +589,17 @@ function buildTurnActivityStatus(
   return null;
 }
 
-function buildLatestGroupStatus(
-  groups: Array<{ status: string; label: string }>,
-): FooterStatus | null {
-  const latest = groups[groups.length - 1];
+function buildLatestRenderableStatus(renderables: TimelineRenderable[]): FooterStatus | null {
+  const latest = renderables[renderables.length - 1];
   if (!latest) {
     return null;
   }
-  if (latest.status === 'pending') {
-    return { tone: 'warning', label: '等待处理', active: false };
+  if (latest.kind === 'approval') {
+    return latest.request.status === 'submitting'
+      ? { tone: 'command', label: '提交审批中', active: true }
+      : { tone: 'warning', label: '等待处理', active: false };
   }
-  if (latest.status === 'running') {
+  if (latest.entry.partial || latest.entry.status === 'running') {
     return { tone: 'command', label: '处理中', active: true };
   }
   return null;
@@ -624,6 +628,18 @@ function buildRenderableTimeline(
     }
     return left.id.localeCompare(right.id);
   });
+}
+
+function buildRenderableSignature(renderables: TimelineRenderable[]): string {
+  if (!renderables.length) {
+    return 'empty';
+  }
+  const last = renderables[renderables.length - 1];
+  const first = renderables[0];
+  const lastState = last.kind === 'entry'
+    ? `${last.entry.status || ''}:${last.entry.partial ? 'partial' : 'done'}:${last.entry.text?.length || 0}:${last.entry.meta?.length || 0}`
+    : `${last.request.status || ''}`;
+  return `${renderables.length}:${first.id}:${last.id}:${last.createdAt}:${lastState}`;
 }
 
 function buildTimelineMarkerSymbol(entry: TimelineEntry): string {
@@ -1015,25 +1031,30 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
   const lastSignatureRef = useRef('');
   const lastSessionIdRef = useRef<string | null>(null);
   const stickToBottomRef = useRef(true);
+  const previousFirstRenderedIdRef = useRef<string | null>(null);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
+  const [renderLimit, setRenderLimit] = useState(INITIAL_RENDERABLE_LIMIT);
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
-  const entriesBySessionId = useAppStore((state) => state.timeline.entriesBySessionId);
+  const entries = useAppStore((state) => (
+    state.sessions.activeSessionId
+      ? (state.timeline.entriesBySessionId[state.sessions.activeSessionId] || EMPTY_TIMELINE_ENTRIES)
+      : EMPTY_TIMELINE_ENTRIES
+  ));
   const health = useAppStore((state) => state.health.data);
   const error = useAppStore((state) => state.health.error || state.connection.error || '');
   const turnState = useAppStore((state) => activeSessionId ? state.turns.activeBySessionId[activeSessionId] : undefined);
   const approvalItems = useAppStore((state) => state.approvals.items);
-
-  const entries = useMemo(
-    () => activeSessionId ? (entriesBySessionId[activeSessionId] || []) : [],
-    [activeSessionId, entriesBySessionId],
-  );
   const visibleEntries = useMemo(
     () => entries.filter((entry) => entry.type !== 'reasoning'),
     [entries],
   );
+  const timelineEntries = useMemo(
+    () => visibleEntries.filter((entry) => entry.type !== 'plan' && entry.type !== 'turn_plan'),
+    [visibleEntries],
+  );
   const approvals = useMemo(
-    () => activeSessionId ? approvalItems.filter((item) => item.threadId === activeSessionId) : approvalItems,
+    () => activeSessionId ? approvalItems.filter((item) => item.threadId === activeSessionId) : EMPTY_APPROVAL_ITEMS,
     [activeSessionId, approvalItems],
   );
   const activeTurnStatus = useMemo(
@@ -1041,39 +1062,23 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     [entries, turnState, approvals],
   );
 
-  const groups = useMemo(
-    () => buildTimelineGroups(visibleEntries.filter((entry) => entry.type !== 'plan' && entry.type !== 'turn_plan'), approvals, turnState),
-    [approvals, visibleEntries, turnState],
-  );
   const renderables = useMemo(
-    () => buildRenderableTimeline(visibleEntries.filter((entry) => entry.type !== 'plan' && entry.type !== 'turn_plan'), approvals),
-    [approvals, visibleEntries],
+    () => buildRenderableTimeline(timelineEntries, approvals),
+    [approvals, timelineEntries],
   );
-
+  const visibleRenderables = useMemo(
+    () => renderables.slice(Math.max(0, renderables.length - renderLimit)),
+    [renderLimit, renderables],
+  );
+  const hiddenRenderableCount = Math.max(0, renderables.length - visibleRenderables.length);
   const contentSignature = useMemo(
-    () => JSON.stringify(renderables.map((item) => (
-      item.kind === 'entry'
-        ? {
-          kind: item.kind,
-          id: item.entry.id,
-          text: item.entry.text,
-          status: item.entry.status,
-          partial: item.entry.partial,
-          createdAt: item.entry.createdAt,
-        }
-        : {
-          kind: item.kind,
-          id: item.request.requestId,
-          status: item.request.status,
-          createdAt: item.request.createdAt,
-        }
-    ))),
+    () => buildRenderableSignature(renderables),
     [renderables],
   );
 
   const footerStatus = useMemo(
-    () => activeTurnStatus || buildLatestGroupStatus(groups),
-    [activeTurnStatus, groups],
+    () => activeTurnStatus || buildLatestRenderableStatus(renderables),
+    [activeTurnStatus, renderables],
   );
 
   useEffect(() => {
@@ -1084,6 +1089,8 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     if (lastSessionIdRef.current !== activeSessionId) {
       lastSessionIdRef.current = activeSessionId;
       lastSignatureRef.current = '';
+      previousFirstRenderedIdRef.current = null;
+      setRenderLimit(INITIAL_RENDERABLE_LIMIT);
       window.requestAnimationFrame(() => {
         const currentBody = messagesRef.current;
         if (!currentBody) {
@@ -1098,6 +1105,17 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     }
     const previousSignature = lastSignatureRef.current;
     const hasContentChanged = previousSignature !== contentSignature;
+    const firstRenderedId = visibleRenderables[0]?.id || null;
+    if (
+      previousFirstRenderedIdRef.current
+      && firstRenderedId
+      && previousFirstRenderedIdRef.current !== firstRenderedId
+      && !stickToBottomRef.current
+    ) {
+      previousFirstRenderedIdRef.current = firstRenderedId;
+      lastSignatureRef.current = contentSignature;
+      return;
+    }
     if (!previousSignature || (stickToBottomRef.current && hasContentChanged)) {
       body.scrollTop = body.scrollHeight;
       setShowJumpToBottom(false);
@@ -1106,8 +1124,9 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
       setShowJumpToBottom(true);
       setHasUnreadBelow(true);
     }
+    previousFirstRenderedIdRef.current = firstRenderedId;
     lastSignatureRef.current = contentSignature;
-  }, [activeSessionId, contentSignature]);
+  }, [activeSessionId, contentSignature, visibleRenderables]);
 
   useEffect(() => {
     const body = messagesRef.current;
@@ -1145,19 +1164,31 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
             <div className={`status-chip${turnState?.active ? ' running' : ''}`}>
               {turnState?.active ? '运行中' : '空闲'}
             </div>
+            {hiddenRenderableCount ? (
+              <button
+                type="button"
+                className="btn btn-secondary timeline-load-more"
+                onClick={() => {
+                  stickToBottomRef.current = false;
+                  setRenderLimit((value) => value + RENDERABLE_PAGE_SIZE);
+                }}
+              >
+                {`加载更早 ${Math.min(hiddenRenderableCount, RENDERABLE_PAGE_SIZE)} 条`}
+              </button>
+            ) : null}
           </div>
         ) : null}
 
         {error ? <div className="status error">{error}</div> : null}
         {!error && !health ? <div className="status">正在加载服务状态…</div> : null}
 
-        {activeSessionId && renderables.length ? renderables.map((item) => (
+        {activeSessionId && visibleRenderables.length ? visibleRenderables.map((item) => (
           item.kind === 'entry'
             ? <TimelineEntryCard key={item.id} entry={item.entry} />
             : <ApprovalCard key={item.id} request={item.request} onRespond={onRespondApproval} />
         )) : null}
 
-        {activeSessionId && !renderables.length ? (
+        {activeSessionId && !visibleRenderables.length ? (
           <div className="empty-state">
             <strong>还没有时间线记录</strong>
             <span>发送第一条消息后，这个会话的过程会显示在这里。</span>
