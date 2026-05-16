@@ -661,6 +661,12 @@ textarea {
   gap: 14px;
 }
 
+.timeline-virtual-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .timeline-toolbar {
   display: flex;
   align-items: center;

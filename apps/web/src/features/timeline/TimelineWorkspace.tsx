@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
@@ -31,6 +31,19 @@ type TimelineRenderable =
   | { kind: 'entry'; createdAt: number; id: string; entry: TimelineEntry }
   | { kind: 'approval'; createdAt: number; id: string; request: ServerRequestItem };
 
+type VirtualWindow = {
+  startIndex: number;
+  endIndex: number;
+  paddingTop: number;
+  paddingBottom: number;
+};
+
+type ViewportState = {
+  scrollTop: number;
+  viewportHeight: number;
+  listOffsetTop: number;
+};
+
 type RenderableFileChange = {
   path?: string;
   kind?: string;
@@ -43,6 +56,9 @@ const EMPTY_TIMELINE_ENTRIES: TimelineEntry[] = [];
 const EMPTY_APPROVAL_ITEMS: ServerRequestItem[] = [];
 const INITIAL_RENDERABLE_LIMIT = 120;
 const RENDERABLE_PAGE_SIZE = 120;
+const DEFAULT_RENDERABLE_HEIGHT = 148;
+const RENDERABLE_GAP_PX = 14;
+const VIRTUAL_OVERSCAN_PX = 960;
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
 const MARKDOWN_REHYPE_PLUGINS = [rehypeHighlight];
 
@@ -735,6 +751,83 @@ function buildRenderableSignature(renderables: TimelineRenderable[], totalRender
   return `${totalRenderableCount}:${first.id}:${last.id}:${last.createdAt}:${lastState}`;
 }
 
+function readViewportState(
+  body: HTMLDivElement,
+  listNode: HTMLDivElement | null,
+): ViewportState {
+  const bodyRect = body.getBoundingClientRect();
+  const listOffsetTop = listNode
+    ? (listNode.getBoundingClientRect().top - bodyRect.top) + body.scrollTop
+    : 0;
+  return {
+    scrollTop: body.scrollTop,
+    viewportHeight: body.clientHeight,
+    listOffsetTop,
+  };
+}
+
+export function buildVirtualWindow(
+  itemHeights: number[],
+  scrollTop: number,
+  viewportHeight: number,
+  overscanPx = VIRTUAL_OVERSCAN_PX,
+): VirtualWindow {
+  const totalItems = itemHeights.length;
+  if (!totalItems) {
+    return {
+      startIndex: 0,
+      endIndex: 0,
+      paddingTop: 0,
+      paddingBottom: 0,
+    };
+  }
+
+  const safeViewportHeight = Math.max(0, viewportHeight);
+  const startOffset = Math.max(0, scrollTop - overscanPx);
+  const endOffset = Math.max(startOffset, scrollTop + safeViewportHeight + overscanPx);
+  const getItemBlockSize = (index: number) => (
+    Math.max(1, itemHeights[index] || DEFAULT_RENDERABLE_HEIGHT)
+    + (index < totalItems - 1 ? RENDERABLE_GAP_PX : 0)
+  );
+
+  let cumulative = 0;
+  let startIndex = 0;
+  while (startIndex < totalItems) {
+    const nextCumulative = cumulative + getItemBlockSize(startIndex);
+    if (nextCumulative > startOffset) {
+      break;
+    }
+    cumulative = nextCumulative;
+    startIndex += 1;
+  }
+
+  let endIndex = startIndex;
+  let visibleBottom = cumulative;
+  while (endIndex < totalItems) {
+    visibleBottom += getItemBlockSize(endIndex);
+    endIndex += 1;
+    if (visibleBottom >= endOffset) {
+      break;
+    }
+  }
+
+  const paddingTop = cumulative;
+  let paddingBottom = 0;
+  for (let index = endIndex; index < totalItems; index += 1) {
+    paddingBottom += getItemBlockSize(index);
+  }
+  if (endIndex > 0 && endIndex < totalItems) {
+    paddingBottom += RENDERABLE_GAP_PX;
+  }
+
+  return {
+    startIndex,
+    endIndex,
+    paddingTop,
+    paddingBottom,
+  };
+}
+
 function buildTimelineMarkerSymbol(entry: TimelineEntry): string {
   const stateClass = buildTimelineStateClass(entry);
   if (stateClass === 'state-success') {
@@ -760,6 +853,54 @@ function buildTimelineMarkerSymbol(entry: TimelineEntry): string {
   }
   return '·';
 }
+
+const VirtualizedRenderable = memo(function VirtualizedRenderable({
+  item,
+  sessionId,
+  onRespondApproval,
+  onMeasure,
+}: {
+  item: TimelineRenderable;
+  sessionId: string;
+  onRespondApproval: (request: ServerRequestItem, response: unknown) => void;
+  onMeasure: (id: string, height: number) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) {
+      return;
+    }
+
+    const measure = () => {
+      const nextHeight = node.offsetHeight;
+      if (nextHeight > 0) {
+        onMeasure(item.id, nextHeight);
+      }
+    };
+
+    measure();
+
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      measure();
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [item.id, onMeasure]);
+
+  return (
+    <div ref={containerRef} data-renderable-id={item.id}>
+      {item.kind === 'entry'
+        ? <TimelineEntryCard entry={item.entry} sessionId={sessionId} />
+        : <ApprovalCard request={item.request} onRespond={onRespondApproval} />}
+    </div>
+  );
+});
 
 const TimelineEntryCard = memo(function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; sessionId: string }) {
   const streamText = useAppStore((state) => (
@@ -1133,13 +1274,18 @@ const ApprovalCard = memo(function ApprovalCard({
 
 export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWorkspaceProps) {
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const renderablesRef = useRef<HTMLDivElement | null>(null);
   const lastSignatureRef = useRef('');
   const lastSessionIdRef = useRef<string | null>(null);
   const stickToBottomRef = useRef(true);
   const previousFirstRenderedIdRef = useRef<string | null>(null);
+  const prependAnchorRef = useRef<{ id: string; top: number } | null>(null);
+  const itemHeightsRef = useRef<Record<string, number>>({});
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
   const [renderLimit, setRenderLimit] = useState(INITIAL_RENDERABLE_LIMIT);
+  const [viewportState, setViewportState] = useState<ViewportState>({ scrollTop: 0, viewportHeight: 0, listOffsetTop: 0 });
+  const [heightVersion, setHeightVersion] = useState(0);
   const hideJumpNotice = () => {
     setShowJumpToBottom((value) => value ? false : value);
     setHasUnreadBelow((value) => value ? false : value);
@@ -1171,6 +1317,19 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     () => buildRenderableSignature(visibleRenderables, totalRenderableCount),
     [totalRenderableCount, visibleRenderables],
   );
+  const itemHeights = useMemo(
+    () => visibleRenderables.map((item) => itemHeightsRef.current[item.id] || DEFAULT_RENDERABLE_HEIGHT),
+    [heightVersion, visibleRenderables],
+  );
+  const listScrollTop = Math.max(0, viewportState.scrollTop - viewportState.listOffsetTop);
+  const virtualWindow = useMemo(
+    () => buildVirtualWindow(itemHeights, listScrollTop, viewportState.viewportHeight),
+    [itemHeights, listScrollTop, viewportState.viewportHeight],
+  );
+  const virtualItems = useMemo(
+    () => visibleRenderables.slice(virtualWindow.startIndex, virtualWindow.endIndex),
+    [virtualWindow.endIndex, virtualWindow.startIndex, visibleRenderables],
+  );
   const firstVisibleRenderableId = visibleRenderables[0]?.id || null;
 
   const footerStatus = useMemo(
@@ -1187,6 +1346,9 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
       lastSessionIdRef.current = activeSessionId;
       lastSignatureRef.current = '';
       previousFirstRenderedIdRef.current = null;
+      prependAnchorRef.current = null;
+      itemHeightsRef.current = {};
+      setHeightVersion((value) => value + 1);
       setRenderLimit(INITIAL_RENDERABLE_LIMIT);
       window.requestAnimationFrame(() => {
         const currentBody = messagesRef.current;
@@ -1195,9 +1357,29 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         }
         stickToBottomRef.current = true;
         currentBody.scrollTop = currentBody.scrollHeight;
+        setViewportState(readViewportState(currentBody, renderablesRef.current));
         hideJumpNotice();
       });
       return;
+    }
+    const pendingAnchor = prependAnchorRef.current;
+    if (pendingAnchor) {
+      const anchorNode = body.querySelector<HTMLElement>(`[data-renderable-id="${pendingAnchor.id}"]`);
+      if (anchorNode) {
+        const delta = anchorNode.getBoundingClientRect().top - pendingAnchor.top;
+        if (delta) {
+          body.scrollTop += delta;
+        }
+        const nextViewport = readViewportState(body, renderablesRef.current);
+        setViewportState((current) => (
+          current.scrollTop === nextViewport.scrollTop
+          && current.viewportHeight === nextViewport.viewportHeight
+          && current.listOffsetTop === nextViewport.listOffsetTop
+            ? current
+            : nextViewport
+        ));
+      }
+      prependAnchorRef.current = null;
     }
     const previousSignature = lastSignatureRef.current;
     const hasContentChanged = previousSignature !== contentSignature;
@@ -1229,6 +1411,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
       return;
     }
     const observer = new ResizeObserver(() => {
+      setViewportState(readViewportState(body, renderablesRef.current));
       if (!stickToBottomRef.current) {
         return;
       }
@@ -1239,6 +1422,33 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     return () => observer.disconnect();
   }, []);
 
+  useLayoutEffect(() => {
+    const body = messagesRef.current;
+    if (!body) {
+      return;
+    }
+    setViewportState((current) => {
+      const nextViewport = readViewportState(body, renderablesRef.current);
+      return current.scrollTop === nextViewport.scrollTop
+        && current.viewportHeight === nextViewport.viewportHeight
+        && current.listOffsetTop === nextViewport.listOffsetTop
+        ? current
+        : nextViewport;
+    });
+  }, [activeSessionId, error, health, visibleRenderables.length, hiddenRenderableCount]);
+
+  const handleRenderableMeasure = (id: string, height: number) => {
+    const normalizedHeight = Math.max(1, Math.round(height));
+    if (itemHeightsRef.current[id] === normalizedHeight) {
+      return;
+    }
+    itemHeightsRef.current = {
+      ...itemHeightsRef.current,
+      [id]: normalizedHeight,
+    };
+    setHeightVersion((value) => value + 1);
+  };
+
   return (
     <div className="timeline-shell">
       <div id="messages" ref={messagesRef} className="messages" onScroll={() => {
@@ -1248,6 +1458,14 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         }
         const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
         stickToBottomRef.current = nearBottom;
+        const nextViewport = readViewportState(body, renderablesRef.current);
+        setViewportState((current) => (
+          current.scrollTop === nextViewport.scrollTop
+          && current.viewportHeight === nextViewport.viewportHeight
+          && current.listOffsetTop === nextViewport.listOffsetTop
+            ? current
+            : nextViewport
+        ));
         setShowJumpToBottom((value) => value === !nearBottom ? value : !nearBottom);
         if (nearBottom) {
           setHasUnreadBelow((value) => value ? false : value);
@@ -1263,6 +1481,16 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
                 type="button"
                 className="btn btn-secondary timeline-load-more"
                 onClick={() => {
+                  const body = messagesRef.current;
+                  if (body) {
+                    const anchorId = visibleRenderables[virtualWindow.startIndex]?.id;
+                    if (anchorId) {
+                      const anchorNode = body.querySelector<HTMLElement>(`[data-renderable-id="${anchorId}"]`);
+                      prependAnchorRef.current = anchorNode
+                        ? { id: anchorId, top: anchorNode.getBoundingClientRect().top }
+                        : null;
+                    }
+                  }
                   stickToBottomRef.current = false;
                   setRenderLimit((value) => value + RENDERABLE_PAGE_SIZE);
                 }}
@@ -1276,11 +1504,24 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         {error ? <div className="status error">{error}</div> : null}
         {!error && !health ? <div className="status">正在加载服务状态…</div> : null}
 
-        {activeSessionId && visibleRenderables.length ? visibleRenderables.map((item) => (
-          item.kind === 'entry'
-            ? <TimelineEntryCard key={item.id} entry={item.entry} sessionId={activeSessionId} />
-            : <ApprovalCard key={item.id} request={item.request} onRespond={onRespondApproval} />
-        )) : null}
+        {activeSessionId && visibleRenderables.length ? (
+          <div
+            ref={renderablesRef}
+            style={{ paddingTop: virtualWindow.paddingTop, paddingBottom: virtualWindow.paddingBottom }}
+          >
+            <div className="timeline-virtual-list">
+              {virtualItems.map((item) => (
+                <VirtualizedRenderable
+                  key={item.id}
+                  item={item}
+                  sessionId={activeSessionId}
+                  onRespondApproval={onRespondApproval}
+                  onMeasure={handleRenderableMeasure}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {activeSessionId && !visibleRenderables.length ? (
           <div className="empty-state">
