@@ -10,6 +10,7 @@ function resetStore() {
     auth: { token: '' },
     sessions: { items: [], activeSessionId: null },
     timeline: { entriesBySessionId: {} },
+    assistantStreams: { bySessionId: {} },
     approvals: { items: [] },
     notifications: { items: [] },
     turns: { activeBySessionId: {} },
@@ -240,6 +241,106 @@ test('thread sync restores plan diff supplemental and notice entries', () => {
   assert.ok(entries.some((entry) => entry.type === 'turn_plan'));
   assert.ok(entries.some((entry) => entry.type === 'turn_diff'));
   assert.ok(entries.some((entry) => entry.type === 'hook'));
+});
+
+test('thread sync replays missing live timeline events and preserves pending user message', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-live-restore',
+    turns: [],
+    tokenUsage: null,
+    supplementalItems: [{
+      id: 'pending-user:turn-live-restore',
+      type: 'pendingUserMessage',
+      _turnId: 'turn-live-restore',
+      text: 'fix this bug',
+      createdAt: 1,
+    }],
+    timelineEvents: [
+      {
+        type: 'turn_started',
+        threadId: 'thread-live-restore',
+        turnId: 'turn-live-restore',
+        startedAt: 1,
+      },
+      {
+        type: 'item_started',
+        threadId: 'thread-live-restore',
+        turnId: 'turn-live-restore',
+        startedAt: 2,
+        item: {
+          id: 'cmd-live-1',
+          type: 'commandExecution',
+          command: 'npm test',
+          cwd: 'C:\\workspace',
+          status: 'running',
+        },
+      },
+      {
+        type: 'item_delta',
+        threadId: 'thread-live-restore',
+        turnId: 'turn-live-restore',
+        itemId: 'file-live-1',
+        method: 'item/fileChange/patchUpdated',
+        patch: '*** Begin Patch\n*** End Patch',
+        changes: [{ path: 'src/a.ts', kind: 'update', addedLines: 1, deletedLines: 0 }],
+        startedAt: 3,
+      },
+      {
+        type: 'agent_delta',
+        threadId: 'thread-live-restore',
+        turnId: 'turn-live-restore',
+        itemId: 'assistant-live-1',
+        delta: 'working',
+        startedAt: 4,
+      },
+    ],
+  } as any);
+
+  const state = useAppStore.getState();
+  const entries = state.timeline.entriesBySessionId['thread-live-restore'] || [];
+  assert.ok(entries.some((entry) => entry.role === 'user' && entry.text === 'fix this bug'));
+  assert.ok(entries.some((entry) => entry.id === 'cmd-live-1' && entry.type === 'command'));
+  assert.ok(entries.some((entry) => entry.id === 'file-live-1' && entry.type === 'file_change'));
+  assert.ok(entries.some((entry) => entry.id === 'assistant-live-1' && entry.role === 'assistant' && entry.partial));
+  assert.equal(state.turns.activeBySessionId['thread-live-restore']?.active, true);
+});
+
+test('thread sync replays all assistant delta events for the same live item', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-live-deltas',
+    turns: [],
+    tokenUsage: null,
+    timelineEvents: [
+      {
+        type: 'agent_delta',
+        threadId: 'thread-live-deltas',
+        turnId: 'turn-live-deltas',
+        itemId: 'assistant-live-deltas',
+        delta: 'hello ',
+        startedAt: 1,
+      },
+      {
+        type: 'agent_delta',
+        threadId: 'thread-live-deltas',
+        turnId: 'turn-live-deltas',
+        itemId: 'assistant-live-deltas',
+        delta: 'world',
+        startedAt: 2,
+      },
+    ],
+  } as any);
+
+  const entries = useAppStore.getState().timeline.entriesBySessionId['thread-live-deltas'] || [];
+  const assistant = entries.find((entry) => entry.id === 'assistant-live-deltas');
+  assert.equal(assistant?.text, '');
+  assert.equal(assistant?.partial, true);
+  assert.equal(useAppStore.getState().assistantStreams.bySessionId['thread-live-deltas']?.['assistant-live-deltas'], 'hello world');
 });
 
 test('reasoning, turn updates and notices are normalized into timeline semantics', () => {
@@ -1048,6 +1149,69 @@ test('pending local user message is promoted when real turn output arrives after
   const assistantEntry = entries.find((entry) => entry.id === 'assistant-live-1');
   assert.equal(userEntry?.turnId, 'turn-real');
   assert.equal(assistantEntry?.turnId, 'turn-real');
+  assert.equal(useAppStore.getState().assistantStreams.bySessionId['thread-promote']?.['assistant-live-1'], 'world');
+});
+
+test('assistant deltas update stream cache without replacing timeline entries after first delta', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'agent_delta',
+    threadId: 'thread-stream-cache',
+    turnId: 'turn-stream-cache',
+    itemId: 'assistant-stream-cache',
+    delta: 'hello',
+    startedAt: 1,
+  } as any);
+
+  const firstEntries = useAppStore.getState().timeline.entriesBySessionId['thread-stream-cache'];
+
+  mapServerMessageToStore({
+    type: 'agent_delta',
+    threadId: 'thread-stream-cache',
+    turnId: 'turn-stream-cache',
+    itemId: 'assistant-stream-cache',
+    delta: ' world',
+    startedAt: 2,
+  } as any);
+
+  const state = useAppStore.getState();
+  const secondEntries = state.timeline.entriesBySessionId['thread-stream-cache'];
+  const assistantEntry = secondEntries?.find((entry) => entry.id === 'assistant-stream-cache');
+  assert.equal(secondEntries, firstEntries);
+  assert.equal(assistantEntry?.text, '');
+  assert.equal(state.assistantStreams.bySessionId['thread-stream-cache']?.['assistant-stream-cache'], 'hello world');
+});
+
+test('completed assistant message persists stream text and clears stream cache', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'agent_delta',
+    threadId: 'thread-stream-final',
+    turnId: 'turn-stream-final',
+    itemId: 'assistant-stream-final',
+    delta: 'draft text',
+    startedAt: 1,
+  } as any);
+
+  mapServerMessageToStore({
+    type: 'item_completed',
+    threadId: 'thread-stream-final',
+    turnId: 'turn-stream-final',
+    item: {
+      id: 'assistant-stream-final',
+      type: 'agentMessage',
+    },
+    completedAt: 2,
+  } as any);
+
+  const state = useAppStore.getState();
+  const entries = state.timeline.entriesBySessionId['thread-stream-final'] || [];
+  const assistantEntry = entries.find((entry) => entry.id === 'assistant-stream-final');
+  assert.equal(assistantEntry?.text, 'draft text');
+  assert.equal(assistantEntry?.partial, false);
+  assert.equal(state.assistantStreams.bySessionId['thread-stream-final']?.['assistant-stream-final'], undefined);
 });
 
 test('turn_send error removes optimistic local user entry and raises notification', () => {

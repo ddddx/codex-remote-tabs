@@ -219,6 +219,14 @@ test('thread_sync returns tab update and thread snapshot', async () => {
       createdAt: 1,
     }],
   ]));
+  app.runtimeState.timelineEventsByThread.set('00000000-0000-0000-0000-000000000999', [{
+    type: 'agent_delta',
+    threadId: '00000000-0000-0000-0000-000000000999',
+    turnId: 'turn-live',
+    itemId: 'assistant-live',
+    delta: 'partial',
+    startedAt: 1,
+  }]);
   app.runtimeState.globalNotices.push({
     id: 'notice-1',
     type: '_warning',
@@ -241,6 +249,7 @@ test('thread_sync returns tab update and thread snapshot', async () => {
   assert.equal((socket.sent[1] as any).turnPlans.length, 1);
   assert.equal((socket.sent[1] as any).turnDiffs.length, 1);
   assert.equal((socket.sent[1] as any).supplementalItems.length, 1);
+  assert.equal((socket.sent[1] as any).timelineEvents.length, 1);
   assert.equal((socket.sent[1] as any).globalSupplementalItems.length, 1);
 });
 
@@ -544,6 +553,58 @@ test('bridge forwards plan, progress, hook and guardian notifications', async ()
   assert.equal(messages[3]?.type, 'guardian_review_completed');
   const cachedEvents = app.runtimeState.timelineEventsByThread.get('thread-1') || [];
   assert.equal(cachedEvents.length, 4);
+});
+
+test('bridge batches high-frequency assistant deltas before broadcasting', async () => {
+  const { app, listeners } = createAppStub();
+  const socket = createSocket();
+  app.runtimeState.clients.add(socket as any);
+
+  await ensureCodexReady(app);
+  const notificationListener = listeners.get('notification')?.[0];
+  assert.ok(notificationListener);
+
+  notificationListener?.({
+    method: 'item/agentMessage/delta',
+    params: {
+      threadId: 'thread-batch',
+      turnId: 'turn-batch',
+      itemId: 'assistant-batch',
+      delta: 'a',
+      startedAt: 1,
+    },
+  });
+  notificationListener?.({
+    method: 'item/agentMessage/delta',
+    params: {
+      threadId: 'thread-batch',
+      turnId: 'turn-batch',
+      itemId: 'assistant-batch',
+      delta: 'b',
+      startedAt: 2,
+    },
+  });
+  notificationListener?.({
+    method: 'item/completed',
+    params: {
+      threadId: 'thread-batch',
+      turnId: 'turn-batch',
+      item: {
+        id: 'assistant-batch',
+        type: 'agentMessage',
+        text: 'ab',
+      },
+    },
+  });
+
+  const messages = socket.sent as Array<any>;
+  assert.equal(messages[0]?.type, 'agent_delta');
+  assert.equal(messages[0]?.delta, 'ab');
+  assert.equal(messages[1]?.type, 'item_completed');
+
+  const cachedEvents = app.runtimeState.timelineEventsByThread.get('thread-batch') || [];
+  assert.equal(cachedEvents.length, 2);
+  assert.equal(cachedEvents[0]?.delta, 'ab');
 });
 
 test('file change patch updates refresh pending request snapshot', async () => {

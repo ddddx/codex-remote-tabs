@@ -4,6 +4,7 @@ import { upsertRuntimeTab } from './session-tabs.js';
 import {
   appendTimelineEvent,
   pushGlobalNotice,
+  removeSupplementalItem,
   setCachedTurnDiff,
   setCachedTurnPlan,
   upsertSupplementalItem,
@@ -14,12 +15,71 @@ function nowUnix(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+const AGENT_DELTA_FLUSH_MS = 40;
+
+type PendingAgentDelta = {
+  message: Record<string, unknown> & {
+    threadId: string;
+    itemId?: string;
+    turnId?: string;
+    delta: string;
+    startedAt: number;
+  };
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const pendingAgentDeltas = new Map<string, PendingAgentDelta>();
+
+function buildAgentDeltaKey(threadId: string, turnId: string | undefined, itemId: string | undefined): string {
+  return [threadId, turnId || '', itemId || ''].join(':');
+}
+
 function broadcastThreadTimelineMessage(app: FastifyInstance, message: Record<string, unknown>): void {
   const threadId = typeof message.threadId === 'string' ? message.threadId : undefined;
   if (threadId) {
     appendTimelineEvent(app.runtimeState, threadId, message);
   }
   broadcastMessage(app, message as any);
+}
+
+function flushAgentDeltaByKey(app: FastifyInstance, key: string): void {
+  const pending = pendingAgentDeltas.get(key);
+  if (!pending) {
+    return;
+  }
+  clearTimeout(pending.timer);
+  pendingAgentDeltas.delete(key);
+  if (pending.message.delta) {
+    broadcastThreadTimelineMessage(app, pending.message);
+  }
+}
+
+export function flushPendingAgentDeltas(app: FastifyInstance, threadId?: string): void {
+  for (const [key, pending] of [...pendingAgentDeltas]) {
+    if (threadId && pending.message.threadId !== threadId) {
+      continue;
+    }
+    flushAgentDeltaByKey(app, key);
+  }
+}
+
+function queueAgentDelta(
+  app: FastifyInstance,
+  message: PendingAgentDelta['message'],
+): void {
+  const key = buildAgentDeltaKey(message.threadId, message.turnId, message.itemId);
+  const pending = pendingAgentDeltas.get(key);
+  if (pending) {
+    pending.message.delta += message.delta;
+    pending.message.startedAt = Math.min(pending.message.startedAt, message.startedAt);
+    return;
+  }
+
+  const timer = setTimeout(() => flushAgentDeltaByKey(app, key), AGENT_DELTA_FLUSH_MS);
+  pendingAgentDeltas.set(key, {
+    message: { ...message },
+    timer,
+  });
 }
 
 export function handleCodexNotification(
@@ -102,8 +162,13 @@ export function handleCodexNotification(
   }
 
   if (method === 'turn/completed' && typeof params.threadId === 'string') {
+    flushPendingAgentDeltas(app, params.threadId);
     const current = app.runtimeState.tabsById.get(params.threadId);
     const turn = params.turn as Record<string, unknown> | undefined;
+    const turnId = typeof turn?.id === 'string' ? turn.id : undefined;
+    if (turnId) {
+      removeSupplementalItem(app.runtimeState, params.threadId, `pending-user:${turnId}`);
+    }
     if (current) {
       const rawStatus = typeof turn?.status === 'string' ? turn.status : 'idle';
       const nextStatus = ['completed', 'succeeded', 'cancelled', 'aborted'].includes(rawStatus) ? 'idle' : rawStatus;
@@ -117,13 +182,13 @@ export function handleCodexNotification(
     broadcastThreadTimelineMessage(app, {
       type: 'turn_completed',
       threadId: params.threadId,
-      turnId: typeof turn?.id === 'string' ? turn.id : undefined,
+      turnId,
     });
     return;
   }
 
   if (method === 'item/agentMessage/delta' && typeof params.threadId === 'string') {
-    broadcastThreadTimelineMessage(app, {
+    queueAgentDelta(app, {
       type: 'agent_delta',
       threadId: params.threadId,
       turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
@@ -270,6 +335,10 @@ export function handleCodexNotification(
   }
 
   if (method === 'item/completed' && typeof params.threadId === 'string') {
+    const item = params.item && typeof params.item === 'object' ? params.item as Record<string, unknown> : null;
+    if (item?.type === 'agentMessage') {
+      flushPendingAgentDeltas(app, params.threadId);
+    }
     broadcastThreadTimelineMessage(app, {
       type: 'item_completed',
       threadId: params.threadId,

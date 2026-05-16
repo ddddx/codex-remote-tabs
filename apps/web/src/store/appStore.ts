@@ -129,6 +129,9 @@ type AppStore = {
   timeline: {
     entriesBySessionId: Record<string, TimelineEntry[]>;
   };
+  assistantStreams: {
+    bySessionId: Record<string, Record<string, string>>;
+  };
   approvals: {
     items: ServerRequestItem[];
   };
@@ -707,43 +710,51 @@ function mergeTimelineEntryLists(existing: TimelineEntry[], incoming: TimelineEn
 }
 
 function dedupeOptimisticUserEntries(entries: TimelineEntry[]): TimelineEntry[] {
-  const authoritativeUsers = entries.filter((entry) => (
-    entry.role === 'user'
-    && !entry.id.startsWith('local-user:')
-    && typeof entry.text === 'string'
-    && entry.text.trim()
-  ));
+  function getUserEntryStability(entry: TimelineEntry): number {
+    if (entry.id.startsWith('local-user:')) {
+      return 0;
+    }
+    if (entry.id.startsWith('pending-user:')) {
+      return 1;
+    }
+    return 2;
+  }
 
-  if (!authoritativeUsers.length) {
-    return entries;
+  function isSameLogicalUserEntry(left: TimelineEntry, right: TimelineEntry): boolean {
+    const leftText = typeof left.text === 'string' ? left.text.trim() : '';
+    const rightText = typeof right.text === 'string' ? right.text.trim() : '';
+    if (!leftText || leftText !== rightText) {
+      return false;
+    }
+    if (left.turnId && right.turnId && left.turnId === right.turnId) {
+      return true;
+    }
+    if (left.turnId?.endsWith(':pending-turn') || right.turnId?.endsWith(':pending-turn')) {
+      return true;
+    }
+    if (typeof left.createdAt === 'number' && typeof right.createdAt === 'number') {
+      return Math.abs(left.createdAt - right.createdAt) <= 5 * 60 * 1000;
+    }
+    return false;
   }
 
   return entries.filter((entry) => {
     const entryText = typeof entry.text === 'string' ? entry.text.trim() : '';
-    if (
-      entry.role !== 'user'
-      || !entry.id.startsWith('local-user:')
-      || !entryText
-    ) {
+    if (entry.role !== 'user' || !entryText) {
       return true;
     }
 
-    return !authoritativeUsers.some((authoritative) => {
-      const authoritativeText = typeof authoritative.text === 'string' ? authoritative.text.trim() : '';
-      if (authoritativeText !== entryText) {
-        return false;
-      }
-      if (authoritative.turnId && entry.turnId && authoritative.turnId === entry.turnId) {
-        return true;
-      }
-      if (entry.turnId?.endsWith(':pending-turn')) {
-        return true;
-      }
-      if (typeof authoritative.createdAt === 'number' && typeof entry.createdAt === 'number') {
-        return Math.abs(authoritative.createdAt - entry.createdAt) <= 5 * 60 * 1000;
-      }
-      return false;
-    });
+    const stability = getUserEntryStability(entry);
+    if (stability >= 2) {
+      return true;
+    }
+
+    return !entries.some((candidate) => (
+      candidate.id !== entry.id
+      && candidate.role === 'user'
+      && isSameLogicalUserEntry(candidate, entry)
+      && getUserEntryStability(candidate) > stability
+    ));
   });
 }
 
@@ -1220,6 +1231,31 @@ function createTimelineEntriesFromThreadSync(message: Extract<ServerMessage, { t
         details: item,
       });
     }
+
+    if (itemType === 'pendingUserMessage') {
+      const text = extractStructuredText(item.text)
+        || extractStructuredText(item.content)
+        || extractStructuredText(item.input)
+        || extractStructuredText(item.message);
+      if (!text) {
+        continue;
+      }
+      entries.push({
+        id: typeof item.entryId === 'string'
+          ? item.entryId
+          : turnId
+            ? `pending-user:${turnId}`
+            : `pending-user:${itemId}`,
+        type: 'message',
+        role: 'user',
+        turnId,
+        itemId,
+        text,
+        status: typeof item.status === 'string' ? item.status : 'completed',
+        createdAt,
+        details: item,
+      });
+    }
   }
 
   return entries;
@@ -1407,6 +1443,9 @@ export const useAppStore = create<AppStore>((set) => ({
   timeline: {
     entriesBySessionId: {},
   },
+  assistantStreams: {
+    bySessionId: {},
+  },
   approvals: {
     items: [],
   },
@@ -1538,9 +1577,11 @@ export const useAppStore = create<AppStore>((set) => ({
     const nextTurns = { ...state.turns.activeBySessionId };
     const nextUsage = { ...state.tokenUsage.bySessionId };
     const nextEntries = { ...state.timeline.entriesBySessionId };
+    const nextStreams = { ...state.assistantStreams.bySessionId };
     delete nextTurns[threadId];
     delete nextUsage[threadId];
     delete nextEntries[threadId];
+    delete nextStreams[threadId];
 
     const nextItems = state.sessions.items.filter((item) => item.threadId !== threadId);
     return {
@@ -1550,6 +1591,9 @@ export const useAppStore = create<AppStore>((set) => ({
       },
       timeline: {
         entriesBySessionId: nextEntries,
+      },
+      assistantStreams: {
+        bySessionId: nextStreams,
       },
       turns: {
         activeBySessionId: nextTurns,
@@ -1742,7 +1786,7 @@ export const useAppStore = create<AppStore>((set) => ({
     },
   })),
   appendAssistantDelta: (threadId, itemId, delta, options) => set((state) => {
-    const entries = [
+    let entries = [
       ...promotePendingUserEntriesForTurn(
         [...(state.timeline.entriesBySessionId[threadId] || [])],
         threadId,
@@ -1751,18 +1795,34 @@ export const useAppStore = create<AppStore>((set) => ({
       ),
     ];
     const index = entries.findIndex((entry) => entry.id === itemId);
+    const currentStreamText = state.assistantStreams.bySessionId[threadId]?.[itemId];
+    const nextStreamText = `${currentStreamText ?? (index >= 0 ? entries[index]?.text || '' : '')}${delta}`;
+    let entriesChanged = false;
+
     if (index >= 0) {
-      entries[index] = {
-        ...entries[index],
+      const current = entries[index];
+      const nextEntry = {
+        ...current,
         role: 'assistant',
         type: 'message',
-        turnId: entries[index].turnId || options?.turnId,
-        itemId: entries[index].itemId || itemId,
-        text: `${entries[index].text || ''}${delta}`,
-        createdAt: entries[index].createdAt || normalizeTimestamp(options?.createdAt),
+        turnId: current.turnId || options?.turnId,
+        itemId: current.itemId || itemId,
+        createdAt: current.createdAt || normalizeTimestamp(options?.createdAt),
         partial: true,
         status: 'running',
       };
+      entriesChanged = (
+        nextEntry.role !== current.role
+        || nextEntry.type !== current.type
+        || nextEntry.turnId !== current.turnId
+        || nextEntry.itemId !== current.itemId
+        || nextEntry.createdAt !== current.createdAt
+        || nextEntry.partial !== current.partial
+        || nextEntry.status !== current.status
+      );
+      if (entriesChanged) {
+        entries[index] = nextEntry;
+      }
     } else {
       entries.push({
         id: itemId,
@@ -1770,18 +1830,36 @@ export const useAppStore = create<AppStore>((set) => ({
         role: 'assistant',
         turnId: options?.turnId,
         itemId,
-        text: delta,
+        text: '',
         createdAt: normalizeTimestamp(options?.createdAt),
         partial: true,
         status: 'running',
       });
+      entriesChanged = true;
+    }
+
+    if (!entriesChanged) {
+      entries = state.timeline.entriesBySessionId[threadId] || [];
     }
 
     return {
-      timeline: {
-        entriesBySessionId: {
-          ...state.timeline.entriesBySessionId,
-          [threadId]: entries,
+      ...(entriesChanged
+        ? {
+          timeline: {
+            entriesBySessionId: {
+              ...state.timeline.entriesBySessionId,
+              [threadId]: entries,
+            },
+          },
+        }
+        : null),
+      assistantStreams: {
+        bySessionId: {
+          ...state.assistantStreams.bySessionId,
+          [threadId]: {
+            ...(state.assistantStreams.bySessionId[threadId] || {}),
+            [itemId]: nextStreamText,
+          },
         },
       },
     };
@@ -1942,6 +2020,27 @@ export const useAppStore = create<AppStore>((set) => ({
 export function mapServerMessageToStore(message: ServerMessage) {
   const store = useAppStore.getState();
 
+  function currentThreadEntries(threadId: string): TimelineEntry[] {
+    return useAppStore.getState().timeline.entriesBySessionId[threadId] || [];
+  }
+
+  function shouldReplayThreadSyncTimelineEvent(threadId: string, event: Record<string, unknown>): boolean {
+    const eventType = typeof event.type === 'string' ? event.type : '';
+    if (!eventType) {
+      return false;
+    }
+    if (eventType === 'turn_started' || eventType === 'turn_completed' || eventType === 'token_usage' || eventType === 'model_rerouted') {
+      return true;
+    }
+    if (eventType === 'agent_delta' || eventType === 'plan_delta' || eventType === 'mcp_tool_progress' || eventType === 'item_started' || eventType === 'item_delta') {
+      return true;
+    }
+    if (eventType === 'item_completed') {
+      return true;
+    }
+    return false;
+  }
+
   if (message.type === 'state') {
     store.setSessions(Array.isArray(message.tabs) ? message.tabs.map(normalizeTab) : []);
     store.replaceServerRequests(Array.isArray(message.serverRequests) ? message.serverRequests : []);
@@ -1980,7 +2079,48 @@ export function mapServerMessageToStore(message: ServerMessage) {
   }
 
   if (message.type === 'thread_sync') {
+    const entriesBeforeSync = currentThreadEntries(message.threadId);
+    const preExistingItemIds = new Set(
+      entriesBeforeSync
+        .flatMap((entry) => [entry.id, entry.itemId || ''])
+        .filter(Boolean),
+    );
     store.setThreadSync(message.threadId, message);
+    const entriesAfterSync = currentThreadEntries(message.threadId);
+    const settledSyncItemIds = new Set(
+      entriesAfterSync
+        .filter((entry) => !entry.partial && entry.status !== 'running')
+        .flatMap((entry) => [entry.id, entry.itemId || ''])
+        .filter(Boolean),
+    );
+    const hasSettledAssistantForTurn = (turnId: string) => entriesAfterSync.some((entry) => (
+      entry.turnId === turnId
+      && entry.role === 'assistant'
+      && !entry.partial
+      && entry.status !== 'running'
+    ));
+    for (const event of Array.isArray(message.timelineEvents) ? message.timelineEvents : []) {
+      if (!event || typeof event !== 'object') {
+        continue;
+      }
+      const typedEvent = event as Record<string, unknown>;
+      const itemId = typeof typedEvent.itemId === 'string' ? typedEvent.itemId : '';
+      const item = typedEvent.item && typeof typedEvent.item === 'object' ? typedEvent.item as Record<string, unknown> : null;
+      const resolvedItemId = itemId || (typeof item?.id === 'string' ? item.id : '');
+      const eventType = typeof typedEvent.type === 'string' ? typedEvent.type : '';
+      const turnId = typeof typedEvent.turnId === 'string' ? typedEvent.turnId : '';
+      const isAssistantEvent = eventType === 'agent_delta' || (eventType === 'item_completed' && item?.type === 'agentMessage');
+      if (
+        typedEvent.threadId !== message.threadId
+        || (resolvedItemId && preExistingItemIds.has(resolvedItemId))
+        || (resolvedItemId && settledSyncItemIds.has(resolvedItemId))
+        || (!resolvedItemId && isAssistantEvent && turnId && hasSettledAssistantForTurn(turnId))
+        || !shouldReplayThreadSyncTimelineEvent(message.threadId, typedEvent)
+      ) {
+        continue;
+      }
+      mapServerMessageToStore(typedEvent as ServerMessage);
+    }
     return;
   }
 
@@ -2118,17 +2258,35 @@ export function mapServerMessageToStore(message: ServerMessage) {
         : typeof item.output === 'string'
           ? item.output
           : '';
-      if (text.trim()) {
+      const streamText = useAppStore.getState().assistantStreams.bySessionId[message.threadId]?.[itemId];
+      const finalText = text.trim() || streamText || '';
+      if (finalText.trim()) {
         store.upsertTimelineEntry(message.threadId, buildSystemTimelineEntry(message.threadId, 'message', {
           id: itemId,
           role: 'assistant',
           turnId: message.turnId,
           itemId,
-          text: text.trim(),
+          text: finalText,
           status: 'completed',
           partial: false,
           createdAt: typeof item.createdAt === 'number' ? item.createdAt : message.completedAt,
         }));
+        useAppStore.setState((prev) => {
+          const currentStreams = prev.assistantStreams.bySessionId[message.threadId] || {};
+          if (!Object.prototype.hasOwnProperty.call(currentStreams, itemId)) {
+            return prev;
+          }
+          const nextStreams = { ...currentStreams };
+          delete nextStreams[itemId];
+          return {
+            assistantStreams: {
+              bySessionId: {
+                ...prev.assistantStreams.bySessionId,
+                [message.threadId]: nextStreams,
+              },
+            },
+          };
+        });
       }
       return;
     }

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ServerMessage } from '@codex-remote/protocol';
 import { listServerRequests } from './server-requests.js';
-import { listSupplementalItems, listTurnDiffs, listTurnPlans } from './runtime-cache.js';
+import { listSupplementalItems, listTimelineEvents, listTurnDiffs, listTurnPlans } from './runtime-cache.js';
 import { listRuntimeTabs, upsertRuntimeTab, type RuntimeTab } from './session-tabs.js';
 
 export function hydratePersistedRuntimeState(app: FastifyInstance): void {
@@ -68,5 +68,6 @@ export function buildThreadSyncMessage(
     tokenUsage: thread.tokenUsage ?? thread.token_usage ?? thread.usage ?? thread.tokenStats ?? thread.token_stats ?? null,
     turnPlans: listTurnPlans(app.runtimeState, threadId, turns),
     turnDiffs: listTurnDiffs(app.runtimeState, threadId, turns),
+    timelineEvents: listTimelineEvents(app.runtimeState, threadId),
   };
 }

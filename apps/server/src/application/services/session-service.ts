@@ -1,6 +1,7 @@
 import type { ClientMessage, ServerMessage } from '@codex-remote/protocol';
 import type { FastifyInstance } from 'fastify';
 import { broadcastMessage, ensureCodexReady } from '../../ws/bridge.js';
+import { flushPendingAgentDeltas } from './event-bridge.js';
 import { buildThreadSyncMessage, bootstrapTabs } from './thread-sync.js';
 import { upsertRuntimeTab, type RuntimeTab } from './session-tabs.js';
 
@@ -38,6 +39,7 @@ export function createSessionService(app: FastifyInstance) {
       message: Extract<ServerMessage, { type: 'thread_sync' }>;
     }> {
       await ensureCodexReady(app);
+      flushPendingAgentDeltas(app, threadId);
       const thread = await app.codexClient.resumeThread(threadId);
       const tab = upsertRuntimeTab(app, thread);
       const refreshedTab = await app.windowAttachments.refreshTabWindowStatus(threadId, {

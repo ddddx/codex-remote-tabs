@@ -60,15 +60,6 @@ function MarkdownMessage({
   className: string;
   partial?: boolean;
 }) {
-  if (partial) {
-    return (
-      <div className={`${className} timeline-plain-text`}>
-        {text}
-        <span className="cursor">▌</span>
-      </div>
-    );
-  }
-
   return (
     <div className={className}>
       <ReactMarkdown
@@ -80,6 +71,7 @@ function MarkdownMessage({
       >
         {text}
       </ReactMarkdown>
+      {partial ? <span className="cursor">▌</span> : null}
     </div>
   );
 }
@@ -638,6 +630,16 @@ function buildRenderableTimeline(
   });
 }
 
+function buildStructuralTimelineEntry(entry: TimelineEntry): TimelineEntry {
+  if (entry.role !== 'assistant' || !entry.partial || entry.type !== 'message') {
+    return entry;
+  }
+  return {
+    ...entry,
+    text: '',
+  };
+}
+
 function buildRenderableSignature(renderables: TimelineRenderable[]): string {
   if (!renderables.length) {
     return 'empty';
@@ -676,7 +678,20 @@ function buildTimelineMarkerSymbol(entry: TimelineEntry): string {
   return '·';
 }
 
-function TimelineEntryCard({ entry }: { entry: TimelineEntry }) {
+function TimelineEntryCard({ entry, sessionId }: { entry: TimelineEntry; sessionId: string }) {
+  const streamText = useAppStore((state) => (
+    entry.role === 'assistant' && entry.partial
+      ? state.assistantStreams.bySessionId[sessionId]?.[entry.id]
+      : undefined
+  ));
+  const resolvedEntry = streamText === undefined
+    ? entry
+    : {
+      ...entry,
+      text: streamText,
+    };
+  entry = resolvedEntry;
+
   if (entry.role === 'user' || entry.role === 'assistant') {
     const role = entry.role === 'user' ? 'user' : 'assistant';
     const bubbleClass = role === 'user'
@@ -1043,6 +1058,10 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
   const [renderLimit, setRenderLimit] = useState(INITIAL_RENDERABLE_LIMIT);
+  const hideJumpNotice = () => {
+    setShowJumpToBottom((value) => value ? false : value);
+    setHasUnreadBelow((value) => value ? false : value);
+  };
   const activeSessionId = useAppStore((state) => state.sessions.activeSessionId);
   const entries = useAppStore((state) => (
     state.sessions.activeSessionId
@@ -1058,7 +1077,9 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     [entries],
   );
   const timelineEntries = useMemo(
-    () => visibleEntries.filter((entry) => entry.type !== 'plan' && entry.type !== 'turn_plan'),
+    () => visibleEntries
+      .filter((entry) => entry.type !== 'plan' && entry.type !== 'turn_plan')
+      .map(buildStructuralTimelineEntry),
     [visibleEntries],
   );
   const approvals = useMemo(
@@ -1083,6 +1104,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     () => buildRenderableSignature(renderables),
     [renderables],
   );
+  const firstVisibleRenderableId = visibleRenderables[0]?.id || null;
 
   const footerStatus = useMemo(
     () => activeTurnStatus || buildLatestRenderableStatus(renderables),
@@ -1106,14 +1128,13 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         }
         stickToBottomRef.current = true;
         currentBody.scrollTop = currentBody.scrollHeight;
-        setShowJumpToBottom(false);
-        setHasUnreadBelow(false);
+        hideJumpNotice();
       });
       return;
     }
     const previousSignature = lastSignatureRef.current;
     const hasContentChanged = previousSignature !== contentSignature;
-    const firstRenderedId = visibleRenderables[0]?.id || null;
+    const firstRenderedId = firstVisibleRenderableId;
     if (
       previousFirstRenderedIdRef.current
       && firstRenderedId
@@ -1126,15 +1147,14 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
     }
     if (!previousSignature || (stickToBottomRef.current && hasContentChanged)) {
       body.scrollTop = body.scrollHeight;
-      setShowJumpToBottom(false);
-      setHasUnreadBelow(false);
+      hideJumpNotice();
     } else if (hasContentChanged) {
-      setShowJumpToBottom(true);
-      setHasUnreadBelow(true);
+      setShowJumpToBottom((value) => value || true);
+      setHasUnreadBelow((value) => value || true);
     }
     previousFirstRenderedIdRef.current = firstRenderedId;
     lastSignatureRef.current = contentSignature;
-  }, [activeSessionId, contentSignature, visibleRenderables]);
+  }, [activeSessionId, contentSignature, firstVisibleRenderableId]);
 
   useEffect(() => {
     const body = messagesRef.current;
@@ -1146,8 +1166,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         return;
       }
       body.scrollTop = body.scrollHeight;
-      setShowJumpToBottom(false);
-      setHasUnreadBelow(false);
+      hideJumpNotice();
     });
     observer.observe(body);
     return () => observer.disconnect();
@@ -1162,9 +1181,9 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
         }
         const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 96;
         stickToBottomRef.current = nearBottom;
-        setShowJumpToBottom(!nearBottom);
+        setShowJumpToBottom((value) => value === !nearBottom ? value : !nearBottom);
         if (nearBottom) {
-          setHasUnreadBelow(false);
+          setHasUnreadBelow((value) => value ? false : value);
         }
       }}>
         {activeSessionId ? (
@@ -1192,7 +1211,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
 
         {activeSessionId && visibleRenderables.length ? visibleRenderables.map((item) => (
           item.kind === 'entry'
-            ? <TimelineEntryCard key={item.id} entry={item.entry} />
+            ? <TimelineEntryCard key={item.id} entry={item.entry} sessionId={activeSessionId} />
             : <ApprovalCard key={item.id} request={item.request} onRespond={onRespondApproval} />
         )) : null}
 
@@ -1243,8 +1262,7 @@ export function TimelineWorkspace({ onRespondApproval, homeAside }: TimelineWork
             return;
           }
           body.scrollTop = body.scrollHeight;
-          setShowJumpToBottom(false);
-          setHasUnreadBelow(false);
+          hideJumpNotice();
         }}
         >
         {hasUnreadBelow ? '新消息 ︾' : '回到底部'}

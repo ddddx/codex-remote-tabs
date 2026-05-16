@@ -1,6 +1,7 @@
 import type { ClientMessage } from '@codex-remote/protocol';
 import type { FastifyInstance } from 'fastify';
 import { broadcastMessage, ensureCodexReady } from '../../ws/bridge.js';
+import { upsertSupplementalItem } from './runtime-cache.js';
 import { bootstrapTabs } from './thread-sync.js';
 import { upsertRuntimeTab } from './session-tabs.js';
 
@@ -37,13 +38,25 @@ export function createTurnService(app: FastifyInstance) {
     async startTurn(message: TurnSendMessage): Promise<void> {
       await ensureCodexReady(app);
       const current = app.runtimeState.tabsById.get(message.threadId);
-      await app.codexClient.startTurn(message.threadId, message.text, {
+      const turn = await app.codexClient.startTurn(message.threadId, message.text, {
         attachments: message.attachments,
         model: message.model || null,
         effort: message.effort || null,
         approvalPolicy: message.approvalPolicy || null,
         sandboxPolicy: buildSandboxPolicyOverride(message.sandboxMode, current?.cwd),
       });
+      const turnId = typeof turn?.id === 'string' ? turn.id : '';
+      const text = typeof message.text === 'string' ? message.text.trim() : '';
+
+      if (turnId && text) {
+        upsertSupplementalItem(app.runtimeState, message.threadId, {
+          id: `pending-user:${turnId}`,
+          type: 'pendingUserMessage',
+          _turnId: turnId,
+          text,
+          createdAt: Date.now(),
+        });
+      }
 
       if (current) {
         const tab = upsertRuntimeTab(app, {
