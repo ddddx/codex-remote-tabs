@@ -333,6 +333,7 @@ export function App() {
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerResetSignal, setComposerResetSignal] = useState(0);
   const previousConnectionStatusRef = useRef(connectionStatus);
+  const needsForegroundThreadSyncRef = useRef(false);
   const sessionNameInputRef = useRef<HTMLInputElement | null>(null);
   const tokenInputRef = useRef<HTMLInputElement | null>(null);
   const deviceIdRef = useRef(readOrCreateDeviceId());
@@ -516,20 +517,21 @@ export function App() {
     const previousStatus = previousConnectionStatusRef.current;
     previousConnectionStatusRef.current = connectionStatus;
 
-    if (connectionStatus !== 'connected' || previousStatus === 'connected' || !activeSessionId) {
-      return;
+    if (previousStatus === 'connected' && connectionStatus !== 'connected') {
+      needsForegroundThreadSyncRef.current = true;
     }
   }, [activeSessionId, connectionStatus, socketClient]);
 
   useEffect(() => {
     function syncActiveThreadOnForeground() {
-      if (document.hidden || connectionStatus !== 'connected') {
+      if (document.hidden || connectionStatus !== 'connected' || !needsForegroundThreadSyncRef.current) {
         return;
       }
       const targetThreadId = useAppStore.getState().sessions.activeSessionId;
       if (!targetThreadId) {
         return;
       }
+      needsForegroundThreadSyncRef.current = false;
       socketClient.send({
         type: 'thread_sync',
         threadId: targetThreadId,
