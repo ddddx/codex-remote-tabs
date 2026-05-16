@@ -14,7 +14,9 @@
     "test:e2e": "playwright test",
     "build": "npm run build --workspaces --if-present",
     "migrate:legacy-state": "node --import tsx scripts/migrate-legacy-state.ts",
+    "prestart": "node scripts/free-port.mjs 18637",
     "start": "npm run build --workspace @codex-remote/web && node --import tsx apps/server/src/index.ts",
+    "stop": "node scripts/free-port.mjs 18637",
     "dev:web": "npm run dev --workspace @codex-remote/web",
     "dev:server": "node --watch --import tsx apps/server/src/index.ts",
     "dev": "node --watch --import tsx apps/server/src/index.ts"
