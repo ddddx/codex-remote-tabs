@@ -119,7 +119,7 @@ export function buildTokenUsageDisplay(value: unknown): TokenUsageDisplay {
       remainingTokens,
       contextWindow: resolvedWindow,
       label: '上下文余量',
-      detail: `剩余 ${remainingTokens} / ${resolvedWindow} tokens`,
+      detail: `剩余 ${percentRemaining}% · ${remainingTokens} / ${resolvedWindow} tokens`,
     };
   }
 

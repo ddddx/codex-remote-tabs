@@ -127,8 +127,8 @@ function createAppStub() {
           updatedAt: 1,
         };
       },
-      async resumeThread(threadId: string) {
-        calls.resumeThread.push(threadId);
+      async resumeThread(threadId: string, options?: unknown) {
+        calls.resumeThread.push({ threadId, options });
         return {
           id: threadId,
           name: 'Resumed thread',
@@ -383,6 +383,46 @@ test('turn_send maps permission overrides to codex approval and sandbox settings
 
   assert.deepEqual((calls.startTurn[0] as any)?.options?.sandboxPolicy, { type: 'dangerFullAccess' });
   assert.equal((calls.startTurn[0] as any)?.options?.approvalPolicy, 'never');
+});
+
+test('thread_options_update resumes thread with host-visible option overrides and persists preferences', async () => {
+  const { app, calls } = createAppStub();
+  const socket = createSocket();
+  app.runtimeState.clients.add(socket as any);
+  app.runtimeState.tabsById.set('00000000-0000-0000-0000-000000000123', {
+    threadId: '00000000-0000-0000-0000-000000000123',
+    name: 'Existing',
+    cwd: 'C:\\workspace',
+    status: 'idle',
+    createdAt: 1,
+    updatedAt: 1,
+    windowStatus: 'attached',
+    model: 'old-model',
+    reasoningEffort: 'low',
+  });
+
+  await routeClientMessage(app, socket as any, {
+    type: 'thread_options_update',
+    threadId: '00000000-0000-0000-0000-000000000123',
+    model: 'gpt-5.5',
+    effort: 'high',
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+  });
+
+  assert.deepEqual((calls.resumeThread[0] as any)?.options, {
+    excludeTurns: true,
+    cwd: 'C:\\workspace',
+    model: 'gpt-5.5',
+    effort: 'high',
+    approvalPolicy: 'never',
+    sandbox: 'danger-full-access',
+  });
+  assert.equal(app.runtimeState.tabsById.get('00000000-0000-0000-0000-000000000123')?.model, 'gpt-5.5');
+  assert.equal(app.runtimeState.tabsById.get('00000000-0000-0000-0000-000000000123')?.reasoningEffort, 'high');
+  assert.equal((socket.sent[0] as any).type, 'tab_updated');
+  assert.equal((calls.upsertThreadPreference.at(-1) as any)?.model, 'gpt-5.5');
+  assert.equal((calls.upsertThreadPreference.at(-1) as any)?.reasoningEffort, 'high');
 });
 
 test('tab_close closes host window but keeps session', async () => {

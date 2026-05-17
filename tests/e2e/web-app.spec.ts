@@ -60,6 +60,12 @@ test('web app matches current shell and conversation flow', async ({ page }) => 
 
     await expect(page.locator('#activeStatus')).toHaveAttribute('aria-label', 'connected');
     await expect(page.locator('#tabList')).toContainText('Mock Session');
+    await expect(page.locator('#tabList')).not.toContainText('Closed Session');
+    await expect(page.locator('.tab-section-toggle')).toContainText('未打开');
+    await page.locator('.tab-section-toggle').click();
+    await expect(page.locator('#tabList')).toContainText('Closed Session');
+    await page.locator('.tab-section-toggle').click();
+    await expect(page.locator('#tabList')).not.toContainText('Closed Session');
     await page.locator('#sidebarClose').click();
     await expect(page.locator('.sidebar')).toBeVisible();
     await page.locator('#menuBtn').click();
@@ -67,7 +73,10 @@ test('web app matches current shell and conversation flow', async ({ page }) => 
     await page.locator('.tab-item-main').filter({ hasText: 'Mock Session' }).click();
     await expect(page.locator('#activeTitle')).toHaveText('Mock Session');
     await expect(page.locator('.context-usage-ring')).toHaveAttribute('aria-label', /上下文余量/);
-    await expect(page.locator('.context-usage-popover')).toContainText('剩余 78 / 100 tokens');
+    await expect(page.locator('.context-usage-popover')).toContainText('余量 78%');
+    await expect(page.locator('.context-usage-popover')).toContainText('剩余 78% · 78 / 100 tokens');
+    await page.locator('#reasoningEffortSelect').selectOption('high');
+    await expect(page.locator('#reasoningEffortSelect')).toHaveValue('high');
     await expect.poll(async () => page.locator('#messages').evaluate((element) => {
       const node = element as HTMLDivElement;
       return node.scrollTop + node.clientHeight >= node.scrollHeight - 4;

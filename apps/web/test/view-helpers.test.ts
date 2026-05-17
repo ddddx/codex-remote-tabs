@@ -57,7 +57,7 @@ test('buildTokenUsageDisplay exposes remaining context for ring rendering', () =
     remainingTokens: 90,
     contextWindow: 120,
     label: '上下文余量',
-    detail: '剩余 90 / 120 tokens',
+    detail: '剩余 75% · 90 / 120 tokens',
   });
 });
 

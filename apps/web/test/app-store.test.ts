@@ -1417,6 +1417,61 @@ test('completed assistant message persists stream text and clears stream cache',
   assert.equal(state.assistantStreams.bySessionId['thread-stream-final']?.['assistant-stream-final'], undefined);
 });
 
+test('thread sync replays in-flight turn events in chronological order after reload', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'thread_sync',
+    threadId: 'thread-live-restore',
+    turns: [],
+    supplementalItems: [{
+      id: 'pending-user:turn-live-restore',
+      type: 'pendingUserMessage',
+      _turnId: 'turn-live-restore',
+      text: 'continue the work',
+      createdAt: 1000,
+    }],
+    timelineEvents: [
+      {
+        type: 'turn_started',
+        threadId: 'thread-live-restore',
+        turnId: 'turn-live-restore',
+        startedAt: 1001,
+      },
+      {
+        type: 'agent_delta',
+        threadId: 'thread-live-restore',
+        turnId: 'turn-live-restore',
+        itemId: 'assistant-live-restore',
+        delta: 'partial answer',
+        startedAt: 1002,
+      },
+      {
+        type: 'item_delta',
+        threadId: 'thread-live-restore',
+        turnId: 'turn-live-restore',
+        itemId: 'cmd-live-restore',
+        method: 'item/commandExecution/outputDelta',
+        delta: 'running tests',
+        startedAt: 1003,
+      },
+    ],
+  } as any);
+
+  const state = useAppStore.getState();
+  const entries = state.timeline.entriesBySessionId['thread-live-restore'] || [];
+  assert.deepEqual(entries.map((entry) => entry.id), [
+    'pending-user:turn-live-restore',
+    'assistant-live-restore',
+    'cmd-live-restore',
+  ]);
+  assert.equal(entries[0]?.text, 'continue the work');
+  assert.equal(entries[1]?.partial, true);
+  assert.equal(entries[2]?.text, '执行命令');
+  assert.equal(state.turns.activeBySessionId['thread-live-restore']?.active, true);
+  assert.equal(state.assistantStreams.bySessionId['thread-live-restore']?.['assistant-live-restore'], 'partial answer');
+});
+
 test('turn_send error removes optimistic local user entry and raises notification', () => {
   resetStore();
 

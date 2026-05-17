@@ -242,9 +242,19 @@ function buildSessionCreatePayload(draft: SessionDraft, prefs: ComposerPrefs) {
     name: draft.name.trim() || '',
     cwd: draft.cwd.trim() || '',
     model: prefs.model || undefined,
+    effort: prefs.reasoningEffort || undefined,
     approvalPolicy: prefs.approvalPolicy || undefined,
     sandboxMode: prefs.sandboxMode || undefined,
   };
+}
+
+function buildPrefsSignature(prefs: ComposerPrefs): string {
+  return [
+    prefs.model || '',
+    prefs.reasoningEffort || '',
+    prefs.approvalPolicy || '',
+    prefs.sandboxMode || '',
+  ].join('\u001f');
 }
 
 function buildClientMessageId(): string {
@@ -334,6 +344,7 @@ export function App() {
   const [composerResetSignal, setComposerResetSignal] = useState(0);
   const previousConnectionStatusRef = useRef(connectionStatus);
   const needsForegroundThreadSyncRef = useRef(false);
+  const lastSyncedPrefsRef = useRef<Record<string, string>>({});
   const sessionNameInputRef = useRef<HTMLInputElement | null>(null);
   const tokenInputRef = useRef<HTMLInputElement | null>(null);
   const deviceIdRef = useRef(readOrCreateDeviceId());
@@ -631,6 +642,28 @@ export function App() {
       });
     }
   }, [activeSession, activeSessionId, activeSessionPrefs, codexOptions, setComposerPrefs]);
+
+  useEffect(() => {
+    if (!activeSessionId || connectionStatus !== 'connected') {
+      return;
+    }
+    const signature = buildPrefsSignature(activePrefs);
+    if (lastSyncedPrefsRef.current[activeSessionId] === signature) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      lastSyncedPrefsRef.current[activeSessionId] = signature;
+      socketClient.send({
+        type: 'thread_options_update',
+        threadId: activeSessionId,
+        model: activePrefs.model || undefined,
+        effort: activePrefs.reasoningEffort || undefined,
+        approvalPolicy: activePrefs.approvalPolicy || undefined,
+        sandboxMode: activePrefs.sandboxMode || undefined,
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [activePrefs, activeSessionId, connectionStatus, socketClient]);
 
   function submitComposer() {
     const text = draft.trim();

@@ -40,10 +40,18 @@ type CodexClientLike = {
     name?: string | null;
     cwd?: string | null;
     model?: string | null;
+    effort?: string | null;
     approvalPolicy?: string | null;
     sandbox?: string | null;
   }) => Promise<Record<string, unknown>>;
-  resumeThread: (threadId: string, options?: { excludeTurns?: boolean }) => Promise<Record<string, unknown>>;
+  resumeThread: (threadId: string, options?: {
+    excludeTurns?: boolean;
+    model?: string | null;
+    effort?: string | null;
+    approvalPolicy?: string | null;
+    sandbox?: string | null;
+    cwd?: string | null;
+  }) => Promise<Record<string, unknown>>;
   startTurn: (threadId: string, text: string, options?: {
     attachments?: Array<{ path: string; name?: string }>;
     model?: string | null;

@@ -11,6 +11,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
     name: z.string().optional(),
     cwd: z.string().optional(),
     model: z.string().optional(),
+    effort: z.string().optional(),
     approvalPolicy: z.string().optional(),
     sandboxMode: z.string().optional(),
   }),
@@ -38,6 +39,14 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('thread_sync'),
     threadId: z.string(),
+  }),
+  z.object({
+    type: z.literal('thread_options_update'),
+    threadId: z.string(),
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    approvalPolicy: z.string().optional(),
+    sandboxMode: z.string().optional(),
   }),
   z.object({
     type: z.literal('server_request_respond'),

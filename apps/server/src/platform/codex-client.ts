@@ -7,6 +7,7 @@ type StartThreadOptions = {
   name?: string | null;
   cwd?: string | null;
   model?: string | null;
+  effort?: string | null;
   approvalPolicy?: string | null;
   sandbox?: string | null;
 };
@@ -17,6 +18,14 @@ type StartTurnOptions = {
   effort?: string | null;
   approvalPolicy?: string | null;
   sandboxPolicy?: Record<string, unknown> | null;
+};
+
+type ThreadOptions = {
+  model?: string | null;
+  effort?: string | null;
+  approvalPolicy?: string | null;
+  sandbox?: string | null;
+  cwd?: string | null;
 };
 
 type CodexClientOptions = {
@@ -165,19 +174,21 @@ export class CodexAppServerClient extends EventEmitter {
     return result.data || [];
   }
 
-  async startThread({ name, cwd, model, approvalPolicy, sandbox }: StartThreadOptions = {}) {
+  async startThread({ name, cwd, model, effort, approvalPolicy, sandbox }: StartThreadOptions = {}) {
     const workingCwd = cwd || this.defaultCwd;
     const result = await this.request('thread/start', {
       model: model || null,
       approvalPolicy: approvalPolicy || null,
       sandbox: sandbox || null,
+      config: effort ? { model_reasoning_effort: effort } : null,
       cwd: workingCwd,
       experimentalRawEvents: false,
       persistExtendedHistory: true,
-    }) as { thread: Record<string, unknown> };
+    }) as Record<string, unknown> & { thread: Record<string, unknown> };
 
     const thread = result.thread;
     thread.cwd = thread.cwd || workingCwd;
+    this.applyThreadRuntimeOptions(thread, result);
     if (name) {
       await this.request('thread/name/set', { threadId: thread.id, name });
       thread.name = name;
@@ -185,11 +196,32 @@ export class CodexAppServerClient extends EventEmitter {
     return thread;
   }
 
-  async resumeThread(threadId: string, options: { excludeTurns?: boolean } = {}) {
-    const result = await this.request('thread/resume', {
+  async resumeThread(threadId: string, options: { excludeTurns?: boolean } & ThreadOptions = {}) {
+    const params: Record<string, unknown> = {
       threadId,
       excludeTurns: options.excludeTurns === true,
-    }) as { thread: Record<string, unknown> };
+    };
+    if (options.model) {
+      params.model = options.model;
+    }
+    if (options.approvalPolicy) {
+      params.approvalPolicy = options.approvalPolicy;
+    }
+    if (options.sandbox) {
+      params.sandbox = options.sandbox;
+    }
+    if (options.cwd) {
+      params.cwd = options.cwd;
+    }
+    if (options.effort) {
+      params.config = {
+        model_reasoning_effort: options.effort,
+      };
+    }
+
+    const result = await this.request('thread/resume', params) as Record<string, unknown> & { thread: Record<string, unknown> };
+    const thread = result.thread;
+    this.applyThreadRuntimeOptions(thread, result);
     return result.thread;
   }
 
@@ -398,6 +430,25 @@ export class CodexAppServerClient extends EventEmitter {
     return `request timeout for ${method}; ${transport}; lastTransportEvent=${this.lastTransportEvent}`;
   }
 
+  private applyThreadRuntimeOptions(thread: Record<string, unknown>, result: Record<string, unknown>): void {
+    if (typeof result.model === 'string') {
+      thread.model = result.model;
+    }
+    if (typeof result.approvalPolicy === 'string') {
+      thread.approvalPolicy = result.approvalPolicy;
+    }
+    if (typeof result.reasoningEffort === 'string') {
+      thread.reasoningEffort = result.reasoningEffort;
+    }
+    if (typeof result.cwd === 'string') {
+      thread.cwd = result.cwd;
+    }
+    const sandboxMode = normalizeSandboxModeFromResult(result.sandbox);
+    if (sandboxMode) {
+      thread.sandboxMode = sandboxMode;
+    }
+  }
+
   private send(payload: Record<string, unknown>) {
     const line = JSON.stringify(payload);
     this.lastTransportEvent = `send ${line.slice(0, 160)}`;
@@ -503,4 +554,30 @@ function formatWebSocketState(state: number | undefined) {
 function parsePositiveInteger(value: unknown) {
   const parsed = Number.parseInt(String(value || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeSandboxModeFromResult(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  const sandbox = value as Record<string, unknown>;
+  if (typeof sandbox.mode === 'string') {
+    return sandbox.mode;
+  }
+  if (typeof sandbox.type !== 'string') {
+    return '';
+  }
+  if (sandbox.type === 'dangerFullAccess') {
+    return 'danger-full-access';
+  }
+  if (sandbox.type === 'readOnly') {
+    return 'read-only';
+  }
+  if (sandbox.type === 'workspaceWrite') {
+    return 'workspace-write';
+  }
+  return sandbox.type;
 }

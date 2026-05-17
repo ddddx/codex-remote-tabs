@@ -42,13 +42,32 @@ function applyWindowState(
   return tab;
 }
 
+type WindowOpenOptions = {
+  model?: string | null;
+  effort?: string | null;
+  approvalPolicy?: string | null;
+  sandboxMode?: string | null;
+  cwd?: string | null;
+};
+
+function resolveWindowOptions(tab: RuntimeTab): WindowOpenOptions {
+  return {
+    model: tab.model || null,
+    effort: tab.reasoningEffort || null,
+    approvalPolicy: tab.approvalPolicy || null,
+    sandboxMode: tab.sandboxMode || null,
+    cwd: tab.cwd || null,
+  };
+}
+
 export function createWindowAttachmentService(app: FastifyInstance, windows: CodexWindowManager) {
   const pendingWindowOpens = new Map<string, Promise<number>>();
 
   async function launchWindow(threadId: string): Promise<number> {
     let pending = pendingWindowOpens.get(threadId);
     if (!pending) {
-      pending = windows.openWindow(threadId).finally(() => {
+      const tab = app.runtimeState.tabsById.get(threadId);
+      pending = windows.openWindow(threadId, tab ? resolveWindowOptions(tab) : undefined).finally(() => {
         pendingWindowOpens.delete(threadId);
       });
       pendingWindowOpens.set(threadId, pending);

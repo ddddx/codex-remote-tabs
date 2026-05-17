@@ -10,6 +10,12 @@ type MockBackend = {
 
 export async function startMockBackend(): Promise<MockBackend> {
   const uploadedFiles = new Map<string, Buffer>();
+  const threadPrefs = new Map<string, {
+    model?: string;
+    effort?: string;
+    approvalPolicy?: string;
+    sandboxMode?: string;
+  }>();
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
 
   function later(delayMs: number, task: () => void) {
@@ -206,6 +212,12 @@ export async function startMockBackend(): Promise<MockBackend> {
         cwd: 'C:\\workspace',
         status: 'idle',
         windowStatus: 'detached',
+      }, {
+        threadId: 'thread-closed',
+        name: 'Closed Session',
+        cwd: 'C:\\workspace\\docs',
+        status: 'closed',
+        windowStatus: 'detached',
       }],
       serverRequests: [{
         requestId: 'req-1',
@@ -224,6 +236,21 @@ export async function startMockBackend(): Promise<MockBackend> {
       const message = JSON.parse(String(raw));
 
       if (message.type === 'thread_sync') {
+        const prefs = threadPrefs.get(message.threadId) || {};
+        socket.send(JSON.stringify({
+          type: 'tab_updated',
+          tab: {
+            threadId: message.threadId,
+            name: message.threadId === 'thread-closed' ? 'Closed Session' : 'Mock Session',
+            cwd: message.threadId === 'thread-closed' ? 'C:\\workspace\\docs' : 'C:\\workspace',
+            status: message.threadId === 'thread-closed' ? 'closed' : 'idle',
+            windowStatus: 'detached',
+            model: prefs.model,
+            reasoningEffort: prefs.effort,
+            approvalPolicy: prefs.approvalPolicy,
+            sandboxMode: prefs.sandboxMode,
+          },
+        }));
         socket.send(JSON.stringify({
           type: 'thread_sync',
           threadId: message.threadId,
@@ -368,6 +395,30 @@ export async function startMockBackend(): Promise<MockBackend> {
           threadId: message.threadId,
           turnId: 'turn-2',
         })));
+        return;
+      }
+
+      if (message.type === 'thread_options_update') {
+        threadPrefs.set(message.threadId, {
+          model: message.model,
+          effort: message.effort,
+          approvalPolicy: message.approvalPolicy,
+          sandboxMode: message.sandboxMode,
+        });
+        socket.send(JSON.stringify({
+          type: 'tab_updated',
+          tab: {
+            threadId: message.threadId,
+            name: 'Mock Session',
+            cwd: 'C:\\workspace',
+            status: 'idle',
+            windowStatus: 'detached',
+            model: message.model,
+            reasoningEffort: message.effort,
+            approvalPolicy: message.approvalPolicy,
+            sandboxMode: message.sandboxMode,
+          },
+        }));
         return;
       }
 

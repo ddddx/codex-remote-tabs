@@ -6,10 +6,48 @@ import { buildThreadSyncMessage, bootstrapTabs } from './thread-sync.js';
 import { upsertRuntimeTab, type RuntimeTab } from './session-tabs.js';
 
 type CreateTabMessage = Extract<ClientMessage, { type: 'tab_create' }>;
+type ThreadOptionsUpdateMessage = Extract<ClientMessage, { type: 'thread_options_update' }>;
 
 export type SessionService = ReturnType<typeof createSessionService>;
 
 export function createSessionService(app: FastifyInstance) {
+  async function applyThreadOptions(message: {
+    threadId: string;
+    model?: string;
+    effort?: string;
+    approvalPolicy?: string;
+    sandboxMode?: string;
+  }): Promise<RuntimeTab | null> {
+    const current = app.runtimeState.tabsById.get(message.threadId);
+    if (!current) {
+      return null;
+    }
+    const nextPrefs = {
+      model: message.model || current.model || '',
+      reasoningEffort: message.effort || current.reasoningEffort || '',
+      approvalPolicy: message.approvalPolicy || current.approvalPolicy || '',
+      sandboxMode: message.sandboxMode || current.sandboxMode || '',
+    };
+    const resumed = await app.codexClient.resumeThread(message.threadId, {
+      excludeTurns: true,
+      cwd: current.cwd || null,
+      model: nextPrefs.model || null,
+      effort: nextPrefs.reasoningEffort || null,
+      approvalPolicy: nextPrefs.approvalPolicy || null,
+      sandbox: nextPrefs.sandboxMode || null,
+    });
+    return upsertRuntimeTab(app, {
+      ...current,
+      ...resumed,
+      threadId: current.threadId,
+      model: nextPrefs.model,
+      reasoningEffort: nextPrefs.reasoningEffort,
+      approvalPolicy: nextPrefs.approvalPolicy,
+      sandboxMode: nextPrefs.sandboxMode,
+      updatedAt: Math.floor(Date.now() / 1000),
+    });
+  }
+
   return {
     async createTab(message: CreateTabMessage): Promise<RuntimeTab> {
       await ensureCodexReady(app);
@@ -18,6 +56,7 @@ export function createSessionService(app: FastifyInstance) {
         name: message.name || null,
         cwd: workspacePath,
         model: message.model || null,
+        effort: message.effort || null,
         approvalPolicy: message.approvalPolicy || null,
         sandbox: message.sandboxMode || null,
       });
@@ -27,6 +66,7 @@ export function createSessionService(app: FastifyInstance) {
         approvalPolicy: message.approvalPolicy || '',
         sandboxMode: message.sandboxMode || '',
         model: message.model || '',
+        reasoningEffort: message.effort || '',
       });
       const attachedTab = await app.windowAttachments.openWindowForThread(tab.threadId) as RuntimeTab | null;
       const nextTab = attachedTab || tab;
@@ -40,8 +80,23 @@ export function createSessionService(app: FastifyInstance) {
     }> {
       await ensureCodexReady(app);
       flushPendingAgentDeltas(app, threadId);
-      const thread = await app.codexClient.resumeThread(threadId);
-      const tab = upsertRuntimeTab(app, thread);
+      const current = app.runtimeState.tabsById.get(threadId);
+      const thread = await app.codexClient.resumeThread(threadId, {
+        cwd: current?.cwd || null,
+        model: current?.model || null,
+        effort: current?.reasoningEffort || null,
+        approvalPolicy: current?.approvalPolicy || null,
+        sandbox: current?.sandboxMode || null,
+      });
+      const tab = upsertRuntimeTab(app, {
+        ...(current || {}),
+        ...thread,
+        threadId,
+        model: typeof thread.model === 'string' ? thread.model : current?.model || '',
+        reasoningEffort: typeof thread.reasoningEffort === 'string' ? thread.reasoningEffort : current?.reasoningEffort || '',
+        approvalPolicy: typeof thread.approvalPolicy === 'string' ? thread.approvalPolicy : current?.approvalPolicy || '',
+        sandboxMode: typeof thread.sandboxMode === 'string' ? thread.sandboxMode : current?.sandboxMode || '',
+      });
       const refreshedTab = await app.windowAttachments.refreshTabWindowStatus(threadId, {
         allowDiscovery: true,
         allowLaunch: true,
@@ -53,6 +108,15 @@ export function createSessionService(app: FastifyInstance) {
         tab: nextTab,
         message: buildThreadSyncMessage(app, threadId, thread),
       };
+    },
+
+    async updateThreadOptions(message: ThreadOptionsUpdateMessage): Promise<RuntimeTab | null> {
+      await ensureCodexReady(app);
+      const tab = await applyThreadOptions(message);
+      if (tab) {
+        broadcastMessage(app, { type: 'tab_updated', tab });
+      }
+      return tab;
     },
 
     async refreshTabsAfterActivity(): Promise<void> {

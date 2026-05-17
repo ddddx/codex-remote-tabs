@@ -4,6 +4,7 @@ export type ClientMessage =
     name?: string;
     cwd?: string;
     model?: string;
+    effort?: string;
     approvalPolicy?: string;
     sandboxMode?: string;
   }
@@ -31,6 +32,14 @@ export type ClientMessage =
   | {
     type: 'thread_sync';
     threadId: string;
+  }
+  | {
+    type: 'thread_options_update';
+    threadId: string;
+    model?: string;
+    effort?: string;
+    approvalPolicy?: string;
+    sandboxMode?: string;
   }
   | {
     type: 'server_request_respond';

@@ -23,6 +23,19 @@ test('client message schema rejects turn_send without attachments array', () => 
   assert.equal(result.success, false);
 });
 
+test('client message schema accepts thread_options_update payload', () => {
+  const result = clientMessageSchema.safeParse({
+    type: 'thread_options_update',
+    threadId: 'thread-1',
+    model: 'gpt-5.5',
+    effort: 'high',
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+  });
+
+  assert.equal(result.success, true);
+});
+
 test('server message schema accepts thread_sync payload', () => {
   const result = serverMessageSchema.safeParse({
     type: 'thread_sync',

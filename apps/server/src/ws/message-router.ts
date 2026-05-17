@@ -64,6 +64,11 @@ export async function routeClientMessage(app: FastifyInstance, socket: WsLike, m
     return;
   }
 
+  if (message.type === 'thread_options_update') {
+    await app.services.sessions.updateThreadOptions(message);
+    return;
+  }
+
   if (message.type === 'server_request_respond') {
     const errorMessage = app.services.approvals.respond(message);
     if (errorMessage) {

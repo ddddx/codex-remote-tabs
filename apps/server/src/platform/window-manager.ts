@@ -182,6 +182,18 @@ function assertThreadId(threadId: string): void {
   }
 }
 
+function quoteWindowsArg(value: string): string {
+  const normalized = String(value);
+  if (!normalized || /[\s"]/u.test(normalized)) {
+    return `"${normalized.replace(/(\\*)"/g, '$1$1\\"').replace(/\\+$/g, '$&$&')}"`;
+  }
+  return normalized;
+}
+
+function buildWindowsCommandLine(args: string[]): string {
+  return args.map(quoteWindowsArg).join(' ');
+}
+
 function writeJsonFileAtomic(targetPath: string, value: Record<string, number>) {
   const directory = path.dirname(targetPath);
   mkdirSync(directory, { recursive: true });
@@ -218,18 +230,33 @@ export class CodexWindowManager {
     this.load();
   }
 
-  async openWindow(threadId: string): Promise<number> {
+  async openWindow(threadId: string, options: {
+    model?: string | null;
+    effort?: string | null;
+    approvalPolicy?: string | null;
+    sandboxMode?: string | null;
+    cwd?: string | null;
+  } = {}): Promise<number> {
     assertThreadId(threadId);
     if (!this.appServerWs) {
       throw new Error('codex app-server websocket is not ready');
     }
-    const escapedCmd = this.codexCmd.replace(/'/g, "''");
-    const escapedWs = this.appServerWs.replace(/'/g, "''");
-    const escapedThread = threadId.replace(/'/g, "''");
-    const commandLine = `""${escapedCmd}" --remote ${escapedWs} resume ${escapedThread}"`;
+    const args = [
+      '--remote',
+      this.appServerWs,
+      ...(options.model ? ['--model', options.model] : []),
+      ...(options.approvalPolicy ? ['--ask-for-approval', options.approvalPolicy] : []),
+      ...(options.sandboxMode ? ['--sandbox', options.sandboxMode] : []),
+      ...(options.cwd ? ['--cd', options.cwd] : []),
+      ...(options.effort ? ['--config', `model_reasoning_effort="${options.effort}"`] : []),
+      'resume',
+      threadId,
+    ];
+    const commandLine = buildWindowsCommandLine([this.codexCmd, ...args]);
+    const escapedCommandLine = commandLine.replace(/'/g, "''");
     const script = [
       "$ErrorActionPreference = 'Stop'",
-      `$proc = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/s', '/c', '${commandLine}') -PassThru`,
+      `$proc = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/s', '/c', '${escapedCommandLine}') -PassThru`,
       'Write-Output $proc.Id',
     ].join('; ');
     const output = await runPowerShell(script);

@@ -213,6 +213,10 @@ function UsageRingVisual({ percentRemaining }: { percentRemaining: number | null
   );
 }
 
+function formatPercentRemaining(value: number | null): string {
+  return value === null ? '未统计' : `${value}%`;
+}
+
 export function ComposerDock(props: ComposerDockProps) {
   const {
     draft,
@@ -383,6 +387,9 @@ export function ComposerDock(props: ComposerDockProps) {
             </button>
             <div className="context-usage-popover">
               <strong>{tokenUsage.label}</strong>
+              {tokenUsage.percentRemaining !== null ? (
+                <span className="context-usage-percent">余量 {formatPercentRemaining(tokenUsage.percentRemaining)}</span>
+              ) : null}
               <span>{tokenUsage.detail}</span>
             </div>
           </div>
