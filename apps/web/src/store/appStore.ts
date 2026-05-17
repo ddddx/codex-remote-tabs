@@ -204,6 +204,14 @@ type AppStore = {
 };
 
 function normalizeTab(tab: any): SessionItem {
+  const readOptionalString = (...keys: string[]): string | undefined => {
+    for (const key of keys) {
+      if (typeof tab?.[key] === 'string') {
+        return tab[key];
+      }
+    }
+    return undefined;
+  };
   const candidates = [tab?.name, tab?.threadName, tab?.thread_name, tab?.preview];
   const resolvedName = candidates.find((value) => typeof value === 'string' && value.trim());
   return {
@@ -212,10 +220,10 @@ function normalizeTab(tab: any): SessionItem {
     cwd: typeof tab?.cwd === 'string' ? tab.cwd : '',
     status: typeof tab?.status === 'string' ? tab.status : '',
     windowStatus: typeof tab?.windowStatus === 'string' ? tab.windowStatus : typeof tab?.window_status === 'string' ? tab.window_status : '',
-    approvalPolicy: typeof tab?.approvalPolicy === 'string' ? tab.approvalPolicy : typeof tab?.approval_policy === 'string' ? tab.approval_policy : '',
-    sandboxMode: typeof tab?.sandboxMode === 'string' ? tab.sandboxMode : typeof tab?.sandbox_mode === 'string' ? tab.sandbox_mode : '',
-    model: typeof tab?.model === 'string' ? tab.model : '',
-    reasoningEffort: typeof tab?.reasoningEffort === 'string' ? tab.reasoningEffort : typeof tab?.reasoning_effort === 'string' ? tab.reasoning_effort : '',
+    approvalPolicy: readOptionalString('approvalPolicy', 'approval_policy'),
+    sandboxMode: readOptionalString('sandboxMode', 'sandbox_mode'),
+    model: readOptionalString('model'),
+    reasoningEffort: readOptionalString('reasoningEffort', 'reasoning_effort'),
     tokenUsage: normalizeTokenUsage(tab),
     createdAt: typeof tab?.createdAt === 'number' ? tab.createdAt : typeof tab?.created_at === 'number' ? tab.created_at : 0,
     updatedAt: typeof tab?.updatedAt === 'number' ? tab.updatedAt : typeof tab?.updated_at === 'number' ? tab.updated_at : 0,
@@ -255,13 +263,35 @@ function mergeComposerPrefsFromSessions(
     if (!session.threadId) {
       continue;
     }
-    next[session.threadId] = buildComposerPrefsFromSession({
-      ...session,
-      ...next[session.threadId],
-      ...buildComposerPrefsFromSession(session),
-    });
+    const existing = next[session.threadId];
+    next[session.threadId] = {
+      model: typeof session.model === 'string' ? session.model : existing?.model || '',
+      reasoningEffort: typeof session.reasoningEffort === 'string' ? session.reasoningEffort : existing?.reasoningEffort || '',
+      approvalPolicy: typeof session.approvalPolicy === 'string' ? session.approvalPolicy : existing?.approvalPolicy || '',
+      sandboxMode: typeof session.sandboxMode === 'string' ? session.sandboxMode : existing?.sandboxMode || '',
+    };
   }
   return next;
+}
+
+function mergeSessionItem(current: SessionItem | undefined, incoming: SessionItem): SessionItem {
+  const merged = {
+    ...(current || {}),
+    ...incoming,
+  };
+  if (incoming.model === undefined) {
+    merged.model = current?.model;
+  }
+  if (incoming.reasoningEffort === undefined) {
+    merged.reasoningEffort = current?.reasoningEffort;
+  }
+  if (incoming.approvalPolicy === undefined) {
+    merged.approvalPolicy = current?.approvalPolicy;
+  }
+  if (incoming.sandboxMode === undefined) {
+    merged.sandboxMode = current?.sandboxMode;
+  }
+  return merged;
 }
 
 function extractTokenUsageValue(value: unknown): unknown {
@@ -1927,18 +1957,16 @@ export const useAppStore = create<AppStore>((set) => ({
     const nextItems = [...state.sessions.items];
     const index = nextItems.findIndex((entry) => entry.threadId === item.threadId);
     if (index >= 0) {
-      nextItems[index] = {
-        ...nextItems[index],
-        ...item,
-      };
+      nextItems[index] = mergeSessionItem(nextItems[index], item);
     } else {
       nextItems.unshift(item);
     }
     const nextPrefs = {
       ...state.composer.prefsBySessionId,
-      [item.threadId]: buildComposerPrefsFromSession({
-        ...nextItems[index >= 0 ? index : 0],
-      }),
+      [item.threadId]: mergeComposerPrefsFromSessions(
+        state.composer.prefsBySessionId,
+        [item],
+      )[item.threadId],
     };
     const nextUsage = item.tokenUsage !== undefined && item.tokenUsage !== null
       ? {

@@ -1128,6 +1128,50 @@ test('tab updates synchronize composer permission prefs for the session', () => 
   assert.equal(prefs?.sandboxMode, 'workspace-write');
 });
 
+test('tab updates without option fields preserve local composer prefs', () => {
+  resetStore();
+
+  mapServerMessageToStore({
+    type: 'state',
+    tabs: [{
+      threadId: 'thread-local-prefs',
+      name: 'Local Prefs',
+      cwd: 'C:\\workspace',
+      status: 'idle',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      approvalPolicy: 'on-request',
+      sandboxMode: 'workspace-write',
+    }],
+    serverRequests: [],
+    globalSupplementalItems: [],
+  } as any);
+
+  useAppStore.getState().setComposerPrefs('thread-local-prefs', {
+    model: 'gpt-5-codex',
+    reasoningEffort: 'high',
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+  });
+
+  mapServerMessageToStore({
+    type: 'tab_updated',
+    tab: {
+      threadId: 'thread-local-prefs',
+      name: 'Local Prefs',
+      cwd: 'C:\\workspace',
+      status: 'running',
+      windowStatus: 'attached',
+    },
+  } as any);
+
+  const prefs = useAppStore.getState().composer.prefsBySessionId['thread-local-prefs'];
+  assert.equal(prefs?.model, 'gpt-5-codex');
+  assert.equal(prefs?.reasoningEffort, 'high');
+  assert.equal(prefs?.approvalPolicy, 'never');
+  assert.equal(prefs?.sandboxMode, 'danger-full-access');
+});
+
 test('tab updates with unchanged payload preserve session array reference', () => {
   resetStore();
 

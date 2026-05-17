@@ -108,15 +108,26 @@ export async function startMockBackend(): Promise<MockBackend> {
     if (request.method === 'GET' && url.pathname === '/api/codex/options') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({
-        models: [{
-          id: 'gpt-5-codex',
-          model: 'gpt-5-codex',
-          displayName: 'GPT-5 Codex',
-          description: 'Mock model for E2E',
-          isDefault: true,
-          defaultReasoningEffort: 'medium',
-          supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
-        }],
+        models: [
+          {
+            id: 'gpt-5-codex',
+            model: 'gpt-5-codex',
+            displayName: 'GPT-5 Codex',
+            description: 'Mock model for E2E',
+            isDefault: true,
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
+          },
+          {
+            id: 'gpt-5.5',
+            model: 'gpt-5.5',
+            displayName: 'GPT-5.5',
+            description: 'Alternate mock model for E2E',
+            isDefault: false,
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
+          },
+        ],
         defaults: {
           model: 'gpt-5-codex',
           reasoningEffort: 'medium',
@@ -303,6 +314,34 @@ export async function startMockBackend(): Promise<MockBackend> {
       }
 
       if (message.type === 'turn_send') {
+        if (message.threadId === 'thread-1') {
+          const prefs = threadPrefs.get(message.threadId);
+          if (
+            prefs?.model !== 'gpt-5.5'
+            || prefs?.effort !== 'high'
+            || prefs?.approvalPolicy !== 'never'
+            || prefs?.sandboxMode !== 'danger-full-access'
+            || message.model !== 'gpt-5.5'
+            || message.effort !== 'high'
+            || message.approvalPolicy !== 'never'
+            || message.sandboxMode !== 'danger-full-access'
+          ) {
+            socket.send(JSON.stringify({
+              type: 'error',
+              op: 'turn_send',
+              threadId: message.threadId,
+              clientMessageId: message.clientMessageId,
+              message: `unexpected turn options: ${JSON.stringify({
+                prefs,
+                model: message.model,
+                effort: message.effort,
+                approvalPolicy: message.approvalPolicy,
+                sandboxMode: message.sandboxMode,
+              })}`,
+            }));
+            return;
+          }
+        }
         socket.send(JSON.stringify({
           type: 'turn_started',
           threadId: message.threadId,

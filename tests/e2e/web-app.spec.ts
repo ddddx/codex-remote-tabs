@@ -76,8 +76,15 @@ test('web app matches current shell and conversation flow', async ({ page }) => 
     await expect(page.locator('.context-usage-ring')).toHaveAttribute('aria-label', /上下文余量/);
     await expect(page.locator('.context-usage-popover')).toContainText('余量 78%');
     await expect(page.locator('.context-usage-popover')).toContainText('剩余 78% · 78 / 100 tokens');
+    await page.locator('#modelSelect').selectOption('gpt-5.5');
+    await expect(page.locator('#modelSelect')).toHaveValue('gpt-5.5');
     await page.locator('#reasoningEffortSelect').selectOption('high');
     await expect(page.locator('#reasoningEffortSelect')).toHaveValue('high');
+    await page.locator('#permissionPresetSelect').selectOption('full-access');
+    await expect(page.locator('#permissionPresetSelect')).toHaveValue('full-access');
+    await expect(page.locator('#composerControlsSummary')).toContainText('gpt-5.5');
+    await expect(page.locator('#composerControlsSummary')).toContainText('高');
+    await expect(page.locator('#composerControlsSummary')).toContainText('Full Access');
     await expect.poll(async () => page.locator('#messages').evaluate((element) => {
       const node = element as HTMLDivElement;
       return node.scrollTop + node.clientHeight >= node.scrollHeight - 4;
